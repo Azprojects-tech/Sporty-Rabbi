@@ -12,7 +12,6 @@ import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
-import cors from 'cors';
 import cron from 'node-cron';
 import axios from 'axios';
 import twilio from 'twilio';
@@ -24,16 +23,24 @@ const PORT = process.env.PORT || 3000;
 
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────
 
-// Simple CORS middleware - allow all origins
+// Aggressive CORS middleware - override all headers
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // Clear any existing CORS headers that might be set by proxies
+  res.removeHeader('Access-Control-Allow-Origin');
   
-  // Handle preflight requests
+  // Set permissive CORS headers
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD',
+    'Access-Control-Allow-Headers': 'Accept, Accept-Language, Content-Language, Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  });
+  
+  // Handle preflight requests immediately
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    return res.send('OK');
   }
+  
   next();
 });
 
