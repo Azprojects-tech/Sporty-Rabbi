@@ -1,0 +1,21 @@
+{
+  "name": "sporty-rabbi-backend",
+  "version": "1.0.0",
+  "description": "Sports betting analytics backend API with WebSocket real-time updates",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "build": "echo 'Backend ready'"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "node-cron": "^3.0.3",
+    "axios": "^1.6.7",
+    "dotenv": "^16.4.1",
+    "twilio": "^4.22.0",
+    "cors": "^2.8.5"
+  }
+}

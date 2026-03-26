@@ -1,0 +1,147 @@
+╔════════════════════════════════════════════════════════════════╗
+║           SPORTYRABBI - QUICK DEPLOYMENT CHECKLIST              ║
+╚════════════════════════════════════════════════════════════════╝
+
+📝 BEFORE YOU START
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+☐ You have a GitHub account
+☐ You have a Netlify account (connected to GitHub)
+☐ You have a Railway.app account (or will create during this process)
+☐ Bookmark this file - you'll need these commands!
+
+
+🔧 STEP 1: PUSH TO GITHUB (copy & paste in order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+First, create a new repo at https://github.com/new with name: sporty-rabbi
+
+Then copy & paste INTO COMMAND PROMPT:
+
+  cd C:\Users\Admin\SportyRabbi
+  
+  git init
+  
+  git add .
+  
+  git commit -m "SportyRabbi initial deployment"
+  
+  git branch -M main
+  
+  git remote add origin https://github.com/YOUR_USERNAME/sporty-rabbi.git
+  
+  git push -u origin main
+
+⏱️  Wait 1-2 minutes
+
+
+🚀 STEP 2: RAILWAY BACKEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Go to: https://railway.app
+2. Click "Start Project" → "Deploy from GitHub"
+3. Select sporty-rabbi repo
+4. Wait for auto-deploy to start
+5. Once deployed:
+   - Click "Variables" tab
+   - Add: API_FOOTBALL_KEY = e55dfa2e957bf5f4c5f30d899f7212d6
+   - Add: PORT = 3000
+   - Add: NODE_ENV = production
+   - Click "Deploy"
+6. Copy your PUBLIC DOMAIN URL (looks like: https://sporty-rabbi-backend.railway.app)
+
+⏱️  Wait 3-5 minutes
+
+
+📡 STEP 3: UPDATE FRONTEND URL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Open VS Code
+2. Edit file: frontend/.env.production
+3. Replace domain with YOUR Railway URL:
+   
+   VITE_API_BASE_URL=https://YOUR-RAILWAY-URL.railway.app/api
+   VITE_WS_URL=wss://YOUR-RAILWAY-URL.railway.app
+
+4. Save file
+
+5. In Command Prompt:
+   
+   git add .
+   git commit -m "Update production URLs"
+   git push
+
+⏱️  Wait 30 seconds
+
+
+🌐 STEP 4: NETLIFY FRONTEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Go to: https://netlify.com
+2. Click "Add new site" → "Import existing project"
+3. Choose GitHub & select sporty-rabbi
+4. Auto-fill is correct! Just click "Deploy site"
+5. Get your URL from top of dashboard
+
+⏱️  Wait 2-3 minutes
+
+
+✅ STEP 5: TEST LIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Open your Netlify URL in browser
+2. Wait for 🟢 Live indicator (top right)
+3. Wait 30 seconds for matches to load
+4. Try logging a test bet
+5. Check "My Bets" tab
+
+🎉 YOU'RE LIVE!
+
+
+📊 YOUR LIVE URLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Frontend Dashboard:  https://sporty-rabbi.netlify.app
+Backend API:        https://sporty-rabbi-backend.railway.app
+GitHub Repo:        https://github.com/YOUR_USERNAME/sporty-rabbi
+
+
+🔄 FUTURE UPDATES (much easier!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Just run once in Command Prompt:
+
+  cd C:\Users\Admin\SportyRabbi
+  git add .
+  git commit -m "Your change description"
+  git push
+
+That's it! Netlify & Railway auto-deploy in 2-3 minutes ✨
+
+
+⚠️  COMMON ISSUES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"Cannot GET /api/matches"
+→ Backend not deployed yet, wait 5 minutes
+
+"WebSocket connection refused"
+→ Update VITE_WS_URL in frontend/.env.production with correct Railway URL
+
+"Build error on Netlify"
+→ Make sure git push completed (check github.com/username/sporty-rabbi)
+
+No matches appearing
+→ Wait 30 seconds after page loads (first API poll is 30s)
+
+
+💡 REMEMBER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ All code ready
+✅ API key embedded
+✅ Credentials configured
+✅ You just need to: Create GitHub repo → Push → Click deploy buttons
+✅ NO CODE CHANGES needed (just the one URL update in Step 3)
+✅ FREE hosting forever (GitHub, Netlify, Railway free tiers)
+
+GOOD LUCK! 🚀

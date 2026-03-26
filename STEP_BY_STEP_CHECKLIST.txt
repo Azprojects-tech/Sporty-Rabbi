@@ -1,0 +1,377 @@
+╔═══════════════════════════════════════════════════════════════╗
+║   SPORTYRABBI LIVE DEPLOYMENT - STEP BY STEP WALKTHROUGH      ║
+║         Print this page and check off as you go                ║
+╚═══════════════════════════════════════════════════════════════╝
+
+
+PHASE 1: CREATE GITHUB REPOSITORY
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 2 minutes
+🎯 Goal: Create empty repo named "sporty-rabbi" on GitHub
+
+STEP 1A: Open GitHub
+─────────────────────────────────────────────────────────────────────────
+☐ Go to: https://github.com/new
+
+
+STEP 1B: Fill repository settings
+─────────────────────────────────────────────────────────────────────────
+☐ Repository name: sporty-rabbi
+☐ Description: Sports betting analytics portal
+☐ Public: YES (select "Public")
+☐ Initialize README: NO (leave unchecked)
+☐ .gitignore: None
+☐ License: None
+
+
+STEP 1C: Create the repo
+─────────────────────────────────────────────────────────────────────────
+☐ Click green "Create repository" button
+
+You'll see a page with git commands. Keep this open!
+Next step uses the commands from this page.
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+PHASE 2: PUSH YOUR CODE TO GITHUB
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 2 minutes
+🎯 Goal: Upload all your SportyRabbi code to GitHub
+
+STEP 2A: Open Command Prompt
+─────────────────────────────────────────────────────────────────────────
+☐ Press Windows key
+☐ Type: cmd
+☐ Press Enter
+   → Black window opens = Command Prompt
+
+
+STEP 2B: Navigate to your project
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste this and press Enter:
+
+   cd C:\Users\Admin\SportyRabbi
+
+
+STEP 2C: Initialize Git
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste and press Enter:
+
+   git init
+
+
+STEP 2D: Add all files
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste and press Enter:
+
+   git add .
+
+
+STEP 2E: Create initial commit
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste and press Enter:
+
+   git commit -m "SportyRabbi initial deployment"
+
+
+STEP 2F: Rename branch to main
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste and press Enter:
+
+   git branch -M main
+
+
+STEP 2G: Add GitHub remote (IMPORTANT!)
+─────────────────────────────────────────────────────────────────────────
+☐ Go back to your GitHub repository page (from Step 1C)
+☐ Look for a blue box with commands
+☐ Find the line: git remote add origin https://github.com/YOUR_USERNAME/sporty-rabbi.git
+☐ Copy that ENTIRE line
+☐ Go to Command Prompt
+☐ Right-click and paste the command
+☐ Press Enter
+
+NOTE: Replace YOUR_USERNAME with your actual GitHub username
+
+
+STEP 2H: Push code to GitHub
+─────────────────────────────────────────────────────────────────────────
+In Command Prompt, copy & paste and press Enter:
+
+   git push -u origin main
+
+Wait 1-2 minutes for upload to complete.
+You'll see: "Counting objects... Compressing... Writing objects..."
+
+☐ When it finishes, go to your GitHub repo page
+☐ Refresh the page
+☐ You should see all your files appear!
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+PHASE 3: DEPLOY BACKEND TO RAILWAY
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 5-8 minutes (mostly waiting)
+🎯 Goal: Deploy backend to https://sporty-rabbi-backend.railway.app
+
+STEP 3A: Go to Railway
+─────────────────────────────────────────────────────────────────────────
+☐ Open: https://railway.app
+☐ Click "Start Project"
+☐ Click "Deploy from GitHub"
+
+
+STEP 3B: Connect GitHub account
+─────────────────────────────────────────────────────────────────────────
+☐ Railway asks to access your GitHub
+☐ Click "Authorize GitHub App"
+☐ Select your sporty-rabbi repository
+☐ Click "Install & Authorize"
+
+
+STEP 3C: Select your repository
+─────────────────────────────────────────────────────────────────────────
+☐ Dashboard shows "Select Repository"
+☐ Find and click: sporty-rabbi
+☐ Railway auto-detects Node.js
+☐ Click "Create Project"
+
+Deployment starts automatically. You'll see logs of the build process.
+⏱️  Wait 3-5 minutes until you see "✓ Deployment successful"
+
+
+STEP 3D: Add Environment Variables
+─────────────────────────────────────────────────────────────────────────
+☐ Once deployed successfully, click on "Backend" or "Web"
+☐ Click the "Variables" tab
+☐ Click "Add Variable"
+
+
+ADD FIRST VARIABLE:
+─────────────────────────────────────────────────────────────────────────
+☐ Name: API_FOOTBALL_KEY
+☐ Value: e55dfa2e957bf5f4c5f30d899f7212d6
+☐ Click "✓" or press Enter
+☐ Click "Add Variable" again
+
+
+ADD SECOND VARIABLE:
+─────────────────────────────────────────────────────────────────────────
+☐ Name: PORT
+☐ Value: 3000
+☐ Click "✓"
+☐ Click "Add Variable" again
+
+
+ADD THIRD VARIABLE:
+─────────────────────────────────────────────────────────────────────────
+☐ Name: NODE_ENV
+☐ Value: production
+☐ Click "✓"
+
+
+STEP 3E: Trigger new deployment
+─────────────────────────────────────────────────────────────────────────
+☐ Click gray "Deploy" button
+☐ Wait for deployment to complete (shows "✓ Deployment successful")
+
+
+STEP 3F: Get your backend URL
+─────────────────────────────────────────────────────────────────────────
+☐ In Railway dashboard, look for "Public Domain" or "URL"
+☐ It looks like: https://sporty-rabbi-backend.railway.app
+☐ ⭐ COPY THIS URL - YOU NEED IT FOR NEXT PHASE ⭐
+☐ Paste it somewhere safe (Notepad, etc.)
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+PHASE 4: UPDATE FRONTEND & PUSH AGAIN
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 3 minutes
+🎯 Goal: Update frontend to point to your Railway backend
+
+STEP 4A: Open VS Code
+─────────────────────────────────────────────────────────────────────────
+☐ Click Start
+☐ Type: VS Code
+☐ Press Enter
+☐ OR double-click "Visual Studio Code" icon on desktop
+
+
+STEP 4B: Open your project
+─────────────────────────────────────────────────────────────────────────
+☐ File → Open Folder
+☐ Navigate to: C:\Users\Admin\SportyRabbi
+☐ Click "Select Folder"
+☐ Trust the workspace (click "Yes, I trust...")
+
+
+STEP 4C: Open frontend configuration
+─────────────────────────────────────────────────────────────────────────
+☐ In the file tree on left, find: frontend/.env.production
+☐ Click on it to open
+
+
+STEP 4D: Update the URLs
+─────────────────────────────────────────────────────────────────────────
+You should see:
+
+   VITE_API_BASE_URL=https://sporty-rabbi-backend.railway.app/api
+   VITE_WS_URL=wss://sporty-rabbi-backend.railway.app
+
+☐ Replace "sporty-rabbi-backend" with YOUR Railway URL (from Step 3F)
+   Example: if your URL is https://my-app-123.railway.app
+   Change to:
+   VITE_API_BASE_URL=https://my-app-123.railway.app/api
+   VITE_WS_URL=wss://my-app-123.railway.app
+
+☐ Keep the "/api" and "wss://" parts!
+☐ Save the file (Ctrl+S)
+
+
+STEP 4E: Push updated code to GitHub
+─────────────────────────────────────────────────────────────────────────
+☐ Go back to Command Prompt
+☐ Copy & paste and press Enter:
+
+   git add .
+
+☐ Copy & paste and press Enter:
+
+   git commit -m "Update production API URLs"
+
+☐ Copy & paste and press Enter:
+
+   git push
+
+Wait 30 seconds for upload.
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+PHASE 5: DEPLOY FRONTEND TO NETLIFY
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 3-5 minutes
+🎯 Goal: Deploy frontend to Netlify and connect to your backend
+
+STEP 5A: Go to Netlify
+─────────────────────────────────────────────────────────────────────────
+☐ Open: https://netlify.com
+☐ Click "Log in" (you should already have account)
+☐ Sign in with your GitHub account
+
+
+STEP 5B: Create new site from Git
+─────────────────────────────────────────────────────────────────────────
+☐ Click "Add new site"
+☐ Click "Import an existing project"
+☐ Click "GitHub"
+☐ Search for: sporty-rabbi
+☐ Click on it
+
+
+STEP 5C: Configure build settings
+─────────────────────────────────────────────────────────────────────────
+Netlify should auto-fill these:
+
+☐ Base directory: blank (or leave as-is)
+☐ Build command: npm run build --prefix frontend
+☐ Publish directory: frontend/dist
+
+If they're correct, click "Deploy site"
+
+
+STEP 5D: Wait for deployment
+─────────────────────────────────────────────────────────────────────────
+☐ Watch the build logs
+☐ Wait until you see "✓ Publish successful"
+☐ ⏱️  Takes 2-3 minutes
+
+
+STEP 5E: Get your site URL
+─────────────────────────────────────────────────────────────────────────
+☐ You'll see your Netlify domain at the top
+☐ Looks like: https://sporty-rabbi-xyz123.netlify.app
+☐ Click on it to open your live dashboard!
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+PHASE 6: VERIFY EVERYTHING IS WORKING
+═══════════════════════════════════════════════════════════════════════════
+
+⏱️  Estimated time: 2 minutes
+🎯 Goal: Confirm your live app works
+
+STEP 6A: Open your dashboard
+─────────────────────────────────────────────────────────────────────────
+☐ Click the Netlify link from Step 5E
+☐ OR go to: https://sporty-rabbi.netlify.app (if you named it sporty-rabbi)
+
+
+STEP 6B: Check connection status
+─────────────────────────────────────────────────────────────────────────
+☐ Look at top-right corner
+☐ You should see 🟢 Live (green)
+☐ If red ⚠️, wait 30 seconds and refresh
+
+
+STEP 6C: Wait for first data load
+─────────────────────────────────────────────────────────────────────────
+☐ After 30 seconds, you should see live football matches
+☐ Each match shows: Team names, Live score, Confidence %
+
+
+STEP 6D: Test logging a bet
+─────────────────────────────────────────────────────────────────────────
+☐ Click "My Bets" tab
+☐ Click "+ New Bet" button
+☐ Fill in:
+   - Match: Test
+   - Type: Home Win
+   - Odds: 2.0
+   - Stake: 100
+☐ Click "✓ Log Bet"
+☐ You should see it added to the list
+
+
+STEP 6E: Success!
+─────────────────────────────────────────────────────────────────────────
+☐ You're live!
+☐ Everything is working!
+☐ Go to Opportunities tab to see alerts
+☐ Your dashboard is now running 24/7
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+
+🎉 CONGRATULATIONS! YOU'RE LIVE!
+═══════════════════════════════════════════════════════════════════════════
+
+Your SportyRabbi is now running on:
+   📱 Frontend: https://your-netlify-url.netlify.app
+   🔧 Backend: https://your-railway-url.railway.app
+
+From now on:
+   😌 No more setup needed
+   ⚡ Just push code with: git add . && git commit -m "msg" && git push
+   🚀 Auto-deploys in 2-3 minutes
+
+
+═══════════════════════════════════════════════════════════════════════════
+Next: Read DEPLOY_TO_LIVE.md for troubleshooting if you hit any issues
+═══════════════════════════════════════════════════════════════════════════
