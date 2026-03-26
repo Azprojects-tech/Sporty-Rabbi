@@ -15,7 +15,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import cron from 'node-cron';
 import axios from 'axios';
-import { Twilio } from 'twilio';
+import twilio from 'twilio';
 
 const app = express();
 const server = http.createServer(app);
@@ -199,8 +199,8 @@ async function sendWhatsAppAlert(message) {
   }
 
   try {
-    const twilio = new Twilio(sid, token);
-    await twilio.messages.create({
+    const client = twilio(sid, token);
+    await client.messages.create({
       from,
       to,
       body: message,
