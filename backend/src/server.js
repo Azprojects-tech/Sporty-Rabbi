@@ -91,52 +91,57 @@ async function fetchLiveMatches() {
 
 // Analyze match for betting opportunities
 function analyzeMatch(match) {
-  const fixture = match.fixture || {};
-  const goals = match.goals || {};
-  const stats = match.statistics || [];
-  const teams = match.teams || {};
+  try {
+    const fixture = match.fixture || {};
+    const goals = match.goals || {};
+    const stats = match.statistics || [];
+    const teams = match.teams || {};
 
-  const homeStats = stats[0]?.statistics || [];
-  const awayStats = stats[1]?.statistics || [];
+    const homeStats = (stats && stats[0]) ? stats[0].statistics || [] : [];
+    const awayStats = (stats && stats[1]) ? stats[1].statistics || [] : [];
 
-  const getStat = (stats, key) => {
-    const s = stats.find((s) => s.type === key);
-    return s ? (typeof s.value === 'number' ? s.value : parseInt(s.value)) : 0;
-  };
+    const getStat = (stats, key) => {
+      const s = stats.find((s) => s.type === key);
+      return s ? (typeof s.value === 'number' ? s.value : parseInt(s.value)) : 0;
+    };
 
-  const possession = {
-    home: getStat(homeStats, 'Ball Possession'),
-    away: getStat(awayStats, 'Ball Possession'),
-  };
+    const possession = {
+      home: getStat(homeStats, 'Ball Possession') || 0,
+      away: getStat(awayStats, 'Ball Possession') || 0,
+    };
 
-  const shots = {
-    home: getStat(homeStats, 'Shots on Goal'),
-    away: getStat(awayStats, 'Shots on Goal'),
-  };
+    const shots = {
+      home: getStat(homeStats, 'Shots on Goal') || 0,
+      away: getStat(awayStats, 'Shots on Goal') || 0,
+    };
 
-  const xg = {
-    home: getStat(homeStats, 'expected_goals') || 0,
-    away: getStat(awayStats, 'expected_goals') || 0,
-  };
+    const xg = {
+      home: getStat(homeStats, 'expected_goals') || 0,
+      away: getStat(awayStats, 'expected_goals') || 0,
+    };
 
-  // Simple confidence scoring
-  let confidence = 50; // baseline
-  if (possession.home > 60) confidence += 10;
-  if (shots.home > shots.away) confidence += 15;
-  if (xg.home > xg.away + 0.5) confidence += 10;
+    // Simple confidence scoring
+    let confidence = 50; // baseline
+    if (possession.home > 60) confidence += 10;
+    if (shots.home > shots.away) confidence += 15;
+    if (xg.home > xg.away + 0.5) confidence += 10;
 
-  return {
-    id: fixture.id,
-    home: teams.home?.name,
-    away: teams.away?.name,
-    score: `${goals.home || 0}-${goals.away || 0}`,
-    possession,
-    shots,
-    xg,
-    status: fixture.status,
-    confidence: Math.min(confidence, 95),
-    opportunities: confidence > 65 ? ['Strong signal detected'] : [],
-  };
+    return {
+      id: fixture.id || Math.random(),
+      home: teams.home?.name || 'Unknown',
+      away: teams.away?.name || 'Unknown',
+      score: `${goals.home || 0}-${goals.away || 0}`,
+      possession,
+      shots,
+      xg,
+      status: fixture.status || 'Unknown',
+      confidence: Math.min(confidence, 95),
+      opportunities: confidence > 65 ? ['Strong signal detected'] : [],
+    };
+  } catch (error) {
+    console.error('❌ Error analyzing match:', error.message);
+    return null; // Skip this match
+  }
 }
 
 // ─── LIVE POLLER (runs every 30 seconds) ─────────────────────────────────
@@ -144,22 +149,39 @@ function analyzeMatch(match) {
 let isPolling = false;
 
 async function pollLiveMatches() {
-  if (isPolling) return; // Skip if already running
-  isPolling = true;
-
-  const matches = await fetchLiveMatches();
-  
-  if (matches.length > 0) {
-    liveMatches = matches.map(analyzeMatch);
-    broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
-    console.log(`✓ Updated ${liveMatches.length} live matches`);
+  if (isPolling) {
+    console.log('⏳ Polling already in progress, skipping...');
+    return; // Skip if already running
   }
   
-  isPolling = false;
+  isPolling = true;
+
+  try {
+    const matches = await fetchLiveMatches();
+    
+    if (matches && matches.length > 0) {
+      liveMatches = matches.map(analyzeMatch).filter(m => m !== null);
+      broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+      console.log(`✓ Updated ${liveMatches.length} live matches`);
+    } else {
+      console.log('ℹ️  No live matches right now');
+    }
+  } catch (error) {
+    console.error('❌ Poll error:', error.message);
+    // Continue - don't crash
+  } finally {
+    isPolling = false;
+  }
 }
 
-// Start polling (every 30 seconds)
-cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, pollLiveMatches);
+// Start polling (every 30 seconds) with error handling
+cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () => {
+  try {
+    await pollLiveMatches();
+  } catch (error) {
+    console.error('❌ Polling error (continuing):', error.message);
+  }
+});
 
 console.log(`⏰ Live polling started (every ${process.env.LIVE_POLL_INTERVAL || 30}s)`);
 
@@ -242,6 +264,18 @@ app.get('/api/stats', (req, res) => {
 });
 
 // ─── START SERVER ──────────────────────────────────────────────────────────
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
+  // Don't exit - keep server alive
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error.message);
+  // Don't exit - keep server alive
+});
 
 server.listen(PORT, () => {
   console.log('\n╔════════════════════════════════════════╗');
