@@ -78,7 +78,7 @@ export default function App() {
             <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500">
               🐰 SportyRabbi
             </h1>
-            <p className="text-gray-400 mt-2">Smart Football Betting Analytics</p>
+            <p className="text-gray-400 mt-2">Live Football Analytics with AI Betting Insights 🚀</p>
           </div>
           <div className="text-right">
             <div className={`text-sm font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>
