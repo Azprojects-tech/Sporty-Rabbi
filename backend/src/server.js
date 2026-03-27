@@ -144,14 +144,39 @@ async function fetchLiveMatches() {
 
   try {
     console.log('🔄 Fetching LIVE matches from API-Football...');
+    
+    // First try to get LIVE matches
     const response = await axios.get(`${API_BASE}/fixtures`, {
-      params: { status: 'LIVE' },
+      params: { 
+        status: 'LIVE',
+        timezone: 'UTC'
+      },
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
     });
 
-    const fixtures = response.data.response || [];
-    console.log(`  ✅ Got ${fixtures.length} LIVE fixtures from API`);
+    let fixtures = response.data.response || [];
+    console.log(`  ℹ️  Got ${fixtures.length} LIVE fixtures`);
+    
+    // If no LIVE matches, get FT (finished) matches from today
+    if (fixtures.length === 0) {
+      console.log('  📊 No LIVE matches, checking recent FINISHED (FT) matches...');
+      const ftResponse = await axios.get(`${API_BASE}/fixtures`, {
+        params: { 
+          status: 'FT',
+          timezone: 'UTC'
+        },
+        headers: { 'x-apisports-key': API_KEY },
+        timeout: 5000,
+      });
+      
+      const ftFixtures = ftResponse.data.response || [];
+      console.log(`  📋 Got ${ftFixtures.length} finished matches - showing recent ones`);
+      
+      // Return first 5 finished matches (most recent)
+      fixtures = ftFixtures.slice(0, 5);
+    }
+    
     return fixtures;
   } catch (error) {
     console.error('❌ API error fetching live:', error.message);
@@ -172,14 +197,14 @@ async function fetchUpcomingMatches() {
     const fromDate = now.toISOString().split('T')[0];
     const toDate = tomorrow.toISOString().split('T')[0];
     
-    console.log(`📅 Fetching upcoming matches from ${fromDate} to ${toDate}...`);
+    console.log(`📅 Fetching upcoming matches (NS) from ${fromDate} to ${toDate}...`);
     
     const response = await axios.get(`${API_BASE}/fixtures`, {
       params: {
         status: 'NS', // Not Started
         from: fromDate,
         to: toDate,
-        league: '39,2,140,78', // EPL, Championship, La Liga, Serie A
+        timezone: 'UTC'
       },
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
