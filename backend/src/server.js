@@ -152,6 +152,11 @@ function analyzeMatch(match) {
     if (shots.home > shots.away) confidence += 15;
     if (xg.home > xg.away + 0.5) confidence += 10;
 
+    // Calculate match elapsed time (approximate from fixture)
+    const now = new Date();
+    const kickoffTime = fixture.date ? new Date(fixture.date) : now;
+    const matchMinutesElapsed = Math.max(0, Math.floor((now - kickoffTime) / 60000));
+
     return {
       id: fixture.id || Math.random(),
       home: teams.home?.name || 'Unknown',
@@ -161,6 +166,7 @@ function analyzeMatch(match) {
       shots,
       xg,
       status: fixture.status || 'Unknown',
+      matchMinutes: matchMinutesElapsed || 1, // For analytics calculations
       confidence: Math.min(confidence, 95),
       opportunities: confidence > 65 ? ['Strong signal detected'] : [],
     };
@@ -340,10 +346,11 @@ app.get('/api/fixture-preview/:fixtureId/:homeTeamId/:awayTeamId', async (req, r
 app.get('/api/live-analysis/:matchId', (req, res) => {
   try {
     const { matchId } = req.params;
-    const match = liveMatches.find((m) => m.id === parseInt(matchId));
+    // Handle both string and numeric IDs
+    const match = liveMatches.find((m) => m.id == matchId || m.id === parseInt(matchId));
 
     if (!match) {
-      return res.status(404).json({ error: 'Match not found' });
+      return res.status(404).json({ error: 'Match not found in live matches' });
     }
 
     const nextGoalProb = calculateNextGoalProbability(match);
