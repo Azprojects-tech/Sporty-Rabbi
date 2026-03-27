@@ -124,19 +124,29 @@ async function fetchUpcomingMatches() {
 
   try {
     const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000); // Next 24 hours
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    
+    // Format dates as YYYY-MM-DD
+    const fromDate = now.toISOString().split('T')[0];
+    const toDate = tomorrow.toISOString().split('T')[0];
+    
+    console.log(`📅 Fetching upcoming matches from ${fromDate} to ${toDate}...`);
     
     const response = await axios.get(`${API_BASE}/fixtures`, {
       params: {
         status: 'NS', // Not Started
-        from: now.toISOString().split('T')[0],
-        to: tomorrow.toISOString().split('T')[0],
+        from: fromDate,
+        to: toDate,
+        league: '39,2,140,78', // EPL, Championship, La Liga, Serie A
       },
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
     });
 
-    return response.data.response || [];
+    const fixtures = response.data.response || [];
+    console.log(`📊 API returned ${fixtures.length} upcoming fixtures`);
+    
+    return fixtures;
   } catch (error) {
     console.error('❌ Upcoming matches error:', error.message);
     return [];
@@ -237,14 +247,21 @@ async function pollLiveMatches() {
 // Poll for upcoming matches (next 24 hours)
 async function pollUpcomingMatches() {
   try {
+    console.log('🔄 Polling upcoming matches...');
     const matches = await fetchUpcomingMatches();
+    
+    console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
     
     if (matches && matches.length > 0) {
       upcomingMatches = matches.map(analyzeMatch).filter(m => m !== null);
+      console.log(`✅ Analyzed ${upcomingMatches.length} upcoming matches`);
+      
       broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
-      console.log(`✓ Updated ${upcomingMatches.length} upcoming matches`);
+      console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
     } else {
       console.log('ℹ️  No upcoming matches in next 24 hours');
+      upcomingMatches = [];
+      broadcast({ type: 'UPCOMING_MATCHES', payload: [] });
     }
   } catch (error) {
     console.error('❌ Upcoming matches poll error:', error.message);
