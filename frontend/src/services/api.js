@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// Use relative paths - Netlify will proxy to Railway backend
-const API_BASE = '/api';
+// Use environment variable for local dev vs production deployment
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
 
 const client = axios.create({
   baseURL: API_BASE,
