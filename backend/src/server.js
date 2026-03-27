@@ -65,13 +65,24 @@ let bets = [];
 const clients = new Set();
 
 wss.on('connection', (ws) => {
-  clients.add(ws);
-  console.log(`✓ Portal connected (${clients.size} users)`);
-  
-  // Send initial state
-  ws.send(JSON.stringify({ type: 'CONNECTED', message: '🐰 SportyRabbi live feed active' }));
-  ws.send(JSON.stringify({ type: 'LIVE_MATCHES', payload: liveMatches }));
-  ws.send(JSON.stringify({ type: 'UPCOMING_MATCHES', payload: upcomingMatches }));
+  try {
+    clients.add(ws);
+    console.log(`✓ Portal connected (${clients.size} users)`);
+    
+    // Send initial state
+    const connectedMsg = JSON.stringify({ type: 'CONNECTED', message: '🐰 SportyRabbi live feed active' });
+    const liveMsg = JSON.stringify({ type: 'LIVE_MATCHES', payload: liveMatches || [] });
+    const upcomingMsg = JSON.stringify({ type: 'UPCOMING_MATCHES', payload: upcomingMatches || [] });
+    
+    if (ws.readyState === ws.OPEN) {
+      ws.send(connectedMsg);
+      ws.send(liveMsg);
+      ws.send(upcomingMsg);
+      console.log(`  ✅ Sent ${liveMatches.length} live + ${upcomingMatches.length} upcoming matches`);
+    }
+  } catch (err) {
+    console.error('❌ Connection error:', err.message);
+  }
 
   ws.on('close', () => {
     clients.delete(ws);
@@ -80,22 +91,50 @@ wss.on('connection', (ws) => {
 
   ws.on('error', (err) => {
     console.error('WS Error:', err.message);
+    clients.delete(ws);
   });
 });
 
 // Broadcast to all connected clients
 function broadcast(message) {
-  clients.forEach((ws) => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(message));
+  try {
+    const jsonStr = JSON.stringify(message);
+    let sent = 0;
+    let failed = 0;
+    
+    clients.forEach((ws) => {
+      try {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(jsonStr);
+          sent++;
+        }
+      } catch (err) {
+        failed++;
+        console.error('  ⚠️  Failed to send to client:', err.message);
+      }
+    });
+    
+    if (failed > 0) {
+      console.log(`  📤 Broadcast: ${sent} sent, ${failed} failed`);
     }
-  });
+  } catch (err) {
+    console.error('❌ Broadcast error:', err.message);
+  }
 }
 
 // ─── API-FOOTBALL INTEGRATION ──────────────────────────────────────────────
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
+
+console.log(`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🐰 SportyRabbi Backend Starting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  📌 API Key:  ${API_KEY ? '✅ SET' : '❌ NOT SET'}
+  🌐 API Base: ${API_BASE}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`);
 
 async function fetchLiveMatches() {
   if (!API_KEY) {
@@ -104,15 +143,18 @@ async function fetchLiveMatches() {
   }
 
   try {
+    console.log('🔄 Fetching LIVE matches from API-Football...');
     const response = await axios.get(`${API_BASE}/fixtures`, {
       params: { status: 'LIVE' },
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
     });
 
-    return response.data.response || [];
+    const fixtures = response.data.response || [];
+    console.log(`  ✅ Got ${fixtures.length} LIVE fixtures from API`);
+    return fixtures;
   } catch (error) {
-    console.error('❌ API error:', error.message);
+    console.error('❌ API error fetching live:', error.message);
     return [];
   }
 }
