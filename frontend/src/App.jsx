@@ -8,6 +8,7 @@ import LiveAnalysisPanel from './components/LiveAnalysisPanel';
 
 export default function App() {
   const [matches, setMatches] = useState([]);
+  const [upcomingMatches, setUpcomingMatches] = useState([]);
   const [bets, setBets] = useState([]);
   const [stats, setStats] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -29,6 +30,11 @@ export default function App() {
     // Listen for live match updates
     on('LIVE_MATCHES', (payload) => {
       setMatches(payload || []);
+    });
+
+    // Listen for upcoming matches
+    on('UPCOMING_MATCHES', (payload) => {
+      setUpcomingMatches(payload || []);
     });
 
     // Listen for alerts
@@ -109,6 +115,28 @@ export default function App() {
           <div className={selectedLiveMatch ? 'order-2 lg:order-1' : 'lg:col-span-2'}>
             {activeTab === 'live' && (
               <div>
+                {/* Upcoming Matches Section */}
+                {upcomingMatches.length > 0 && (
+                  <div className="mb-8">
+                    <h2 className="text-2xl font-bold mb-4">⏰ Upcoming Matches (Next 24h)</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {upcomingMatches.map((match) => (
+                        <div
+                          key={match.id}
+                          onClick={() => setSelectedMatch(match)}
+                          className="cursor-pointer"
+                        >
+                          <MatchCard
+                            match={match}
+                            onSelectMatch={() => setSelectedMatch(match)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Matches Section */}
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-2xl font-bold">🔴 Live Matches</h2>
                   {selectedLiveMatch && (

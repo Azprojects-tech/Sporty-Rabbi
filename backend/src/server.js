@@ -56,6 +56,7 @@ app.use(express.json());
 // ─── IN-MEMORY DATA STORE ────────────────────────────────────────────────────
 // No database needed for MVP - data stored in memory
 let liveMatches = [];
+let upcomingMatches = [];
 let alerts = [];
 let bets = [];
 
@@ -70,6 +71,7 @@ wss.on('connection', (ws) => {
   // Send initial state
   ws.send(JSON.stringify({ type: 'CONNECTED', message: '🐰 SportyRabbi live feed active' }));
   ws.send(JSON.stringify({ type: 'LIVE_MATCHES', payload: liveMatches }));
+  ws.send(JSON.stringify({ type: 'UPCOMING_MATCHES', payload: upcomingMatches }));
 
   ws.on('close', () => {
     clients.delete(ws);
@@ -111,6 +113,32 @@ async function fetchLiveMatches() {
     return response.data.response || [];
   } catch (error) {
     console.error('❌ API error:', error.message);
+    return [];
+  }
+}
+
+async function fetchUpcomingMatches() {
+  if (!API_KEY) {
+    return [];
+  }
+
+  try {
+    const now = new Date();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000); // Next 24 hours
+    
+    const response = await axios.get(`${API_BASE}/fixtures`, {
+      params: {
+        status: 'NS', // Not Started
+        from: now.toISOString().split('T')[0],
+        to: tomorrow.toISOString().split('T')[0],
+      },
+      headers: { 'x-apisports-key': API_KEY },
+      timeout: 5000,
+    });
+
+    return response.data.response || [];
+  } catch (error) {
+    console.error('❌ Upcoming matches error:', error.message);
     return [];
   }
 }
@@ -206,10 +234,28 @@ async function pollLiveMatches() {
   }
 }
 
+// Poll for upcoming matches (next 24 hours)
+async function pollUpcomingMatches() {
+  try {
+    const matches = await fetchUpcomingMatches();
+    
+    if (matches && matches.length > 0) {
+      upcomingMatches = matches.map(analyzeMatch).filter(m => m !== null);
+      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+      console.log(`✓ Updated ${upcomingMatches.length} upcoming matches`);
+    } else {
+      console.log('ℹ️  No upcoming matches in next 24 hours');
+    }
+  } catch (error) {
+    console.error('❌ Upcoming matches poll error:', error.message);
+  }
+}
+
 // Start polling (every 30 seconds) with error handling
 cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () => {
   try {
     await pollLiveMatches();
+    await pollUpcomingMatches();
   } catch (error) {
     console.error('❌ Polling error (continuing):', error.message);
   }
@@ -251,6 +297,10 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/live', (req, res) => {
   res.json({ count: liveMatches.length, matches: liveMatches });
+});
+
+app.get('/api/upcoming', (req, res) => {
+  res.json({ count: upcomingMatches.length, matches: upcomingMatches });
 });
 
 app.get('/api/alerts', (req, res) => {
