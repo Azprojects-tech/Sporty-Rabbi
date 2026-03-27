@@ -1,0 +1,5 @@
+# Proxy API calls to Railway backend
+/api/*  https://web-production-cccff.up.railway.app/api/:splat  200
+
+# SPA fallback
+/*    /index.html   200

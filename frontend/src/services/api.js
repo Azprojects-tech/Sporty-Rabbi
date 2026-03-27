@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
+// Use relative paths - Netlify will proxy to Railway backend
+const API_BASE = '/api';
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -54,7 +55,10 @@ let reconnectAttempts = 0;
 const MAX_RETRIES = 5;
 
 export function connectWebSocket(onReady) {
-  const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:3000';
+  // Use direct Railway URL for WebSocket (can't be proxied through Netlify)
+  // Convert https:// to wss:// automatically
+  const wsUrl = import.meta.env.VITE_WS_URL || 
+    'wss://web-production-cccff.up.railway.app';
 
   return new Promise((resolve, reject) => {
     ws = new WebSocket(wsUrl);
