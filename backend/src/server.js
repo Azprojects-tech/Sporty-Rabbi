@@ -16,6 +16,12 @@ import cron from 'node-cron';
 import axios from 'axios';
 import twilio from 'twilio';
 import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
+import {
+  calculateNextGoalProbability,
+  calculateMomentum,
+  calculateBetValue,
+  generateBettingAlert,
+} from './services/liveAnalyticsService.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -326,6 +332,53 @@ app.get('/api/fixture-preview/:fixtureId/:homeTeamId/:awayTeamId', async (req, r
   } catch (error) {
     console.error('Error fetching fixture preview:', error.message);
     res.status(500).json({ error: 'Could not fetch fixture preview' });
+  }
+});
+
+// ─── LIVE ANALYTICS ENDPOINTS ───────────────────────────────────────────────
+
+app.get('/api/live-analysis/:matchId', (req, res) => {
+  try {
+    const { matchId } = req.params;
+    const match = liveMatches.find((m) => m.id === parseInt(matchId));
+
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found' });
+    }
+
+    const nextGoalProb = calculateNextGoalProbability(match);
+    const momentum = calculateMomentum(match);
+    const alerts = generateBettingAlert(match, nextGoalProb, momentum);
+
+    res.json({
+      matchId,
+      home: match.home,
+      away: match.away,
+      nextGoal: nextGoalProb.nextGoal || null,
+      goalPace: nextGoalProb.goalPace || null,
+      momentum,
+      alerts,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Error calculating live analysis:', error.message);
+    res.status(500).json({ error: 'Could not calculate live analysis' });
+  }
+});
+
+app.post('/api/bet-value', (req, res) => {
+  try {
+    const { probability, odds } = req.body;
+
+    if (!probability || !odds) {
+      return res.status(400).json({ error: 'Missing probability or odds' });
+    }
+
+    const valueAnalysis = calculateBetValue(probability, odds);
+    res.json(valueAnalysis);
+  } catch (error) {
+    console.error('Error calculating bet value:', error.message);
+    res.status(500).json({ error: 'Could not calculate bet value' });
   }
 });
 

@@ -4,6 +4,7 @@ import { connectWebSocket, on, apiService } from './services/api';
 import { MatchCard, ConfidenceScore, Alert } from './components/MatchComponents';
 import { BetLogger, BetStats } from './components/BetComponents';
 import AnalyticsModal from './components/AnalyticsModal';
+import LiveAnalysisPanel from './components/LiveAnalysisPanel';
 
 export default function App() {
   const [matches, setMatches] = useState([]);
@@ -13,6 +14,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('live');
   const [selectedMatch, setSelectedMatch] = useState(null);
+  const [selectedLiveMatch, setSelectedLiveMatch] = useState(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -102,12 +104,22 @@ export default function App() {
         </div>
 
         {/* Main Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className={selectedLiveMatch ? 'grid grid-cols-1 gap-6' : 'grid grid-cols-1 lg:grid-cols-3 gap-6'}>
           {/* Left Column - Matches/Content */}
-          <div className="lg:col-span-2">
+          <div className={selectedLiveMatch ? 'order-2 lg:order-1' : 'lg:col-span-2'}>
             {activeTab === 'live' && (
               <div>
-                <h2 className="text-2xl font-bold mb-4">🔴 Live Matches</h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-2xl font-bold">🔴 Live Matches</h2>
+                  {selectedLiveMatch && (
+                    <button
+                      onClick={() => setSelectedLiveMatch(null)}
+                      className="lg:hidden bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm transition"
+                    >
+                      ← Back
+                    </button>
+                  )}
+                </div>
                 {!connected && (
                   <div className="card bg-yellow-900 border-yellow-600 mb-4">
                     <p className="text-yellow-200">⚠️ Connecting to live feed...</p>
@@ -117,15 +129,27 @@ export default function App() {
                   <div className="card">
                     <p className="text-gray-400">No live matches right now</p>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                ) : !selectedLiveMatch ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {matches.map((match) => (
-                      <MatchCard
+                      <div
                         key={match.id}
-                        match={match}
-                        onSelectMatch={() => setSelectedMatch(match)}
-                      />
+                        onClick={() => setSelectedLiveMatch(match)}
+                        className="cursor-pointer"
+                      >
+                        <MatchCard
+                          match={match}
+                          onSelectMatch={() => setSelectedMatch(match)}
+                        />
+                      </div>
                     ))}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <MatchCard
+                      match={selectedLiveMatch}
+                      onSelectMatch={() => setSelectedMatch(selectedLiveMatch)}
+                    />
                   </div>
                 )}
               </div>
@@ -160,12 +184,20 @@ export default function App() {
           </div>
 
           {/* Right Column - Sidebar */}
-          <div className="space-y-6">
+          <div className={`space-y-6 ${selectedLiveMatch ? 'order-1 lg:order-2' : ''}`}>
+            {/* Live Analysis Panel */}
+            {selectedLiveMatch && (
+              <div>
+                <h3 className="text-xl font-bold mb-4">📊 {selectedLiveMatch.home} vs {selectedLiveMatch.away}</h3>
+                <LiveAnalysisPanel match={selectedLiveMatch} />
+              </div>
+            )}
+
             {/* Bet Logger */}
-            <BetLogger />
+            {!selectedLiveMatch && <BetLogger />}
 
             {/* Quick Stats */}
-            {stats && (
+            {stats && !selectedLiveMatch && (
               <div className="card">
                 <h3 className="font-bold mb-4">📊 Your Stats</h3>
                 <div className="space-y-3 text-sm">
@@ -190,12 +222,14 @@ export default function App() {
             )}
 
             {/* Connection Status */}
-            <div className={`card border-2 ${connected ? 'border-green-600 bg-green-900' : 'border-red-600 bg-red-900'}`}>
-              <p className="font-bold mb-2">{connected ? '✓ System Status' : '⚠️ Connection Lost'}</p>
-              <p className="text-sm text-gray-300">
-                {connected ? 'Portal and backend are synced. Live data flowing.' : 'Attempting to reconnect...'}
-              </p>
-            </div>
+            {!selectedLiveMatch && (
+              <div className={`card border-2 ${connected ? 'border-green-600 bg-green-900' : 'border-red-600 bg-red-900'}`}>
+                <p className="font-bold mb-2">{connected ? '✓ System Status' : '⚠️ Connection Lost'}</p>
+                <p className="text-sm text-gray-300">
+                  {connected ? 'Portal and backend are synced. Live data flowing.' : 'Attempting to reconnect...'}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </main>

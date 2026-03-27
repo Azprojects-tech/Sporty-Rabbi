@@ -3,9 +3,9 @@ import { AlertCircle } from 'lucide-react';
 
 export function MatchCard({ match, onSelectMatch }) {
   return (
-    <div className="card-hover cursor-pointer">
-      <div className="flex justify-between items-start mb-4">
-        <span className="text-xs font-bold text-green-400 bg-green-900 px-2 py-1 rounded">
+    <div className="card-hover cursor-pointer group">
+      <div className="flex justify-between items-start mb-4 gap-2">
+        <span className="text-xs sm:text-sm font-bold text-green-400 bg-green-900 px-2 py-1 rounded">
           {match.status || 'LIVE'}
         </span>
         <button
@@ -13,42 +13,42 @@ export function MatchCard({ match, onSelectMatch }) {
             e.stopPropagation();
             onSelectMatch(match);
           }}
-          className="text-xs font-bold text-purple-400 bg-purple-900/40 hover:bg-purple-900 border border-purple-500 px-3 py-1 rounded transition"
+          className="text-xs sm:text-sm font-bold text-purple-400 bg-purple-900/40 hover:bg-purple-900 border border-purple-500 px-2 sm:px-3 py-1.5 rounded transition min-h-[36px] flex items-center"
         >
           📊 Stats
         </button>
       </div>
 
-      {/* Score */}
+      {/* Score - Larger on mobile */}
       <div className="text-center mb-4">
         <div className="flex justify-between items-center">
           <div className="flex-1">
-            <p className="font-bold text-lg">{match.home}</p>
-            <p className="text-2xl font-bold text-green-400">{match.score?.split('-')[0] || 0}</p>
+            <p className="font-bold text-sm sm:text-base">{match.home}</p>
+            <p className="text-3xl sm:text-4xl font-bold text-green-400">{match.score?.split('-')[0] || 0}</p>
           </div>
-          <div className="mx-4 text-gray-500">vs</div>
+          <div className="mx-2 sm:mx-4 text-gray-500 font-bold">vs</div>
           <div className="flex-1 text-right">
-            <p className="font-bold text-lg">{match.away}</p>
-            <p className="text-2xl font-bold text-green-400">{match.score?.split('-')[1] || 0}</p>
+            <p className="font-bold text-sm sm:text-base">{match.away}</p>
+            <p className="text-3xl sm:text-4xl font-bold text-green-400">{match.score?.split('-')[1] || 0}</p>
           </div>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-3 text-xs mb-4 border-t border-gray-700 pt-4">
-        <div>
-          <p className="text-gray-400">Possession</p>
-          <p className="font-bold">{match.possession?.home || 0}%</p>
+      {/* Stats - Better mobile spacing */}
+      <div className="grid grid-cols-3 gap-2 text-xs mb-4 border-t border-gray-700 pt-4">
+        <div className="bg-gray-900/50 rounded p-2">
+          <p className="text-gray-400 text-xs">Possession</p>
+          <p className="font-bold text-sm">{match.possession?.home || 0}%</p>
         </div>
-        <div>
-          <p className="text-gray-400">Shots</p>
-          <p className="font-bold">
+        <div className="bg-gray-900/50 rounded p-2">
+          <p className="text-gray-400 text-xs">Shots</p>
+          <p className="font-bold text-sm">
             {match.shots?.home || 0} vs {match.shots?.away || 0}
           </p>
         </div>
-        <div>
-          <p className="text-gray-400">xG</p>
-          <p className="font-bold">
+        <div className="bg-gray-900/50 rounded p-2">
+          <p className="text-gray-400 text-xs">xG</p>
+          <p className="font-bold text-sm">
             {(match.xg?.home || 0).toFixed(1)} vs {(match.xg?.away || 0).toFixed(1)}
           </p>
         </div>

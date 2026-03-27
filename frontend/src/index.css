@@ -10,9 +10,25 @@ body {
   @apply bg-gray-900 text-gray-100 font-sans;
 }
 
+/* Mobile optimizations */
+@media (max-width: 640px) {
+  body {
+    @apply text-base;
+  }
+
+  button {
+    @apply min-h-[44px]; /* Minimum touch target */
+  }
+
+  input,
+  select {
+    @apply min-h-[44px];
+  }
+}
+
 @layer components {
   .btn {
-    @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200;
+    @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 min-h-[44px] flex items-center justify-center;
   }
 
   .btn-primary {
@@ -24,14 +40,41 @@ body {
   }
 
   .btn-sm {
-    @apply px-3 py-1 text-sm;
+    @apply px-3 py-1 text-sm min-h-[36px];
   }
 
   .card {
-    @apply bg-gray-800 rounded-lg border border-gray-700 p-6 shadow-lg;
+    @apply bg-gray-800 rounded-lg border border-gray-700 p-4 sm:p-6 shadow-lg;
   }
 
   .card-hover {
     @apply card hover:border-green-600 transition-colors duration-200;
+  }
+
+  /* Mobile-friendly form inputs */
+  input[type="number"],
+  input[type="text"],
+  input[type="email"],
+  select {
+    @apply min-h-[44px] text-base; /* Prevent zoom on iOS */
+  }
+
+  /* Better spacing for mobile */
+  @media (max-width: 640px) {
+    .card {
+      @apply p-4;
+    }
+
+    h1 {
+      @apply text-2xl;
+    }
+
+    h2 {
+      @apply text-xl;
+    }
+
+    h3 {
+      @apply text-lg;
+    }
   }
 }
