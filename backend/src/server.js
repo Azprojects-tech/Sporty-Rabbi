@@ -158,28 +158,34 @@ async function fetchLiveMatches() {
     let fixtures = response.data.response || [];
     console.log(`  ℹ️  Got ${fixtures.length} LIVE fixtures`);
     
-    // If no LIVE matches, get FT (finished) matches from today
+    // If no LIVE matches, try getting ANY recent matches (all statuses)
     if (fixtures.length === 0) {
-      console.log('  📊 No LIVE matches, checking recent FINISHED (FT) matches...');
-      const ftResponse = await axios.get(`${API_BASE}/fixtures`, {
-        params: { 
-          status: 'FT',
-          timezone: 'UTC'
-        },
-        headers: { 'x-apisports-key': API_KEY },
-        timeout: 5000,
-      });
-      
-      const ftFixtures = ftResponse.data.response || [];
-      console.log(`  📋 Got ${ftFixtures.length} finished matches - showing recent ones`);
-      
-      // Return first 5 finished matches (most recent)
-      fixtures = ftFixtures.slice(0, 5);
+      console.log('  📊 No LIVE or FT matches, trying to fetch any recent fixtures...');
+      try {
+        const allResponse = await axios.get(`${API_BASE}/fixtures`, {
+          params: { 
+            timezone: 'UTC',
+            last: 5  // Get last 5 fixtures
+          },
+          headers: { 'x-apisports-key': API_KEY },
+          timeout: 5000,
+        });
+        
+        const allFixtures = allResponse.data.response || [];
+        console.log(`  📋 Got ${allFixtures.length} recent fixtures`);
+        fixtures = allFixtures;
+      } catch (innerErr) {
+        console.error('  ❌ Failed to fetch recent fixtures:', innerErr.message);
+      }
     }
     
     return fixtures;
   } catch (error) {
-    console.error('❌ API error fetching live:', error.message);
+    console.error('❌ API error fetching live:', error.response?.status || error.message);
+    // Check if rate limited
+    if (error.response?.status === 429) {
+      console.error('⚠️  API RATE LIMIT EXCEEDED (100 calls/day on free tier)');
+    }
     return [];
   }
 }
