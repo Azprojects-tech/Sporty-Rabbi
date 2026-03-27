@@ -3,14 +3,20 @@ import { AlertCircle } from 'lucide-react';
 
 export function MatchCard({ match, onSelectMatch }) {
   return (
-    <div
-      onClick={() => onSelectMatch(match)}
-      className="card-hover cursor-pointer"
-    >
+    <div className="card-hover cursor-pointer">
       <div className="flex justify-between items-start mb-4">
         <span className="text-xs font-bold text-green-400 bg-green-900 px-2 py-1 rounded">
           {match.status || 'LIVE'}
         </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelectMatch(match);
+          }}
+          className="text-xs font-bold text-purple-400 bg-purple-900/40 hover:bg-purple-900 border border-purple-500 px-3 py-1 rounded transition"
+        >
+          📊 Stats
+        </button>
       </div>
 
       {/* Score */}

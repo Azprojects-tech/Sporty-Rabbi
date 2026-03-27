@@ -1,151 +1,237 @@
-import { getOne, query, getAll } from '../config/database.js';
-
 /**
- * Calculate pre-match analysis confidence score
- * Factors: team form, head-to-head, odds movement, xG, injury news
+ * Team & H2H Analytics Service
+ * Fetches historical data for informed betting decisions
  */
-export async function analyzePreMatch(matchId) {
-  const match = await getOne('SELECT * FROM matches WHERE id = $1', [matchId]);
-  const odds = await getOne('SELECT * FROM odds WHERE match_id = $1 ORDER BY updated_at DESC LIMIT 1', [matchId]);
 
-  if (!match || !odds) return null;
+import axios from 'axios';
 
-  // Simplified scoring (you'd expand this with team form history, H2H, etc.)
-  const factors = {
-    home_possession_factor: Math.min(match.home_possession / 50, 1.5), // >50% is advantage
-    shots_on_target_factor: Math.min(match.home_shots_on_target / match.away_shots_on_target || 1, 1.5),
-    xg_factor: match.home_xg > match.away_xg ? 1.2 : 0.8,
-    odds_factor: odds.home_win > 2.0 ? 1.1 : 0.9, // Value at higher odds
-  };
+const API_BASE = 'https://v3.football.api-sports.io';
+const API_KEY = process.env.API_FOOTBALL_KEY;
 
-  const confidence = (
-    (factors.home_possession_factor + factors.shots_on_target_factor + factors.xg_factor + factors.odds_factor) / 4
-  ) * 100;
+const axiosInstance = axios.create({
+  baseURL: API_BASE,
+  headers: { 'x-apisports-key': API_KEY },
+  timeout: 8000,
+});
 
-  return {
-    match_id: matchId,
-    type: 'pre_match',
-    confidence_score: Math.min(confidence, 95),
-    analysis: {
-      home_advantage: match.home_possession > 50,
-      home_shots_quality: match.home_shots_on_target / (match.home_shots || 1),
-      home_xg: match.home_xg,
-      away_xg: match.away_xg,
-      odds_value: odds.home_win,
-    },
-    recommendation: confidence > 65 ? 'strong_signal' : 'weak_signal',
-  };
+// Cache to avoid excessive API calls
+const statsCache = new Map();
+const CACHE_TTL = 3600000; // 1 hour
+
+function cacheKey(type, ...args) {
+  return `${type}:${args.join(':')}`;
+}
+
+function getCache(key) {
+  const cached = statsCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  return null;
+}
+
+function setCache(key, data) {
+  statsCache.set(key, { data, timestamp: Date.now() });
 }
 
 /**
- * Detect in-play betting opportunities
- * Triggers: momentum shift, own goal, red card, goal drought, etc.
+ * Get team's last 10 matches and calculate form stats
  */
-export async function detectInPlayOpportunities(matchId) {
-  const match = await getOne('SELECT * FROM matches WHERE id = $1', [matchId]);
+export async function getTeamForm(teamId, league = null) {
+  try {
+    const key = cacheKey('form', teamId, league);
+    const cached = getCache(key);
+    if (cached) return cached;
 
-  if (!match || match.status !== 'LIVE') return [];
+    const params = { team: teamId, last: 10 };
+    if (league) params.league = league;
 
-  const opportunities = [];
+    const response = await axiosInstance.get('/fixtures', { params });
+    const matches = response.data.response || [];
 
-  // Opportunity 1: Possession dominance with low shots
-  if (match.home_possession > 65 && match.home_shots_on_target < 2) {
-    opportunities.push({
-      type: 'low_conversion',
-      title: 'Home team pressing but inefficient',
-      description: `Home team has ${match.home_possession}% possession but only ${match.home_shots_on_target} shots on target. Odds may offer value on away team defense.`,
-      confidence: 72,
-      recommended_bet: 'Back away team to score',
-      trigger_value: match.home_possession - match.home_shots_on_target,
+    if (matches.length === 0) {
+      return {
+        teamId,
+        matches: [],
+        stats: {
+          wins: 0,
+          draws: 0,
+          losses: 0,
+          goalsFor: 0,
+          goalsAgainst: 0,
+          avgGoalsFor: 0,
+          avgGoalsAgainst: 0,
+          form: 'N/A',
+        },
+      };
+    }
+
+    // Calculate stats
+    let wins = 0, draws = 0, losses = 0;
+    let goalsFor = 0, goalsAgainst = 0;
+    const formStr = [];
+
+    matches.forEach((match) => {
+      const isHome = match.teams.home.id === teamId;
+      const homeGoals = match.goals.home || 0;
+      const awayGoals = match.goals.away || 0;
+
+      const forGoals = isHome ? homeGoals : awayGoals;
+      const againstGoals = isHome ? awayGoals : homeGoals;
+
+      goalsFor += forGoals;
+      goalsAgainst += againstGoals;
+
+      if (forGoals > againstGoals) {
+        wins++;
+        formStr.push('W');
+      } else if (forGoals === againstGoals) {
+        draws++;
+        formStr.push('D');
+      } else {
+        losses++;
+        formStr.push('L');
+      }
     });
-  }
 
-  // Opportunity 2: Goal drought after 60 minutes
-  if (
-    match.status === 'LIVE' &&
-    new Date(match.kickoff_time).getTime() + 60 * 60 * 1000 < Date.now() &&
-    (match.home_goals + match.away_goals) < 1
-  ) {
-    opportunities.push({
-      type: 'goal_drought',
-      title: 'No goals after 60 minutes',
-      description: `Match is 60+ minutes old with no goals. Under 2.5 goals value may be declining. Consider Over bets as game opens up.`,
-      confidence: 68,
-      recommended_bet: 'Back Over 1.5 goals',
-      trigger_value: Math.floor((Date.now() - new Date(match.kickoff_time).getTime()) / 60000),
-    });
-  }
+    const result = {
+      teamId,
+      teamName: matches[0].teams.home.id === teamId 
+        ? matches[0].teams.home.name 
+        : matches[0].teams.away.name,
+      matches: matches.map((m) => ({
+        date: m.fixture.date,
+        home: m.teams.home.name,
+        away: m.teams.away.name,
+        homeGoals: m.goals.home,
+        awayGoals: m.goals.away,
+        status: m.fixture.status,
+      })),
+      stats: {
+        wins,
+        draws,
+        losses,
+        goalsFor,
+        goalsAgainst,
+        avgGoalsFor: (goalsFor / matches.length).toFixed(2),
+        avgGoalsAgainst: (goalsAgainst / matches.length).toFixed(2),
+        form: formStr.slice(0, 5).join(''), // Last 5 matches
+        winRate: ((wins / matches.length) * 100).toFixed(1),
+      },
+    };
 
-  // Opportunity 3: Unbalanced possession with goal lead
-  if (match.home_goals > match.away_goals && match.home_possession > 70) {
-    opportunities.push({
-      type: 'dominant_lead',
-      title: 'Home team leading and dominating',
-      description: `Home team leads ${match.home_goals}-${match.away_goals} with ${match.home_possession}% possession. Likely to score again.`,
-      confidence: 75,
-      recommended_bet: `Back home team to score next (or both teams score at ${match.away_goals === 0 ? 'low odds' : 'value'})`,
-      trigger_value: match.home_possession / match.home_goals,
-    });
+    setCache(key, result);
+    return result;
+  } catch (error) {
+    console.error('❌ Error fetching team form:', error.message);
+    return {
+      teamId,
+      matches: [],
+      stats: { error: 'Could not fetch data' },
+    };
   }
-
-  return opportunities;
 }
 
 /**
- * Score individual bet selections
- * Input: bet type, teams, stats
- * Output: confidence 0-100
+ * Get head-to-head record between two teams
  */
-export function scoreBetSelection(betType, homeTeam, awayTeam, stats) {
-  let score = 50; // neutral baseline
+export async function getH2H(teamA, teamB) {
+  try {
+    const key = cacheKey('h2h', Math.min(teamA, teamB), Math.max(teamA, teamB));
+    const cached = getCache(key);
+    if (cached) return cached;
 
-  switch (betType.toLowerCase()) {
-    case 'home_win':
-      if (stats.home_possession > 55) score += 8;
-      if (stats.home_shots_on_target > stats.away_shots_on_target) score += 10;
-      if (stats.home_xg > stats.away_xg) score += 12;
-      break;
+    const response = await axiosInstance.get('/fixtures/headtohead', {
+      params: { h2h: `${teamA}-${teamB}`, last: 10 },
+    });
 
-    case 'away_win':
-      if (stats.away_possession > 55) score += 8;
-      if (stats.away_shots_on_target > stats.home_shots_on_target) score += 10;
-      if (stats.away_xg > stats.home_xg) score += 12;
-      break;
+    const matches = response.data.response || [];
 
-    case 'draw':
-      if (Math.abs(stats.home_xg - stats.away_xg) < 0.5) score += 15;
-      if (Math.abs(stats.home_shots_on_target - stats.away_shots_on_target) < 2) score += 10;
-      break;
+    if (matches.length === 0) {
+      return {
+        teamA,
+        teamB,
+        matches: [],
+        stats: {
+          teamAWins: 0,
+          teamBWins: 0,
+          draws: 0,
+          totalGoals: 0,
+          avgGoalsPerMatch: 0,
+        },
+      };
+    }
 
-    case 'over_1_5':
-      if (stats.home_xg + stats.away_xg > 1.5) score += 15;
-      if (stats.home_shots_on_target + stats.away_shots_on_target > 4) score += 10;
-      break;
+    let teamAWins = 0, teamBWins = 0, draws = 0, totalGoals = 0;
 
-    case 'under_2_5':
-      if (stats.home_xg + stats.away_xg < 2.5) score += 15;
-      break;
+    matches.forEach((match) => {
+      const homeGoals = match.goals.home || 0;
+      const awayGoals = match.goals.away || 0;
+      totalGoals += homeGoals + awayGoals;
 
-    case 'both_teams_score':
-      if (stats.home_xg > 0.5 && stats.away_xg > 0.5) score += 12;
-      if (stats.home_shots_on_target > 1 && stats.away_shots_on_target > 1) score += 10;
-      break;
+      const isTeamAHome = match.teams.home.id === teamA;
+      const teamAGoals = isTeamAHome ? homeGoals : awayGoals;
+      const teamBGoals = isTeamAHome ? awayGoals : homeGoals;
+
+      if (teamAGoals > teamBGoals) teamAWins++;
+      else if (teamAGoals < teamBGoals) teamBWins++;
+      else draws++;
+    });
+
+    const result = {
+      teamA,
+      teamB,
+      teamAName: matches[0].teams.home.id === teamA ? matches[0].teams.home.name : matches[0].teams.away.name,
+      teamBName: matches[0].teams.home.id === teamA ? matches[0].teams.away.name : matches[0].teams.home.name,
+      matches: matches.map((m) => ({
+        date: m.fixture.date,
+        home: m.teams.home.name,
+        away: m.teams.away.name,
+        homeGoals: m.goals.home,
+        awayGoals: m.goals.away,
+      })),
+      stats: {
+        teamAWins,
+        teamBWins,
+        draws,
+        totalGoals,
+        avgGoalsPerMatch: (totalGoals / matches.length).toFixed(2),
+      },
+    };
+
+    setCache(key, result);
+    return result;
+  } catch (error) {
+    console.error('❌ Error fetching H2H:', error.message);
+    return {
+      teamA,
+      teamB,
+      matches: [],
+      stats: { error: 'Could not fetch data' },
+    };
   }
-
-  return Math.min(Math.max(score, 0), 95);
 }
 
 /**
- * Calculate match momentum (goal trends, possession trends)
+ * Get combined fixture preview with both teams' stats
  */
-export async function calculateMomentum(matchId) {
-  // In production, you'd track stats changes over time
-  // For now, return basic trend
-  const match = await getOne('SELECT * FROM matches WHERE id = $1', [matchId]);
+export async function getFixturePreview(fixtureId, homeTeamId, awayTeamId, leagueId) {
+  try {
+    const [homeForm, awayForm, h2h] = await Promise.all([
+      getTeamForm(homeTeamId, leagueId),
+      getTeamForm(awayTeamId, leagueId),
+      getH2H(homeTeamId, awayTeamId),
+    ]);
 
-  return {
-    home_momentum: match.home_xg > match.away_xg ? 'up' : 'down',
-    away_momentum: match.away_xg > match.home_xg ? 'up' : 'down',
-    match_flow_intensity: (match.home_shots + match.away_shots) / 2,
-  };
+    return {
+      fixtureId,
+      homeTeam: homeForm,
+      awayTeam: awayForm,
+      h2h,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.error('❌ Error fetching fixture preview:', error.message);
+    return null;
+  }
 }

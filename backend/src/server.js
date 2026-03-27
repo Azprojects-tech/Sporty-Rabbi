@@ -15,6 +15,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import twilio from 'twilio';
+import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -280,6 +281,52 @@ app.get('/api/stats', (req, res) => {
     winRate: `${winRate}%`,
     liveBetsAvailable: liveMatches.length,
   });
+});
+
+// ─── ANALYTICS ENDPOINTS ────────────────────────────────────────────────────
+
+app.get('/api/team-form/:teamId', async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { league } = req.query;
+    
+    const formData = await getTeamForm(parseInt(teamId), league ? parseInt(league) : null);
+    res.json(formData);
+  } catch (error) {
+    console.error('Error fetching team form:', error.message);
+    res.status(500).json({ error: 'Could not fetch team form data' });
+  }
+});
+
+app.get('/api/h2h/:homeTeamId/:awayTeamId', async (req, res) => {
+  try {
+    const { homeTeamId, awayTeamId } = req.params;
+    
+    const h2hData = await getH2H(parseInt(homeTeamId), parseInt(awayTeamId));
+    res.json(h2hData);
+  } catch (error) {
+    console.error('Error fetching H2H:', error.message);
+    res.status(500).json({ error: 'Could not fetch H2H data' });
+  }
+});
+
+app.get('/api/fixture-preview/:fixtureId/:homeTeamId/:awayTeamId', async (req, res) => {
+  try {
+    const { fixtureId, homeTeamId, awayTeamId } = req.params;
+    const { league } = req.query;
+    
+    const preview = await getFixturePreview(
+      parseInt(fixtureId),
+      parseInt(homeTeamId),
+      parseInt(awayTeamId),
+      league ? parseInt(league) : null
+    );
+    
+    res.json(preview);
+  } catch (error) {
+    console.error('Error fetching fixture preview:', error.message);
+    res.status(500).json({ error: 'Could not fetch fixture preview' });
+  }
 });
 
 // ─── START SERVER ──────────────────────────────────────────────────────────

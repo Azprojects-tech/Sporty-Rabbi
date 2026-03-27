@@ -3,6 +3,7 @@ import { AlertCircle, Zap } from 'lucide-react';
 import { connectWebSocket, on, apiService } from './services/api';
 import { MatchCard, ConfidenceScore, Alert } from './components/MatchComponents';
 import { BetLogger, BetStats } from './components/BetComponents';
+import AnalyticsModal from './components/AnalyticsModal';
 
 export default function App() {
   const [matches, setMatches] = useState([]);
@@ -11,6 +12,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('live');
+  const [selectedMatch, setSelectedMatch] = useState(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -118,7 +120,11 @@ export default function App() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {matches.map((match) => (
-                      <MatchCard key={match.id} match={match} onSelectMatch={() => {}} />
+                      <MatchCard
+                        key={match.id}
+                        match={match}
+                        onSelectMatch={() => setSelectedMatch(match)}
+                      />
                     ))}
                   </div>
                 )}
@@ -193,6 +199,14 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* Analytics Modal */}
+      {selectedMatch && (
+        <AnalyticsModal
+          match={selectedMatch}
+          onClose={() => setSelectedMatch(null)}
+        />
+      )}
     </div>
   );
 }
