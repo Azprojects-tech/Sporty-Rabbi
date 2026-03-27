@@ -310,13 +310,24 @@ async function pollUpcomingMatches() {
   }
 }
 
-// Start polling (every 30 seconds) with error handling
+// Start polling (every 30 seconds) with bullet-proof error handling
 cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () => {
   try {
-    await pollLiveMatches();
-    await pollUpcomingMatches();
+    // Poll live matches
+    try {
+      await pollLiveMatches();
+    } catch (err) {
+      console.error('❌ Live poll failed:', err.message);
+    }
+    
+    // Poll upcoming matches (don't let it crash the whole schedule)
+    try {
+      await pollUpcomingMatches();
+    } catch (err) {
+      console.error('❌ Upcoming poll failed:', err.message);
+    }
   } catch (error) {
-    console.error('❌ Polling error (continuing):', error.message);
+    console.error('❌ Critical polling error:', error.message);
   }
 });
 
