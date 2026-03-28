@@ -28,6 +28,16 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 3000;
 
+// ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
+// Only track these specific leagues (ID-based for maximum control)
+const WHITELISTED_LEAGUE_IDS = new Set([
+  205,   // Turkey - 2. Lig
+  134,   // Argentina - Torneo Federal A
+  71,    // Brazil - Serie A
+  667,   // Friendlies Clubs (International)
+  10,    // Friendlies (International)
+]);
+
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────
 
 // Aggressive CORS middleware - override all headers
@@ -403,8 +413,10 @@ async function pollLiveMatches() {
     if (matches && matches.length > 0) {
       liveMatches = matches.map(analyzeMatch).filter(m => m !== null);
       setCache('liveMatches', liveMatches);
-      broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
-      console.log(`✓ Updated ${liveMatches.length} live matches`);
+      // Only broadcast whitelisted matches to clients
+      const whitelisted = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
+      broadcast({ type: 'LIVE_MATCHES', payload: whitelisted });
+      console.log(`✓ Updated ${liveMatches.length} live matches (${whitelisted.length} whitelisted)`);
     } else {
       console.log('ℹ️  No live matches right now');
       liveMatches = [];
@@ -440,8 +452,10 @@ async function pollUpcomingMatches() {
       console.log(`✅ Analyzed ${upcomingMatches.length} upcoming matches`);
       setCache('upcomingMatches', upcomingMatches);
       
-      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
-      console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
+      // Only broadcast whitelisted matches to clients
+      const whitelisted = upcomingMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
+      broadcast({ type: 'UPCOMING_MATCHES', payload: whitelisted });
+      console.log(`✓ Broadcasted ${whitelisted.length} upcoming matches (from ${upcomingMatches.length}) to ${clients.size} clients`);
     } else {
       console.log('ℹ️  No upcoming matches in next 24 hours');
       upcomingMatches = [];
@@ -526,15 +540,6 @@ app.get('/api/live', (req, res) => {
   
   res.json({ count: filtered.length, matches: filtered });
 });
-
-// WHITELIST: Only track these specific leagues (ID-based for maximum control)
-const WHITELISTED_LEAGUE_IDS = new Set([
-  205,   // Turkey - 2. Lig
-  134,   // Argentina - Torneo Federal A
-  71,    // Brazil - Serie A
-  667,   // Friendlies Clubs (International)
-  10,    // Friendlies (International)
-]);
 
 app.get('/api/upcoming', (req, res) => {
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
