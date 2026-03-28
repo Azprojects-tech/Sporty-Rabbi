@@ -127,12 +127,42 @@ function broadcast(message) {
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
 
+// ─── RESPONSE CACHING (minimize API calls on paid plans) ──────────────────
+const cache = {
+  liveMatches: { data: [], timestamp: 0 },
+  upcomingMatches: { data: [], timestamp: 0 },
+};
+
+const CACHE_TTL = {
+  live: 5000,        // Cache live matches for 5 seconds (they change frequently)
+  upcoming: 30000,   // Cache upcoming matches for 30 seconds (they change less)
+};
+
+function getCached(type) {
+  const cached = cache[type];
+  const now = Date.now();
+  const ttl = CACHE_TTL[type === 'liveMatches' ? 'live' : 'upcoming'];
+  
+  if (cached && now - cached.timestamp < ttl) {
+    console.log(`  💾 Using cached ${type} (${Math.round((now - cached.timestamp) / 1000)}s old)`);
+    return cached.data;
+  }
+  return null;
+}
+
+function setCache(type, data) {
+  cache[type] = { data, timestamp: Date.now() };
+  console.log(`  💾 Cached ${type}: ${data.length} items`);
+}
+
 console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   🐰 SportyRabbi Backend Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   📌 API Key:  ${API_KEY ? '✅ SET' : '❌ NOT SET'}
   🌐 API Base: ${API_BASE}
+  ⏱️  Poll Interval: ${process.env.LIVE_POLL_INTERVAL || 5}s
+  🏆 Tracked Leagues: ${process.env.TRACKED_LEAGUES}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 
@@ -287,16 +317,26 @@ function analyzeMatch(match) {
   }
 }
 
-// ─── LIVE POLLER (runs every 30 seconds) ─────────────────────────────────
+// ─── LIVE POLLER (with smart response caching) ──────────────────────────
 
 let isPolling = false;
 
 async function pollLiveMatches() {
   if (isPolling) {
     console.log('⏳ Polling already in progress, skipping...');
-    return; // Skip if already running
+    return;
   }
   
+  // Check cache first
+  const cached = getCached('liveMatches');
+  if (cached !== null) {
+    if (cached.length > 0) {
+      liveMatches = cached;
+      broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+    }
+    return;
+  }
+
   isPolling = true;
 
   try {
@@ -304,14 +344,16 @@ async function pollLiveMatches() {
     
     if (matches && matches.length > 0) {
       liveMatches = matches.map(analyzeMatch).filter(m => m !== null);
+      setCache('liveMatches', liveMatches);
       broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
       console.log(`✓ Updated ${liveMatches.length} live matches`);
     } else {
       console.log('ℹ️  No live matches right now');
+      liveMatches = [];
+      setCache('liveMatches', []);
     }
   } catch (error) {
     console.error('❌ Poll error:', error.message);
-    // Continue - don't crash
   } finally {
     isPolling = false;
   }
@@ -319,6 +361,16 @@ async function pollLiveMatches() {
 
 // Poll for upcoming matches (next 24 hours)
 async function pollUpcomingMatches() {
+  // Check cache first
+  const cached = getCached('upcomingMatches');
+  if (cached !== null) {
+    if (cached.length > 0) {
+      upcomingMatches = cached;
+      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+    }
+    return;
+  }
+
   try {
     console.log('🔄 Polling upcoming matches...');
     const matches = await fetchUpcomingMatches();
@@ -328,12 +380,14 @@ async function pollUpcomingMatches() {
     if (matches && matches.length > 0) {
       upcomingMatches = matches.map(analyzeMatch).filter(m => m !== null);
       console.log(`✅ Analyzed ${upcomingMatches.length} upcoming matches`);
+      setCache('upcomingMatches', upcomingMatches);
       
       broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
       console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
     } else {
       console.log('ℹ️  No upcoming matches in next 24 hours');
       upcomingMatches = [];
+      setCache('upcomingMatches', []);
       broadcast({ type: 'UPCOMING_MATCHES', payload: [] });
     }
   } catch (error) {
@@ -341,8 +395,10 @@ async function pollUpcomingMatches() {
   }
 }
 
-// Start polling (every 30 seconds) with bullet-proof error handling
-cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () => {
+// Start polling with adaptive frequency based on paid API tier limits
+// Paid tier: Higher quota available, can poll more frequently with smart caching
+const pollInterval = process.env.LIVE_POLL_INTERVAL || 5; // Default: 5s for paid plans
+cron.schedule(`*/${pollInterval} * * * * *`, async () => {
   try {
     // Poll live matches
     try {
@@ -351,7 +407,7 @@ cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () =>
       console.error('❌ Live poll failed:', err.message);
     }
     
-    // Poll upcoming matches (don't let it crash the whole schedule)
+    // Poll upcoming matches
     try {
       await pollUpcomingMatches();
     } catch (err) {
@@ -362,7 +418,11 @@ cron.schedule(`*/${process.env.LIVE_POLL_INTERVAL || 30} * * * * *`, async () =>
   }
 });
 
-console.log(`⏰ Live polling started (every ${process.env.LIVE_POLL_INTERVAL || 30}s)`);
+console.log(`⏰ Live polling started (every ${pollInterval}s)`);
+console.log(`   API-Football subscribed plan: Higher quota available`);
+console.log(`   Live matches: cached for 5 seconds`);
+console.log(`   Upcoming matches: cached for 30 seconds`);
+console.log(`   Smart response caching: enabled ✓`);
 
 // ─── TWILIO WHATSAPP ALERTS ────────────────────────────────────────────────
 
