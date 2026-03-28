@@ -30,23 +30,27 @@ const PORT = process.env.PORT || 3000;
 
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
-// TOP 5 EUROPEAN LEAGUES + EUROPEAN CUPS
+// TOP 5 EUROPEAN LEAGUES + ADDITIONAL LEAGUES + EUROPEAN CUPS
 const WHITELISTED_LEAGUE_IDS = new Set([
   39,    // Premier League (England)
   140,   // La Liga (Spain)
   78,    // Serie A (Italy)
-  78,    // Bundesliga (Germany) - TODO: Verify exact ID
   61,    // Ligue 1 (France)
+  64,    // Primeira Liga (Portugal)
+  203,   // Turkey Super Lig (Turkey)
+  541,   // Saudi Pro League (Saudi Arabia)
   1,     // Champions League (UCL)
   3,     // Europa League (UEFA)
   849,   // Conference League (UEFA)
-  // FIFA TOURNAMENTS & QUALIFIERS (International)
+  // FIFA TOURNAMENTS & QUALIFIERS & FRIENDLIES (International)
   4,     // World Cup
+  18,    // World Cup Qualifiers
   2,     // European Championship (EURO)
   5,     // Copa America
   6,     // African Cup of Nations
   16,    // UEFA Nations League
   17,    // Olympic Games
+  15,    // International Friendlies
 ]);
 
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────

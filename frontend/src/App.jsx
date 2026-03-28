@@ -17,28 +17,33 @@ export default function App() {
   const [selectedInternational, setSelectedInternational] = useState('all');
   const [selectedMatch, setSelectedMatch] = useState(null);
 
-  // League dropdown options - TOP 5 LEAGUES + EUROPEAN CUPS
+  // League dropdown options - TOP 5 LEAGUES + EUROPEAN CUPS + ADDITIONAL LEAGUES
   const leagueOptions = [
     { id: 'all', name: 'All Domestic Leagues', emoji: '📺' },
     { id: 39, name: 'Premier League', emoji: '🇬🇧' },
     { id: 140, name: 'La Liga', emoji: '🇪🇸' },
     { id: 78, name: 'Serie A', emoji: '🇮🇹' },
     { id: 61, name: 'Ligue 1', emoji: '🇫🇷' },
+    { id: 64, name: 'Primeira Liga', emoji: '🇵🇹' },
+    { id: 203, name: 'Turkey Super Lig', emoji: '🇹🇷' },
+    { id: 541, name: 'Saudi Pro League', emoji: '🇸🇦' },
     { id: 'cups-header', name: '─── European Cups ───', emoji: '🏆' },
     { id: 1, name: 'Champions League', emoji: '👑' },
     { id: 3, name: 'Europa League', emoji: '🥈' },
     { id: 849, name: 'Conference League', emoji: '💜' },
   ];
 
-  // International dropdown options - FIFA TOURNAMENTS ONLY (NO FRIENDLIES)
+  // International dropdown options - FIFA TOURNAMENTS + QUALIFIERS + FRIENDLIES
   const internationalOptions = [
-    { id: 'all', name: 'All FIFA Tournaments', emoji: '🌍' },
+    { id: 'all', name: 'All International Matches', emoji: '🌍' },
     { id: 4, name: 'FIFA World Cup', emoji: '🏆' },
+    { id: 18, name: 'World Cup Qualifiers', emoji: '🎯' },
     { id: 2, name: 'European Championship (EURO)', emoji: '⚽' },
     { id: 5, name: 'Copa America', emoji: '🔥' },
     { id: 6, name: 'African Cup of Nations', emoji: '📍' },
     { id: 16, name: 'UEFA Nations League', emoji: '🏅' },
     { id: 17, name: 'Olympic Games', emoji: '🎖️' },
+    { id: 15, name: 'International Friendlies', emoji: '🤝' },
   ];
 
   useEffect(() => {
