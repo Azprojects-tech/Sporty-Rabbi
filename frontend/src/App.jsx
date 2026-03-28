@@ -103,7 +103,7 @@ export default function App() {
             <div className={`text-sm font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>
               {connected ? '🟢 Live' : '🔴 Offline'}
             </div>
-            <div className="text-xs text-gray-400">{matches.length} live matches</div>
+            <div className="text-xs text-gray-400">{matches.length} live · {upcomingMatches.length} upcoming</div>
           </div>
         </div>
       </header>
@@ -111,7 +111,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto p-6">
         {/* Navigation Tabs */}
         <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4">
-          {['live', 'tracking', 'alerts'].map((tab) => (
+          {['live', 'upcoming', 'tracking', 'alerts'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -122,6 +122,7 @@ export default function App() {
               }`}
             >
               {tab === 'live' && '🔴 Live Matches'}
+              {tab === 'upcoming' && `⏰ Upcoming (${upcomingMatches.length})`}
               {tab === 'tracking' && '📈 My Bets'}
               {tab === 'alerts' && '⚡ Opportunities'}
             </button>
@@ -134,27 +135,6 @@ export default function App() {
           <div className={selectedLiveMatch ? 'order-2 lg:order-1' : 'lg:col-span-2'}>
             {activeTab === 'live' && (
               <div>
-                {/* Upcoming Matches Section */}
-                {upcomingMatches.length > 0 && (
-                  <div className="mb-8">
-                    <h2 className="text-2xl font-bold mb-4">⏰ Upcoming Matches (Next 24h)</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {upcomingMatches.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="cursor-pointer"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
                 {/* Live Matches Section */}
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-2xl font-bold">🔴 Live Matches</h2>
@@ -197,6 +177,32 @@ export default function App() {
                       match={selectedLiveMatch}
                       onSelectMatch={() => setSelectedMatch(selectedLiveMatch)}
                     />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'upcoming' && (
+              <div>
+                <h2 className="text-2xl font-bold mb-4">⏰ Upcoming Matches (Next 24h)</h2>
+                {upcomingMatches.length === 0 ? (
+                  <div className="card">
+                    <p className="text-gray-400">No upcoming matches in the next 24 hours</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {upcomingMatches.map((match) => (
+                      <div
+                        key={match.id}
+                        onClick={() => setSelectedMatch(match)}
+                        className="cursor-pointer"
+                      >
+                        <MatchCard
+                          match={match}
+                          onSelectMatch={() => setSelectedMatch(match)}
+                        />
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
