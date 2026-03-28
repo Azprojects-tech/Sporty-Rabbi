@@ -230,16 +230,15 @@ async function fetchUpcomingMatches() {
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     
     // Format dates as YYYY-MM-DD
-    const fromDate = now.toISOString().split('T')[0];
-    const toDate = tomorrow.toISOString().split('T')[0];
+    const tomorrowDate = tomorrow.toISOString().split('T')[0];
     
-    console.log(`📅 Fetching upcoming matches (NS) from ${fromDate} to ${toDate}...`);
+    console.log(`📅 Fetching upcoming matches (NS) for ${tomorrowDate}...`);
     
+    // API-Football prefers 'date' parameter over 'from/to' for fixture queries
     const response = await axios.get(`${API_BASE}/fixtures`, {
       params: {
         status: 'NS', // Not Started
-        from: fromDate,
-        to: toDate,
+        date: tomorrowDate,
         timezone: 'UTC'
       },
       headers: { 'x-apisports-key': API_KEY },
