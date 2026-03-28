@@ -1,5 +1,5 @@
 import express from 'express';
-import { analyzePreMatch, detectInPlayOpportunities, scoreBetSelection } from '../services/analyticsService.js';
+import { analyzePreMatch, detectInPlayOpportunities, scoreBetSelection, getTeamForm, getH2H } from '../services/analyticsService.js';
 import { getOne } from '../config/database.js';
 
 const router = express.Router();
@@ -61,6 +61,32 @@ router.post('/score', async (req, res) => {
       bet_type,
       confidence_score: score,
       recommendation: score > 70 ? 'strong' : score > 60 ? 'moderate' : 'weak',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/analytics/team-form/:teamId - Get team form (last 10 matches)
+router.get('/team-form/:teamId', async (req, res) => {
+  try {
+    const form = await getTeamForm(req.params.teamId);
+    res.json({
+      success: true,
+      data: form,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/analytics/h2h/:homeTeamId/:awayTeamId - Get head-to-head history
+router.get('/h2h/:homeTeamId/:awayTeamId', async (req, res) => {
+  try {
+    const h2h = await getH2H(req.params.homeTeamId, req.params.awayTeamId);
+    res.json({
+      success: true,
+      data: h2h,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

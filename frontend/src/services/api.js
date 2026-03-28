@@ -29,6 +29,8 @@ client.interceptors.response.use(
 // ─── REST API CLIENT ──────────────────────────────────────────────────────
 
 export const apiService = {
+  client, // Expose axios client for direct API calls
+
   // Health check
   getHealth: () => client.get('/health'),
 

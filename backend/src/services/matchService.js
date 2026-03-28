@@ -80,19 +80,46 @@ export async function syncMatchToDatabase(apiMatch) {
   };
 
   try {
+    // First, ensure teams exist in database
+    const homeTeamId = teams.home?.id;
+    const awayTeamId = teams.away?.id;
+
+    if (homeTeamId) {
+      await query(
+        `INSERT INTO teams (api_id, name, logo_url, country)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (api_id) DO UPDATE SET name=$2, logo_url=$3
+         WHERE teams.api_id = $1;`,
+        [homeTeamId, teams.home?.name, teams.home?.logo, null]
+      );
+    }
+
+    if (awayTeamId) {
+      await query(
+        `INSERT INTO teams (api_id, name, logo_url, country)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (api_id) DO UPDATE SET name=$2, logo_url=$3
+         WHERE teams.api_id = $1;`,
+        [awayTeamId, teams.away?.name, teams.away?.logo, null]
+      );
+    }
+
     const result = await query(
       `INSERT INTO matches 
-      (api_id, home_team_name, away_team_name, status, kickoff_time, home_goals, away_goals,
+      (api_id, home_team_id, away_team_id, home_team_name, away_team_name, status, kickoff_time, home_goals, away_goals,
        home_possession, away_possession, home_shots, away_shots, home_shots_on_target, 
        away_shots_on_target, home_xg, away_xg)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (api_id) DO UPDATE SET
-      status=$4, home_goals=$6, away_goals=$7, home_possession=$8, away_possession=$9,
-      home_shots=$10, away_shots=$11, home_shots_on_target=$12, away_shots_on_target=$13,
-      home_xg=$14, away_xg=$15, updated_at=NOW()
+      home_team_id=$2, away_team_id=$3,
+      status=$6, home_goals=$8, away_goals=$9, home_possession=$10, away_possession=$11,
+      home_shots=$12, away_shots=$13, home_shots_on_target=$14, away_shots_on_target=$15,
+      home_xg=$16, away_xg=$17, updated_at=NOW()
      RETURNING id;`,
       [
         fixture.id,
+        homeTeamId,
+        awayTeamId,
         teams.home?.name,
         teams.away?.name,
         fixture.status,

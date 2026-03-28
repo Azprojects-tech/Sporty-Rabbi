@@ -362,6 +362,8 @@ function analyzeMatch(match) {
 
     const analyzed = {
       id: fixture.id || Math.random(),
+      homeTeamId: teams.home?.id || null,
+      awayTeamId: teams.away?.id || null,
       home: teams.home?.name || 'Unknown',
       away: teams.away?.name || 'Unknown',
       score: `${goals.home || 0}-${goals.away || 0}`,

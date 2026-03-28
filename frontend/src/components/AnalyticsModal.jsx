@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import api from '../services/api';
+import { apiService } from '../services/api';
 
 export default function AnalyticsModal({ match, onClose }) {
   const [activeTab, setActiveTab] = useState('home');
@@ -17,15 +17,38 @@ export default function AnalyticsModal({ match, onClose }) {
     setLoading(true);
     setError(null);
     try {
+      // We need team IDs, which should be in match data
+      // If not available, we'll show a message
+      if (!match.homeTeamId || !match.awayTeamId) {
+        console.warn('Team IDs not available in match data');
+        // Try using the names as fallback or show error
+        setError('Team ID data not yet available. Please refresh.');
+        setLoading(false);
+        return;
+      }
+
       const [homeData, awayData, h2hData] = await Promise.all([
-        api.get(`/team-form/${match.homeTeamId}`),
-        api.get(`/team-form/${match.awayTeamId}`),
-        api.get(`/h2h/${match.homeTeamId}/${match.awayTeamId}`),
+        apiService.client.get(`/analytics/team-form/${match.homeTeamId}`).catch(e => {
+          console.error('Home form error:', e);
+          return { data: { success: false } };
+        }),
+        apiService.client.get(`/analytics/team-form/${match.awayTeamId}`).catch(e => {
+          console.error('Away form error:', e);
+          return { data: { success: false } };
+        }),
+        apiService.client.get(`/analytics/h2h/${match.homeTeamId}/${match.awayTeamId}`).catch(e => {
+          console.error('H2H error:', e);
+          return { data: { success: false } };
+        }),
       ]);
 
-      setHomeForm(homeData.data);
-      setAwayForm(awayData.data);
-      setH2H(h2hData.data);
+      if (homeData.data?.success) setHomeForm(homeData.data.data);
+      if (awayData.data?.success) setAwayForm(awayData.data.data);
+      if (h2hData.data?.success) setH2H(h2hData.data.data);
+
+      if (!homeData.data?.success && !awayData.data?.success && !h2hData.data?.success) {
+        setError('Could not load team statistics. API data may not be available yet.');
+      }
     } catch (err) {
       console.error('Analytics error:', err);
       setError('Could not load team statistics');
@@ -51,7 +74,7 @@ export default function AnalyticsModal({ match, onClose }) {
         {/* Header */}
         <div className="sticky top-0 bg-gray-900 border-b border-purple-500/30 p-4 flex justify-between items-center">
           <h2 className="text-xl font-bold text-white">
-            {match.home} vs {match.away}
+            {match.home} vs {match.away} - Analytics
           </h2>
           <button
             onClick={onClose}
@@ -62,8 +85,8 @@ export default function AnalyticsModal({ match, onClose }) {
         </div>
 
         {error && (
-          <div className="p-4 bg-red-500/20 border-b border-red-500/30 text-red-300">
-            {error}
+          <div className="p-4 bg-yellow-500/20 border-b border-yellow-500/30 text-yellow-300">
+            ⚠️ {error}
           </div>
         )}
 
@@ -103,9 +126,9 @@ export default function AnalyticsModal({ match, onClose }) {
 
         {/* Content */}
         <div className="p-6">
-          {activeTab === 'home' && homeForm && <TeamStats team={homeForm} />}
-          {activeTab === 'away' && awayForm && <TeamStats team={awayForm} />}
-          {activeTab === 'h2h' && h2h && <H2HStats h2h={h2h} />}
+          {activeTab === 'home' && homeForm ? <TeamStats team={homeForm} /> : activeTab === 'home' && <div className="text-gray-400">No data available</div>}
+          {activeTab === 'away' && awayForm ? <TeamStats team={awayForm} /> : activeTab === 'away' && <div className="text-gray-400">No data available</div>}
+          {activeTab === 'h2h' && h2h ? <H2HStats h2h={h2h} /> : activeTab === 'h2h' && <div className="text-gray-400">No head-to-head data available</div>}
         </div>
       </div>
     </div>
@@ -113,12 +136,12 @@ export default function AnalyticsModal({ match, onClose }) {
 }
 
 function TeamStats({ team }) {
-  if (team.stats?.error) {
+  if (team?.error) {
     return <p className="text-gray-400">Could not load team data</p>;
   }
 
-  const stats = team.stats || {};
-  const matches = team.matches || [];
+  const stats = team?.stats || {};
+  const matches = team?.matches || [];
 
   return (
     <div className="space-y-6">
@@ -147,7 +170,89 @@ function TeamStats({ team }) {
         <div className="bg-purple-500/10 border border-purple-500/30 rounded p-4">
           <p className="text-gray-400 text-sm">Goals For (Avg)</p>
           <p className="text-2xl font-bold text-purple-300">
-            {stats.goalsFor} ({stats.avgGoalsFor})
+            {stats.goalsFor} ({(stats.avgGoalsFor || 0).toFixed(1)})
+          </p>
+        </div>
+        <div className="bg-red-500/10 border border-red-500/30 rounded p-4">
+          <p className="text-gray-400 text-sm">Goals Against (Avg)</p>
+          <p className="text-2xl font-bold text-red-300">
+            {stats.goalsAgainst} ({(stats.avgGoalsAgainst || 0).toFixed(1)})
+          </p>
+        </div>
+      </div>
+
+      {/* Form String */}
+      {stats.form && (
+        <div>
+          <p className="text-gray-400 text-sm mb-2">Recent Form (Last 10)</p>
+          <div className="flex gap-2">
+            {stats.form.split('').map((result, idx) => (
+              <div
+                key={idx}
+                className={`w-8 h-8 flex items-center justify-center rounded font-bold text-white ${
+                  result === 'W'
+                    ? 'bg-green-600'
+                    : result === 'D'
+                    ? 'bg-gray-600'
+                    : 'bg-red-600'
+                }`}
+              >
+                {result}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function H2HStats({ h2h }) {
+  if (h2h?.error) {
+    return <p className="text-gray-400">Could not load head-to-head data</p>;
+  }
+
+  const matches = h2h?.matches || [];
+  const stats = h2h?.stats || {};
+
+  return (
+    <div className="space-y-6">
+      {/* H2H Summary */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-green-500/10 border border-green-500/30 rounded p-4 text-center">
+          <p className="text-gray-400 text-sm">{h2h?.homeTeamName} Wins</p>
+          <p className="text-2xl font-bold text-green-400">{stats.homeWins || 0}</p>
+        </div>
+        <div className="bg-gray-500/10 border border-gray-500/30 rounded p-4 text-center">
+          <p className="text-gray-400 text-sm">Draws</p>
+          <p className="text-2xl font-bold text-gray-300">{stats.draws || 0}</p>
+        </div>
+        <div className="bg-red-500/10 border border-red-500/30 rounded p-4 text-center">
+          <p className="text-gray-400 text-sm">{h2h?.awayTeamName} Wins</p>
+          <p className="text-2xl font-bold text-red-400">{stats.awayWins || 0}</p>
+        </div>
+      </div>
+
+      {/* Recent Matches */}
+      {matches.length > 0 && (
+        <div>
+          <h3 className="text-lg font-bold mb-3 text-white">Recent Encounters</h3>
+          <div className="space-y-2">
+            {matches.slice(0, 5).map((match, idx) => (
+              <div key={idx} className="bg-gray-800/50 rounded p-3 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="font-semibold">{match.homeTeamName} vs {match.awayTeamName}</span>
+                  <span className="text-yellow-400 font-bold">{match.homeGoals} - {match.awayGoals}</span>
+                </div>
+                <p className="text-gray-400 text-xs mt-1">{new Date(match.date).toLocaleDateString()}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
           </p>
         </div>
         <div className="bg-orange-500/10 border border-orange-500/30 rounded p-4">
