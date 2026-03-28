@@ -17,20 +17,28 @@ export default function App() {
   const [selectedInternational, setSelectedInternational] = useState('all');
   const [selectedMatch, setSelectedMatch] = useState(null);
 
-  // League dropdown options
+  // League dropdown options - TOP 5 LEAGUES + EUROPEAN CUPS
   const leagueOptions = [
-    { id: 'all', name: 'All Leagues', emoji: '📺' },
-    { id: 203, name: 'Turkey - Supa Liga', emoji: '🇹🇷' },
-    { id: 134, name: 'Argentina - Federal A', emoji: '🇦🇷' },
-    { id: 71, name: 'Brazil - Serie A', emoji: '🇧🇷' },
-    { id: 94, name: 'Portugal - Primeira Liga', emoji: '🇵🇹' },
+    { id: 'all', name: 'All Domestic Leagues', emoji: '📺' },
+    { id: 39, name: 'Premier League', emoji: '🇬🇧' },
+    { id: 140, name: 'La Liga', emoji: '🇪🇸' },
+    { id: 78, name: 'Serie A', emoji: '🇮🇹' },
+    { id: 61, name: 'Ligue 1', emoji: '🇫🇷' },
+    { id: 'cups-header', name: '─── European Cups ───', emoji: '🏆' },
+    { id: 1, name: 'Champions League', emoji: '👑' },
+    { id: 3, name: 'Europa League', emoji: '🥈' },
+    { id: 849, name: 'Conference League', emoji: '💜' },
   ];
 
-  // International dropdown options
+  // International dropdown options - FIFA TOURNAMENTS ONLY (NO FRIENDLIES)
   const internationalOptions = [
-    { id: 'all', name: 'All International', emoji: '🌍' },
-    { id: 10, name: 'Friendlies', emoji: '⚽' },
-    { id: 667, name: 'Friendlies Clubs', emoji: '🏆' },
+    { id: 'all', name: 'All FIFA Tournaments', emoji: '🌍' },
+    { id: 4, name: 'FIFA World Cup', emoji: '🏆' },
+    { id: 2, name: 'European Championship (EURO)', emoji: '⚽' },
+    { id: 5, name: 'Copa America', emoji: '🔥' },
+    { id: 6, name: 'African Cup of Nations', emoji: '📍' },
+    { id: 16, name: 'UEFA Nations League', emoji: '🏅' },
+    { id: 17, name: 'Olympic Games', emoji: '🎖️' },
   ];
 
   useEffect(() => {
@@ -123,12 +131,12 @@ export default function App() {
 
   // Filter by league selection
   const filteredLeagueMatches = selectedLeague === 'all'
-    ? currentMatches.filter(m => [203, 134, 71, 94].includes(m.leagueId))
+    ? currentMatches.filter(m => [39, 140, 78, 61].includes(m.leagueId))
     : currentMatches.filter(m => m.leagueId === selectedLeague);
 
   // Filter by international selection
   const filteredInternationalMatches = selectedInternational === 'all'
-    ? currentMatches.filter(m => [10, 667].includes(m.leagueId))
+    ? currentMatches.filter(m => [4, 2, 5, 6, 16, 17].includes(m.leagueId))
     : currentMatches.filter(m => m.leagueId === selectedInternational);
 
   return (

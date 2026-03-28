@@ -30,13 +30,23 @@ const PORT = process.env.PORT || 3000;
 
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
+// TOP 5 EUROPEAN LEAGUES + EUROPEAN CUPS
 const WHITELISTED_LEAGUE_IDS = new Set([
-  203,   // Turkey - Supa Liga (top division)
-  134,   // Argentina - Torneo Federal A
-  71,    // Brazil - Serie A
-  94,    // Portugal - Primeira Liga
-  667,   // Friendlies Clubs (International)
-  10,    // Friendlies (International)
+  39,    // Premier League (England)
+  140,   // La Liga (Spain)
+  78,    // Serie A (Italy)
+  78,    // Bundesliga (Germany) - TODO: Verify exact ID
+  61,    // Ligue 1 (France)
+  1,     // Champions League (UCL)
+  3,     // Europa League (UEFA)
+  849,   // Conference League (UEFA)
+  // FIFA TOURNAMENTS & QUALIFIERS (International)
+  4,     // World Cup
+  2,     // European Championship (EURO)
+  5,     // Copa America
+  6,     // African Cup of Nations
+  16,    // UEFA Nations League
+  17,    // Olympic Games
 ]);
 
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────
@@ -137,6 +147,105 @@ function broadcast(message) {
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
+const API_DAILY_SOFT_STOP = Number(process.env.API_DAILY_SOFT_STOP || 25);
+const API_MINUTE_SOFT_STOP = Number(process.env.API_MINUTE_SOFT_STOP || 1);
+
+const quotaState = {
+  dailyLimit: null,
+  dailyRemaining: null,
+  minuteLimit: null,
+  minuteRemaining: null,
+  isPaused: false,
+  pauseReason: '',
+  pausedAt: null,
+  resumeAt: null,
+  lastUpdatedAt: null,
+};
+
+function getNextUtcMidnightIso() {
+  const now = new Date();
+  const nextUtcMidnight = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+    0,
+    0,
+    5,
+  ));
+  return nextUtcMidnight.toISOString();
+}
+
+function parseHeaderInt(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function setQuotaPause(reason, resumeAt = null) {
+  if (!quotaState.isPaused || quotaState.pauseReason !== reason) {
+    console.warn(`🛑 Quota guard active: ${reason}`);
+  }
+  quotaState.isPaused = true;
+  quotaState.pauseReason = reason;
+  quotaState.pausedAt = new Date().toISOString();
+  quotaState.resumeAt = resumeAt;
+}
+
+function clearQuotaPause() {
+  if (quotaState.isPaused) {
+    console.log('✅ Quota guard lifted, API polling resumed');
+  }
+  quotaState.isPaused = false;
+  quotaState.pauseReason = '';
+  quotaState.pausedAt = null;
+  quotaState.resumeAt = null;
+}
+
+function maybeAutoResumeQuotaGuard() {
+  if (!quotaState.isPaused || !quotaState.resumeAt) return;
+  const now = Date.now();
+  const resumeAtTs = Date.parse(quotaState.resumeAt);
+  if (!Number.isNaN(resumeAtTs) && now >= resumeAtTs) {
+    clearQuotaPause();
+  }
+}
+
+function updateQuotaFromHeaders(headers = {}) {
+  const dailyLimit = parseHeaderInt(headers['x-ratelimit-requests-limit']);
+  const dailyRemaining = parseHeaderInt(headers['x-ratelimit-requests-remaining']);
+  const minuteLimit = parseHeaderInt(headers['x-ratelimit-limit']);
+  const minuteRemaining = parseHeaderInt(headers['x-ratelimit-remaining']);
+
+  if (dailyLimit !== null) quotaState.dailyLimit = dailyLimit;
+  if (dailyRemaining !== null) quotaState.dailyRemaining = dailyRemaining;
+  if (minuteLimit !== null) quotaState.minuteLimit = minuteLimit;
+  if (minuteRemaining !== null) quotaState.minuteRemaining = minuteRemaining;
+  quotaState.lastUpdatedAt = new Date().toISOString();
+
+  if (quotaState.dailyRemaining !== null && quotaState.dailyRemaining <= API_DAILY_SOFT_STOP) {
+    setQuotaPause(
+      `Daily remaining ${quotaState.dailyRemaining} <= soft stop ${API_DAILY_SOFT_STOP}`,
+      getNextUtcMidnightIso(),
+    );
+    return;
+  }
+
+  if (quotaState.minuteRemaining !== null && quotaState.minuteRemaining <= API_MINUTE_SOFT_STOP) {
+    // Brief cooldown for minute rate-limit pressure.
+    const resumeAt = new Date(Date.now() + 60 * 1000).toISOString();
+    setQuotaPause(
+      `Minute remaining ${quotaState.minuteRemaining} <= soft stop ${API_MINUTE_SOFT_STOP}`,
+      resumeAt,
+    );
+    return;
+  }
+
+  clearQuotaPause();
+}
+
+function shouldSkipApiCalls() {
+  maybeAutoResumeQuotaGuard();
+  return quotaState.isPaused;
+}
 
 // ─── RESPONSE CACHING (minimize API calls on paid plans) ──────────────────
 const cache = {
@@ -183,6 +292,12 @@ async function fetchLiveMatches() {
     return [];
   }
 
+  if (shouldSkipApiCalls()) {
+    const resumeMsg = quotaState.resumeAt ? ` until ${quotaState.resumeAt}` : '';
+    console.warn(`⏸️  Skipping LIVE API call due to quota guard${resumeMsg}`);
+    return [];
+  }
+
   try {
     console.log('🔄 Fetching LIVE matches from API-Football...');
     
@@ -195,6 +310,7 @@ async function fetchLiveMatches() {
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
     });
+    updateQuotaFromHeaders(response.headers);
 
     let fixtures = response.data.response || [];
     console.log(`  ℹ️  Got ${fixtures.length} LIVE fixtures`);
@@ -211,6 +327,7 @@ async function fetchLiveMatches() {
           headers: { 'x-apisports-key': API_KEY },
           timeout: 5000,
         });
+        updateQuotaFromHeaders(allResponse.headers);
         
         const allFixtures = allResponse.data.response || [];
         console.log(`  📋 Got ${allFixtures.length} recent fixtures`);
@@ -223,9 +340,13 @@ async function fetchLiveMatches() {
     return fixtures;
   } catch (error) {
     console.error('❌ API error fetching live:', error.response?.status || error.message);
+    if (error.response?.headers) {
+      updateQuotaFromHeaders(error.response.headers);
+    }
     // Check if rate limited
     if (error.response?.status === 429) {
-      console.error('⚠️  API RATE LIMIT EXCEEDED (100 calls/day on free tier)');
+      setQuotaPause('Received 429 from API-Football', getNextUtcMidnightIso());
+      console.error('⚠️  API RATE LIMIT EXCEEDED - quota guard enabled until UTC reset');
     }
     return [];
   }
@@ -233,6 +354,12 @@ async function fetchLiveMatches() {
 
 async function fetchUpcomingMatches() {
   if (!API_KEY) {
+    return [];
+  }
+
+  if (shouldSkipApiCalls()) {
+    const resumeMsg = quotaState.resumeAt ? ` until ${quotaState.resumeAt}` : '';
+    console.warn(`⏸️  Skipping UPCOMING API call due to quota guard${resumeMsg}`);
     return [];
   }
 
@@ -255,6 +382,7 @@ async function fetchUpcomingMatches() {
       headers: { 'x-apisports-key': API_KEY },
       timeout: 5000,
     });
+    updateQuotaFromHeaders(response.headers);
 
     const fixtures = response.data.response || [];
     console.log(`📊 API returned ${fixtures.length} upcoming fixtures`);
@@ -262,6 +390,12 @@ async function fetchUpcomingMatches() {
     return fixtures;
   } catch (error) {
     console.error('❌ Upcoming matches error:', error.message);
+    if (error.response?.headers) {
+      updateQuotaFromHeaders(error.response.headers);
+    }
+    if (error.response?.status === 429) {
+      setQuotaPause('Received 429 from API-Football', getNextUtcMidnightIso());
+    }
     return [];
   }
 }
@@ -528,7 +662,25 @@ async function sendWhatsAppAlert(message) {
 // ─── REST API ENDPOINTS ────────────────────────────────────────────────────
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: '✓ Online', timestamp: new Date().toISOString() });
+  res.json({
+    status: '✓ Online',
+    timestamp: new Date().toISOString(),
+    quotaGuard: {
+      isPaused: quotaState.isPaused,
+      pauseReason: quotaState.pauseReason,
+      pausedAt: quotaState.pausedAt,
+      resumeAt: quotaState.resumeAt,
+      dailyRemaining: quotaState.dailyRemaining,
+      dailyLimit: quotaState.dailyLimit,
+      minuteRemaining: quotaState.minuteRemaining,
+      minuteLimit: quotaState.minuteLimit,
+      softStops: {
+        daily: API_DAILY_SOFT_STOP,
+        minute: API_MINUTE_SOFT_STOP,
+      },
+      lastUpdatedAt: quotaState.lastUpdatedAt,
+    },
+  });
 });
 
 app.get('/api/live', (req, res) => {

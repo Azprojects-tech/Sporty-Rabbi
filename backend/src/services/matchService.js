@@ -146,21 +146,30 @@ export async function syncMatchToDatabase(apiMatch) {
 
 // Get stored matches
 export async function getStoredMatches(filters = {}) {
-  let query_str = 'SELECT * FROM matches WHERE 1=1';
+  let query_str = `
+    SELECT 
+      m.*,
+      l.api_id as leagueId,
+      l.name as leagueName,
+      l.country as leagueCountry
+    FROM matches m
+    LEFT JOIN leagues l ON m.league_id = l.id
+    WHERE 1=1
+  `;
   const params = [];
   let paramCount = 1;
 
   if (filters.status) {
-    query_str += ` AND status = $${paramCount++}`;
+    query_str += ` AND m.status = $${paramCount++}`;
     params.push(filters.status);
   }
 
   if (filters.leagueId) {
-    query_str += ` AND league_id = $${paramCount++}`;
+    query_str += ` AND l.api_id = $${paramCount++}`;
     params.push(filters.leagueId);
   }
 
-  query_str += ' ORDER BY kickoff_time DESC LIMIT 50';
+  query_str += ' ORDER BY m.kickoff_time DESC LIMIT 50';
 
   return await getAll(query_str, params);
 }
