@@ -1,5 +1,5 @@
-# Proxy API calls to Railway backend
-/api/*  https://web-production-cccff.up.railway.app/api/:splat  200
+# Direct API calls to Railway backend (no proxy needed since CORS is enabled)
+# Netlify proxy was causing CORS issues, backend now allows * origin
 
 # SPA fallback
 /*    /index.html   200
