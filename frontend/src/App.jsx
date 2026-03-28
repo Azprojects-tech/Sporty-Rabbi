@@ -104,6 +104,7 @@ export default function App() {
     turkey: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 203),
     argentina: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 134),
     brazil: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 71),
+    portugal: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 94),
     international: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => [667, 10].includes(m.leagueId)),
   };
 
@@ -241,8 +242,29 @@ export default function App() {
                   </div>
                 )}
 
+                {/* 🇵🇹 Portugal */}
+                {groupedMatches.portugal.length > 0 && (
+                  <div>
+                    <h2 className="text-2xl font-bold mb-3">🇵🇹 Portugal ({groupedMatches.portugal.length})</h2>
+                    <div className="space-y-2">
+                      {groupedMatches.portugal.map((match) => (
+                        <div
+                          key={match.id}
+                          onClick={() => setSelectedMatch(match)}
+                          className="card cursor-pointer hover:bg-gray-700 transition"
+                        >
+                          <MatchCard
+                            match={match}
+                            onSelectMatch={() => setSelectedMatch(match)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Empty state */}
-                {groupedMatches.turkey.length === 0 && groupedMatches.argentina.length === 0 && groupedMatches.brazil.length === 0 && (
+                {groupedMatches.turkey.length === 0 && groupedMatches.argentina.length === 0 && groupedMatches.brazil.length === 0 && groupedMatches.portugal.length === 0 && (
                   <div className="card text-center py-8">
                     <p className="text-gray-400">No league matches available</p>
                   </div>

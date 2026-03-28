@@ -34,6 +34,7 @@ const WHITELISTED_LEAGUE_IDS = new Set([
   203,   // Turkey - Supa Liga (top division)
   134,   // Argentina - Torneo Federal A
   71,    // Brazil - Serie A
+  94,    // Portugal - Primeira Liga
   667,   // Friendlies Clubs (International)
   10,    // Friendlies (International)
 ]);
