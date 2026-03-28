@@ -58,13 +58,27 @@ export default function App() {
     const fetchData = async () => {
       try {
         const [matchesRes, upcomingRes, betsRes, statsRes] = await Promise.all([
-          apiService.getLiveMatches().catch(() => ({ data: { matches: [] } })),
-          apiService.getUpcoming().catch(() => ({ data: { matches: [] } })),
-          apiService.getBets().catch(() => ({ data: { bets: [] } })),
-          apiService.getStats().catch(() => ({ data: {} })),
+          apiService.getLiveMatches().catch((e) => {
+            console.error('❌ Error fetching live:', e.message);
+            return { data: { matches: [] } };
+          }),
+          apiService.getUpcoming().catch((e) => {
+            console.error('❌ Error fetching upcoming:', e.message);
+            return { data: { matches: [] } };
+          }),
+          apiService.getBets().catch((e) => {
+            console.error('❌ Error fetching bets:', e.message);
+            return { data: { bets: [] } };
+          }),
+          apiService.getStats().catch((e) => {
+            console.error('❌ Error fetching stats:', e.message);
+            return { data: {} };
+          }),
         ]);
         
-        console.log('📡 Fetched data via HTTP');
+        console.log('📡 API Response - Live:', matchesRes?.data);
+        console.log('📡 API Response - Upcoming:', upcomingRes?.data);
+        
         if (matchesRes?.data?.matches?.length > 0) {
           console.log('🔴 Got', matchesRes.data.matches.length, 'live matches from HTTP');
           setMatches(matchesRes.data.matches);
@@ -72,6 +86,8 @@ export default function App() {
         if (upcomingRes?.data?.matches?.length > 0) {
           console.log('⏰ Got', upcomingRes.data.matches.length, 'upcoming matches from HTTP');
           setUpcomingMatches(upcomingRes.data.matches);
+        } else {
+          console.log('⏰ No upcoming matches in response. Data:', upcomingRes?.data);
         }
         setBets(betsRes?.data?.bets || []);
         setStats(statsRes?.data);
