@@ -515,14 +515,51 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/live', (req, res) => {
-  res.json({ count: liveMatches.length, matches: liveMatches });
+  const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
+  const matchType = req.query.matchType ? String(req.query.matchType) : null;
+  const excludeAfrica = req.query.excludeAfrica === 'true';
+  
+  let filtered = liveMatches;
+  
+  if (excludeAfrica) {
+    filtered = filtered.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
+  }
+  
+  if (leagueId) {
+    filtered = filtered.filter(m => m.leagueId === leagueId);
+  }
+  
+  if (matchType) {
+    filtered = filtered.filter(m => m.matchType === matchType);
+  }
+  
+  res.json({ count: filtered.length, matches: filtered });
 });
+
+// List of African countries to exclude (to focus on major leagues)
+const AFRICAN_COUNTRIES = new Set([
+  'Nigeria', 'Egypt', 'South Africa', 'Morocco', 'Algeria', 'Tunisia',
+  'Cameroon', 'Ghana', 'Mali', 'Senegal', 'Ivory Coast', 'Kenya',
+  'Zimbabwe', 'Zambia', 'Uganda', 'Benin', 'Burkina Faso', 'Burundi',
+  'Cape Verde', 'Central African Republic', 'Chad', 'Comoros',
+  'Djibouti', 'Equatorial Guinea', 'Eritrea', 'Eswatini',
+  'Ethiopia', 'Gabon', 'Gambia', 'Guinea', 'Guinea-Bissau',
+  'Lesotho', 'Liberia', 'Libya', 'Madagascar', 'Malawi', 'Mauritania',
+  'Mauritius', 'Mozambique', 'Namibia', 'Niger', 'Rwanda', 'Sao Tome and Principe',
+  'Seychelles', 'Sierra Leone', 'Somalia', 'South Sudan', 'Sudan',
+  'Swaziland', 'Tanzania', 'Togo', 'Western Sahara'
+]);
 
 app.get('/api/upcoming', (req, res) => {
   const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
+  const excludeAfrica = req.query.excludeAfrica === 'true';
   
   let filtered = upcomingMatches;
+  
+  if (excludeAfrica) {
+    filtered = filtered.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
+  }
   
   if (leagueId) {
     filtered = filtered.filter(m => m.leagueId === leagueId);
@@ -561,9 +598,15 @@ app.get('/api/leagues', (req, res) => {
 });
 
 app.get('/api/matchTypes', (req, res) => {
+  const excludeAfrica = req.query.excludeAfrica === 'true';
   const types = {};
   
-  upcomingMatches.forEach(match => {
+  let matches = upcomingMatches;
+  if (excludeAfrica) {
+    matches = matches.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
+  }
+  
+  matches.forEach(match => {
     const type = match.matchType || 'League';
     if (!types[type]) {
       types[type] = { name: type, count: 0 };

@@ -20,6 +20,7 @@ export default function App() {
   const [selectedLeague, setSelectedLeague] = useState(null);
   const [matchTypes, setMatchTypes] = useState([]);
   const [selectedMatchType, setSelectedMatchType] = useState(null);
+  const [excludeAfrica, setExcludeAfrica] = useState(true); // Default to excluding African leagues
 
   useEffect(() => {
     // Connect to WebSocket
@@ -62,19 +63,14 @@ export default function App() {
     const fetchData = async () => {
       try {
         const [matchesRes, upcomingRes, leaguesRes, matchTypesRes, betsRes, statsRes] = await Promise.all([
-          apiService.getLiveMatches().catch((e) => {
+          apiService.getLiveMatches(selectedLeague, selectedMatchType, excludeAfrica).catch((e) => {
             console.error('❌ Error fetching live:', e.message);
             return { data: { matches: [] } };
           }),
-          selectedLeague || selectedMatchType
-            ? apiService.getUpcoming(selectedLeague, selectedMatchType).catch((e) => {
-                console.error('❌ Error fetching upcoming:', e.message);
-                return { data: { matches: [] } };
-              })
-            : apiService.getUpcoming().catch((e) => {
-                console.error('❌ Error fetching upcoming:', e.message);
-                return { data: { matches: [] } };
-              }),
+          apiService.getUpcoming(selectedLeague, selectedMatchType, excludeAfrica).catch((e) => {
+            console.error('❌ Error fetching upcoming:', e.message);
+            return { data: { matches: [] } };
+          }),
           apiService.getLeagues().catch((e) => {
             console.error('❌ Error fetching leagues:', e.message);
             return { data: [] };
@@ -125,7 +121,7 @@ export default function App() {
     const fetchInterval = setInterval(fetchData, 10000);
     
     return () => clearInterval(fetchInterval);
-  }, [selectedLeague, selectedMatchType]);
+  }, [selectedLeague, selectedMatchType, excludeAfrica]);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
@@ -149,29 +145,46 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto p-6">
         {/* Navigation Tabs */}
-        <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4 justify-between items-center">
-          <div className="flex gap-4">
-            {['live', 'upcoming', 'tracking', 'alerts'].map((tab) => (
+        <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4 justify-between items-start">
+          <div className="flex gap-2 flex-wrap">
+            {['live', 'upcoming', 'international', 'tracking', 'alerts'].map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`capitalize font-semibold transition-colors ${
+                onClick={() => {
+                  setActiveTab(tab);
+                  setSelectedMatchType(null); // Reset filters when switching tabs
+                  setSelectedLeague(null);
+                }}
+                className={`capitalize font-semibold transition-colors px-3 py-2 ${
                   activeTab === tab
                     ? 'text-green-400 border-b-2 border-green-400'
                     : 'text-gray-400 hover:text-gray-300'
                 }`}
               >
-                {tab === 'live' && '🔴 Live Matches'}
+                {tab === 'live' && `🔴 Live (${matches.length})`}
                 {tab === 'upcoming' && `⏰ Upcoming (${upcomingMatches.length})`}
+                {tab === 'international' && `🌍 International`}
                 {tab === 'tracking' && '📈 My Bets'}
                 {tab === 'alerts' && '⚡ Opportunities'}
               </button>
             ))}
           </div>
           
-          {/* League & Match Type Filters - Only show on Upcoming tab */}
-          {activeTab === 'upcoming' && (
-            <div className="flex flex-col gap-3 justify-end">
+          {/* Filters - Show for Live, Upcoming, and International tabs */}
+          {(activeTab === 'upcoming' || activeTab === 'live' || activeTab === 'international') && (
+            <div className="flex flex-col gap-3 items-end">
+              {/* Exclude Africa Toggle */}
+              <button
+                onClick={() => setExcludeAfrica(!excludeAfrica)}
+                className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                  excludeAfrica
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-700 text-gray-300'
+                }`}
+              >
+                {excludeAfrica ? '🚫 Africa Off' : '🌍 Show Africa'}
+              </button>
+              
               {/* Match Type Tabs */}
               {matchTypes.length > 0 && (
                 <div className="flex gap-2 flex-wrap justify-end">
@@ -183,40 +196,69 @@ export default function App() {
                         : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                     }`}
                   >
-                    All ({upcomingMatches.length})
+                    All
                   </button>
-                  {matchTypes.map((type) => (
-                    <button
-                      key={type.name}
-                      onClick={() => setSelectedMatchType(type.name)}
-                      className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
-                        selectedMatchType === type.name
-                          ? 'bg-green-500 text-white'
-                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                      }`}
-                    >
-                      {type.name} ({type.count})
-                    </button>
-                  ))}
+                  {activeTab === 'international' ? (
+                    // For International tab, show combined Friendly+Qualifier
+                    <>
+                      <button
+                        onClick={() => setSelectedMatchType('Friendly')}
+                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
+                          selectedMatchType === 'Friendly'
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        ⚽ Friendlies
+                      </button>
+                      <button
+                        onClick={() => setSelectedMatchType('Qualifier')}
+                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
+                          selectedMatchType === 'Qualifier'
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        🏆 Qualifiers
+                      </button>
+                    </>
+                  ) : (
+                    // For other tabs, show all match types
+                    matchTypes.map((type) => (
+                      <button
+                        key={type.name}
+                        onClick={() => setSelectedMatchType(type.name)}
+                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
+                          selectedMatchType === type.name
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        {type.name}
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
               
               {/* League Selector */}
-              <select
-                value={selectedLeague || ''}
-                onChange={(e) => {
-                  const val = e.target.value ? parseInt(e.target.value) : null;
-                  setSelectedLeague(val);
-                }}
-                className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors max-w-xs"
-              >
-                <option value="">🏆 All Leagues ({leagues.length})</option>
-                {leagues.slice(0, 25).map((league) => (
-                  <option key={league.id} value={league.id}>
-                    {league.name} ({league.count})
-                  </option>
-                ))}
-              </select>
+              {leagues.length > 0 && (
+                <select
+                  value={selectedLeague || ''}
+                  onChange={(e) => {
+                    const val = e.target.value ? parseInt(e.target.value) : null;
+                    setSelectedLeague(val);
+                  }}
+                  className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors max-w-xs text-sm"
+                >
+                  <option value="">🏆 All Leagues ({leagues.length})</option>
+                  {leagues.slice(0, 30).map((league) => (
+                    <option key={league.id} value={league.id}>
+                      {league.name} ({league.count})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           )}
         </div>
@@ -304,6 +346,34 @@ export default function App() {
               <div>
                 <h2 className="text-2xl font-bold mb-4">📈 Betting Performance</h2>
                 {stats && <BetStats stats={stats} />}
+              </div>
+            )}
+
+            {activeTab === 'international' && (
+              <div>
+                <h2 className="text-2xl font-bold mb-4">🌍 International Matches (Friendlies & Qualifiers)</h2>
+                {upcomingMatches.filter(m => m.matchType === 'Friendly' || m.matchType === 'Qualifier').length === 0 ? (
+                  <div className="card">
+                    <p className="text-gray-400">No international friendlies or qualifiers scheduled</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {upcomingMatches
+                      .filter(m => m.matchType === 'Friendly' || m.matchType === 'Qualifier')
+                      .map((match) => (
+                        <div
+                          key={match.id}
+                          onClick={() => setSelectedMatch(match)}
+                          className="cursor-pointer"
+                        >
+                          <MatchCard
+                            match={match}
+                            onSelectMatch={() => setSelectedMatch(match)}
+                          />
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
             )}
 

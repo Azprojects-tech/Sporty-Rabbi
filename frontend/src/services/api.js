@@ -32,14 +32,24 @@ export const apiService = {
   // Health check
   getHealth: () => client.get('/health'),
 
-  // Live matches
-  getLiveMatches: () => client.get('/live'),
-
-  // Upcoming matches (with optional league filtering)
-  getUpcoming: (leagueId, matchType) => {
+  // Live matches (with optional filtering)
+  getLiveMatches: (leagueId, matchType, excludeAfrica) => {
     const params = {};
     if (leagueId) params.leagueId = leagueId;
     if (matchType) params.matchType = matchType;
+    if (excludeAfrica) params.excludeAfrica = true;
+    if (Object.keys(params).length) {
+      return client.get('/live', { params });
+    }
+    return client.get('/live');
+  },
+
+  // Upcoming matches (with optional filtering)
+  getUpcoming: (leagueId, matchType, excludeAfrica) => {
+    const params = {};
+    if (leagueId) params.leagueId = leagueId;
+    if (matchType) params.matchType = matchType;
+    if (excludeAfrica) params.excludeAfrica = true;
     if (Object.keys(params).length) {
       return client.get('/upcoming', { params });
     }
