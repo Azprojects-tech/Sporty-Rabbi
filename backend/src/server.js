@@ -31,7 +31,7 @@ const PORT = process.env.PORT || 3000;
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
 const WHITELISTED_LEAGUE_IDS = new Set([
-  205,   // Turkey - 2. Lig
+  203,   // Turkey - Supa Liga (top division)
   134,   // Argentina - Torneo Federal A
   71,    // Brazil - Serie A
   667,   // Friendlies Clubs (International)
