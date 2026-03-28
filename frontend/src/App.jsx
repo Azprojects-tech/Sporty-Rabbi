@@ -11,8 +11,27 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('leagues');
+  const [activeTab, setActiveTab] = useState('live');
+  const [subTab, setSubTab] = useState('leagues');
+  const [selectedLeague, setSelectedLeague] = useState('all');
+  const [selectedInternational, setSelectedInternational] = useState('all');
   const [selectedMatch, setSelectedMatch] = useState(null);
+
+  // League dropdown options
+  const leagueOptions = [
+    { id: 'all', name: 'All Leagues', emoji: '📺' },
+    { id: 203, name: 'Turkey - Supa Liga', emoji: '🇹🇷' },
+    { id: 134, name: 'Argentina - Federal A', emoji: '🇦🇷' },
+    { id: 71, name: 'Brazil - Serie A', emoji: '🇧🇷' },
+    { id: 94, name: 'Portugal - Primeira Liga', emoji: '🇵🇹' },
+  ];
+
+  // International dropdown options
+  const internationalOptions = [
+    { id: 'all', name: 'All International', emoji: '🌍' },
+    { id: 10, name: 'Friendlies', emoji: '⚽' },
+    { id: 667, name: 'Friendlies Clubs', emoji: '🏆' },
+  ];
 
   useEffect(() => {
     // Connect to WebSocket
@@ -99,20 +118,24 @@ export default function App() {
     return () => clearInterval(fetchInterval);
   }, []);
 
-  // Group matches by league
-  const groupedMatches = {
-    turkey: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 203),
-    argentina: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 134),
-    brazil: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 71),
-    portugal: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 94),
-    international: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => [667, 10].includes(m.leagueId)),
-  };
+  // Get matches for current tab (Live/Upcoming)
+  const currentMatches = activeTab === 'live' ? matches : upcomingMatches;
+
+  // Filter by league selection
+  const filteredLeagueMatches = selectedLeague === 'all'
+    ? currentMatches.filter(m => [203, 134, 71, 94].includes(m.leagueId))
+    : currentMatches.filter(m => m.leagueId === selectedLeague);
+
+  // Filter by international selection
+  const filteredInternationalMatches = selectedInternational === 'all'
+    ? currentMatches.filter(m => [10, 667].includes(m.leagueId))
+    : currentMatches.filter(m => m.leagueId === selectedInternational);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
-      {/* Header - Minimal, just connection status */}
+      {/* Header - Live/Upcoming Selection */}
       <header className="bg-gradient-to-r from-gray-800 to-gray-900 border-b border-gray-700 p-4">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
+        <div className="max-w-7xl mx-auto flex justify-between items-center mb-4">
           <button
             onClick={() => setSelectedMatch(null)}
             className="hover:opacity-80 transition"
@@ -126,65 +149,111 @@ export default function App() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="max-w-7xl mx-auto mt-4 flex gap-3 flex-wrap">
-          <button
-            onClick={() => setActiveTab('leagues')}
-            className={`font-semibold px-6 py-2 rounded-lg transition ${
-              activeTab === 'leagues'
-                ? 'bg-green-600 text-white shadow-lg'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            📺 Leagues
-          </button>
-          <button
-            onClick={() => setActiveTab('international')}
-            className={`font-semibold px-6 py-2 rounded-lg transition ${
-              activeTab === 'international'
-                ? 'bg-green-600 text-white shadow-lg'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            🌍 International
-          </button>
-          <button
-            onClick={() => setActiveTab('live')}
-            className={`font-semibold px-6 py-2 rounded-lg transition ${
-              activeTab === 'live'
-                ? 'bg-red-600 text-white shadow-lg'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            🔴 Live
-          </button>
-          <button
-            onClick={() => setActiveTab('upcoming')}
-            className={`font-semibold px-6 py-2 rounded-lg transition ${
-              activeTab === 'upcoming'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            ⏰ Upcoming
-          </button>
+        {/* Primary Tabs: Live / Upcoming */}
+        <div className="max-w-7xl mx-auto border-b border-gray-700 pb-4 mb-4">
+          <div className="flex gap-3">
+            <button
+              onClick={() => setActiveTab('live')}
+              className={`font-bold text-lg px-8 py-3 rounded-lg transition ${
+                activeTab === 'live'
+                  ? 'bg-red-600 text-white shadow-lg border-b-4 border-red-400'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              🔴 LIVE NOW
+            </button>
+            <button
+              onClick={() => setActiveTab('upcoming')}
+              className={`font-bold text-lg px-8 py-3 rounded-lg transition ${
+                activeTab === 'upcoming'
+                  ? 'bg-blue-600 text-white shadow-lg border-b-4 border-blue-400'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              ⏰ UPCOMING
+            </button>
+          </div>
+        </div>
+
+        {/* Secondary Tabs: Leagues / International + Dropdowns */}
+        <div className="max-w-7xl mx-auto">
+          <div className="flex gap-3 items-center flex-wrap">
+            {/* Leagues Tab */}
+            <button
+              onClick={() => setSubTab('leagues')}
+              className={`font-semibold px-6 py-2 rounded-lg transition ${
+                subTab === 'leagues'
+                  ? 'bg-green-600 text-white shadow-lg'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              📺 Leagues
+            </button>
+
+            {/* League Dropdown */}
+            {subTab === 'leagues' && (
+              <select
+                value={selectedLeague}
+                onChange={(e) => setSelectedLeague(e.target.value)}
+                className="bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:border-green-500 focus:outline-none"
+              >
+                {leagueOptions.map(opt => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.emoji} {opt.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* International Tab */}
+            <button
+              onClick={() => setSubTab('international')}
+              className={`font-semibold px-6 py-2 rounded-lg transition ${
+                subTab === 'international'
+                  ? 'bg-purple-600 text-white shadow-lg'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              🌍 International
+            </button>
+
+            {/* International Dropdown */}
+            {subTab === 'international' && (
+              <select
+                value={selectedInternational}
+                onChange={(e) => setSelectedInternational(e.target.value)}
+                className="bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:border-purple-500 focus:outline-none"
+              >
+                {internationalOptions.map(opt => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.emoji} {opt.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto p-6">
-        {/* Main Content - League Groupings */}
+        {/* Main Content - Filtered Matches */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column - Grouped Matches */}
+          {/* Left Column - Filtered Matches */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Leagues Tab */}
-            {activeTab === 'leagues' && (
+            {/* Leagues Sub-Tab Content */}
+            {subTab === 'leagues' && (
               <>
-                {/* 🇹🇷 Turkey */}
-                {groupedMatches.turkey.length > 0 && (
+                {filteredLeagueMatches.length > 0 ? (
                   <div>
-                    <h2 className="text-2xl font-bold mb-3">🇹🇷 Turkey ({groupedMatches.turkey.length})</h2>
+                    <h2 className="text-2xl font-bold mb-4">
+                      {activeTab === 'live' ? '🔴 Live Matches' : '⏰ Upcoming Matches'}
+                    </h2>
+                    <p className="text-gray-400 text-sm mb-4">
+                      {selectedLeague === 'all' ? 'All Leagues' : leagueOptions.find(l => l.id === selectedLeague)?.name}
+                      {' '} ({filteredLeagueMatches.length})
+                    </p>
                     <div className="space-y-2">
-                      {groupedMatches.turkey.map((match) => (
+                      {filteredLeagueMatches.map((match) => (
                         <div
                           key={match.id}
                           onClick={() => setSelectedMatch(match)}
@@ -194,164 +263,56 @@ export default function App() {
                             match={match}
                             onSelectMatch={() => setSelectedMatch(match)}
                           />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 🇦🇷 Argentina */}
-                {groupedMatches.argentina.length > 0 && (
-                  <div>
-                    <h2 className="text-2xl font-bold mb-3">🇦🇷 Argentina ({groupedMatches.argentina.length})</h2>
-                    <div className="space-y-2">
-                      {groupedMatches.argentina.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 🇧🇷 Brazil */}
-                {groupedMatches.brazil.length > 0 && (
-                  <div>
-                    <h2 className="text-2xl font-bold mb-3">🇧🇷 Brazil ({groupedMatches.brazil.length})</h2>
-                    <div className="space-y-2">
-                      {groupedMatches.brazil.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 🇵🇹 Portugal */}
-                {groupedMatches.portugal.length > 0 && (
-                  <div>
-                    <h2 className="text-2xl font-bold mb-3">🇵🇹 Portugal ({groupedMatches.portugal.length})</h2>
-                    <div className="space-y-2">
-                      {groupedMatches.portugal.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Empty state */}
-                {groupedMatches.turkey.length === 0 && groupedMatches.argentina.length === 0 && groupedMatches.brazil.length === 0 && groupedMatches.portugal.length === 0 && (
-                  <div className="card text-center py-8">
-                    <p className="text-gray-400">No league matches available</p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* International Tab */}
-            {activeTab === 'international' && (
-              <>
-                {/* 🌍 International */}
-                {groupedMatches.international.length > 0 && (
-                  <div>
-                    <h2 className="text-2xl font-bold mb-3">🌍 International ({groupedMatches.international.length})</h2>
-                    <div className="space-y-2">
-                      {groupedMatches.international.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Empty state */}
-                {groupedMatches.international.length === 0 && (
-                  <div className="card text-center py-8">
-                    <p className="text-gray-400">No international matches available</p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Live Tab */}
-            {activeTab === 'live' && (
-              <>
-                {matches.length > 0 ? (
-                  <div>
-                    <h2 className="text-2xl font-bold mb-3 text-red-400">🔴 Live Matches ({matches.length})</h2>
-                    <div className="space-y-2">
-                      {matches.map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition border-l-4 border-red-500"
-                        >
-                          <MatchCard match={match} onSelectMatch={() => setSelectedMatch(match)} />
                         </div>
                       ))}
                     </div>
                   </div>
                 ) : (
                   <div className="card text-center py-8">
-                    <p className="text-gray-400">No matches currently live</p>
+                    <p className="text-gray-400">
+                      {activeTab === 'live'
+                        ? 'No live league matches at this time'
+                        : 'No upcoming league matches scheduled'}
+                    </p>
                   </div>
                 )}
               </>
             )}
 
-            {/* Upcoming Tab */}
-            {activeTab === 'upcoming' && (
+            {/* International Sub-Tab Content */}
+            {subTab === 'international' && (
               <>
-                {upcomingMatches.length > 0 ? (
+                {filteredInternationalMatches.length > 0 ? (
                   <div>
-                    <h2 className="text-2xl font-bold mb-3 text-blue-400">⏰ Upcoming Matches (24h)</h2>
+                    <h2 className="text-2xl font-bold mb-4">
+                      {activeTab === 'live' ? '🔴 Live International' : '⏰ Upcoming International'}
+                    </h2>
+                    <p className="text-gray-400 text-sm mb-4">
+                      {selectedInternational === 'all' ? 'All International' : internationalOptions.find(i => i.id === selectedInternational)?.name}
+                      {' '} ({filteredInternationalMatches.length})
+                    </p>
                     <div className="space-y-2">
-                      {upcomingMatches.map((match) => (
+                      {filteredInternationalMatches.map((match) => (
                         <div
                           key={match.id}
                           onClick={() => setSelectedMatch(match)}
-                          className="card cursor-pointer hover:bg-gray-700 transition border-l-4 border-blue-500"
+                          className="card cursor-pointer hover:bg-gray-700 transition"
                         >
-                          <MatchCard match={match} onSelectMatch={() => setSelectedMatch(match)} />
+                          <MatchCard
+                            match={match}
+                            onSelectMatch={() => setSelectedMatch(match)}
+                          />
                         </div>
                       ))}
                     </div>
                   </div>
                 ) : (
                   <div className="card text-center py-8">
-                    <p className="text-gray-400">No upcoming matches scheduled</p>
+                    <p className="text-gray-400">
+                      {activeTab === 'live'
+                        ? 'No live international matches at this time'
+                        : 'No upcoming international matches scheduled'}
+                    </p>
                   </div>
                 )}
               </>
