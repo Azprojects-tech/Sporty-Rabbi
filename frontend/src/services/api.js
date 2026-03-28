@@ -35,6 +35,9 @@ export const apiService = {
   // Live matches
   getLiveMatches: () => client.get('/live'),
 
+  // Upcoming matches
+  getUpcoming: () => client.get('/upcoming'),
+
   // Bets
   logBet: (data) => client.post('/bets', data),
   getBets: () => client.get('/bets'),

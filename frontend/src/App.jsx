@@ -29,11 +29,13 @@ export default function App() {
 
     // Listen for live match updates
     on('LIVE_MATCHES', (payload) => {
+      console.log('📊 Setting live matches:', payload?.length || 0);
       setMatches(payload || []);
     });
 
     // Listen for upcoming matches
     on('UPCOMING_MATCHES', (payload) => {
+      console.log('📅 Setting upcoming matches:', payload?.length || 0);
       setUpcomingMatches(payload || []);
     });
 
@@ -52,21 +54,38 @@ export default function App() {
       setBets((prev) => prev.map((b) => (b.id === bet.id ? bet : b)));
     });
 
-    // Fetch initial data
+    // Fetch all data via HTTP (both initial and as fallback for WebSocket)
     const fetchData = async () => {
       try {
-        const [betsRes, statsRes] = await Promise.all([
-          apiService.getBets(),
-          apiService.getStats(),
+        const [matchesRes, upcomingRes, betsRes, statsRes] = await Promise.all([
+          apiService.getLiveMatches().catch(() => ({ data: { matches: [] } })),
+          apiService.getUpcoming().catch(() => ({ data: { matches: [] } })),
+          apiService.getBets().catch(() => ({ data: { bets: [] } })),
+          apiService.getStats().catch(() => ({ data: {} })),
         ]);
-        setBets(betsRes.data.bets || []);
-        setStats(statsRes.data);
+        
+        console.log('📡 Fetched data via HTTP');
+        if (matchesRes?.data?.matches?.length > 0) {
+          console.log('🔴 Got', matchesRes.data.matches.length, 'live matches from HTTP');
+          setMatches(matchesRes.data.matches);
+        }
+        if (upcomingRes?.data?.matches?.length > 0) {
+          console.log('⏰ Got', upcomingRes.data.matches.length, 'upcoming matches from HTTP');
+          setUpcomingMatches(upcomingRes.data.matches);
+        }
+        setBets(betsRes?.data?.bets || []);
+        setStats(statsRes?.data);
       } catch (err) {
         console.error('Error fetching data:', err);
       }
     };
 
     fetchData();
+    
+    // Re-fetch data every 10 seconds to keep it fresh
+    const fetchInterval = setInterval(fetchData, 10000);
+    
+    return () => clearInterval(fetchInterval);
   }, []);
 
   return (
