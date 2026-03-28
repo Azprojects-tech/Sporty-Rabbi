@@ -3,18 +3,12 @@
   functions = "netlify/functions"
   publish = "frontend/dist"
 
-# Proxy API calls through Netlify to avoid Railway CORS proxy issues
-[[redirects]]
-  from = "/api/*"
-  to = "https://web-production-cccff.up.railway.app/api/:splat"
-  status = 200
-  force = true
-
+# SPA fallback - let React Router handle client-side routing
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
 [context.production.environment]
-  VITE_API_BASE_URL = "https://sporty-rabbi-backend.railway.app/api"
-  VITE_WS_URL = "wss://sporty-rabbi-backend.railway.app"
+  VITE_API_BASE_URL = "https://web-production-cccff.up.railway.app/api"
+  VITE_WS_URL = "wss://web-production-cccff.up.railway.app"

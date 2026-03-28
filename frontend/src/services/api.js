@@ -37,11 +37,11 @@ export const apiService = {
 
   // Bets
   logBet: (data) => client.post('/bets', data),
-  getBets: () => client.get('/bets/history'),
+  getBets: () => client.get('/bets'),
   updateBet: (id, data) => client.patch(`/bets/${id}`, data),
 
-  // Stats (use bets/stats endpoint if it exists, otherwise fetch from bets)
-  getStats: () => client.get('/bets/stats').catch(() => client.get('/bets/history')),
+  // Stats
+  getStats: () => client.get('/stats'),
 
   // Alerts
   getAlerts: () => client.get('/alerts'),
