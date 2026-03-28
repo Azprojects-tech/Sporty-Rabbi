@@ -126,26 +126,46 @@ export default function App() {
         </div>
 
         {/* Tabs */}
-        <div className="max-w-7xl mx-auto mt-4 flex gap-4">
+        <div className="max-w-7xl mx-auto mt-4 flex gap-3 flex-wrap">
           <button
             onClick={() => setActiveTab('leagues')}
-            className={`font-semibold px-4 py-2 rounded transition ${
+            className={`font-semibold px-6 py-2 rounded-lg transition ${
               activeTab === 'leagues'
-                ? 'bg-green-600 text-white'
+                ? 'bg-green-600 text-white shadow-lg'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
           >
-            📺 All Leagues
+            📺 Leagues
           </button>
           <button
             onClick={() => setActiveTab('international')}
-            className={`font-semibold px-4 py-2 rounded transition ${
+            className={`font-semibold px-6 py-2 rounded-lg transition ${
               activeTab === 'international'
-                ? 'bg-green-600 text-white'
+                ? 'bg-green-600 text-white shadow-lg'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
           >
             🌍 International
+          </button>
+          <button
+            onClick={() => setActiveTab('live')}
+            className={`font-semibold px-6 py-2 rounded-lg transition ${
+              activeTab === 'live'
+                ? 'bg-red-600 text-white shadow-lg'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            🔴 Live
+          </button>
+          <button
+            onClick={() => setActiveTab('upcoming')}
+            className={`font-semibold px-6 py-2 rounded-lg transition ${
+              activeTab === 'upcoming'
+                ? 'bg-blue-600 text-white shadow-lg'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            ⏰ Upcoming
           </button>
         </div>
       </header>
@@ -258,6 +278,58 @@ export default function App() {
                 {groupedMatches.international.length === 0 && (
                   <div className="card text-center py-8">
                     <p className="text-gray-400">No international matches available</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Live Tab */}
+            {activeTab === 'live' && (
+              <>
+                {matches.length > 0 ? (
+                  <div>
+                    <h2 className="text-2xl font-bold mb-3 text-red-400">🔴 Live Matches ({matches.length})</h2>
+                    <div className="space-y-2">
+                      {matches.map((match) => (
+                        <div
+                          key={match.id}
+                          onClick={() => setSelectedMatch(match)}
+                          className="card cursor-pointer hover:bg-gray-700 transition border-l-4 border-red-500"
+                        >
+                          <MatchCard match={match} onSelectMatch={() => setSelectedMatch(match)} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card text-center py-8">
+                    <p className="text-gray-400">No matches currently live</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Upcoming Tab */}
+            {activeTab === 'upcoming' && (
+              <>
+                {upcomingMatches.length > 0 ? (
+                  <div>
+                    <h2 className="text-2xl font-bold mb-3 text-blue-400">⏰ Upcoming Matches (24h)</h2>
+                    <div className="space-y-2">
+                      {upcomingMatches.map((match) => (
+                        <div
+                          key={match.id}
+                          onClick={() => setSelectedMatch(match)}
+                          className="card cursor-pointer hover:bg-gray-700 transition border-l-4 border-blue-500"
+                        >
+                          <MatchCard match={match} onSelectMatch={() => setSelectedMatch(match)} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card text-center py-8">
+                    <p className="text-gray-400">No upcoming matches scheduled</p>
                   </div>
                 )}
               </>
