@@ -11,7 +11,6 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('leagues');
   const [selectedMatch, setSelectedMatch] = useState(null);
 
   useEffect(() => {
@@ -99,109 +98,121 @@ export default function App() {
     return () => clearInterval(fetchInterval);
   }, []);
 
+  // Group matches by league
+  const groupedMatches = {
+    turkey: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 205),
+    argentina: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 134),
+    brazil: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => m.leagueId === 71),
+    international: (upcomingMatches.length > 0 ? upcomingMatches : matches).filter(m => [667, 10].includes(m.leagueId)),
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-gray-800 to-gray-900 border-b border-gray-700 p-6">
+      {/* Header - Minimal, just connection status */}
+      <header className="bg-gradient-to-r from-gray-800 to-gray-900 border-b border-gray-700 p-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div>
-            <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500">
-              🐰 SportyRabbi
-            </h1>
-            <p className="text-gray-400 mt-2">Live Football Analytics with AI Betting Insights 🚀</p>
-          </div>
-          <div className="text-right">
-            <div className={`text-sm font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>
-              {connected ? '🟢 Live' : '🔴 Offline'}
-            </div>
-            <div className="text-xs text-gray-400">{matches.length} live · {upcomingMatches.length} upcoming</div>
+          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500">
+            🐰 SportyRabbi
+          </h1>
+          <div className={`text-sm font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>
+            {connected ? '🟢 Live' : '🔴 Offline'} · Connected
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto p-6">
-        {/* Navigation Tabs - Only Leagues & International */}
-        <div className="flex gap-6 mb-6 border-b border-gray-700 pb-4">
-          <button
-            onClick={() => setActiveTab('leagues')}
-            className={`font-semibold transition-colors px-3 py-2 ${
-              activeTab === 'leagues'
-                ? 'text-green-400 border-b-2 border-green-400'
-                : 'text-gray-400 hover:text-gray-300'
-            }`}
-          >
-            📺 Leagues ({upcomingMatches.length || matches.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('international')}
-            className={`font-semibold transition-colors px-3 py-2 ${
-              activeTab === 'international'
-                ? 'text-green-400 border-b-2 border-green-400'
-                : 'text-gray-400 hover:text-gray-300'
-            }`}
-          >
-            🌍 International
-          </button>
-        </div>
-
-        {/* Main Content */}
+        {/* Main Content - League Groupings */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column - Matches */}
-          <div className="lg:col-span-2">
-            {activeTab === 'leagues' && (
+          {/* Left Column - Grouped Matches */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* 🇹🇷 Turkey */}
+            {groupedMatches.turkey.length > 0 && (
               <div>
-                <h2 className="text-2xl font-bold mb-4">📺 Available Leagues</h2>
-                <div className="text-sm text-gray-400 mb-4">
-                  🇹🇷 Turkey | 🇦🇷 Argentina | 🇧🇷 Brazil | 🌍 International
+                <h2 className="text-2xl font-bold mb-3">🇹🇷 Turkey ({groupedMatches.turkey.length})</h2>
+                <div className="space-y-2">
+                  {groupedMatches.turkey.map((match) => (
+                    <div
+                      key={match.id}
+                      onClick={() => setSelectedMatch(match)}
+                      className="card cursor-pointer hover:bg-gray-700 transition"
+                    >
+                      <MatchCard
+                        match={match}
+                        onSelectMatch={() => setSelectedMatch(match)}
+                      />
+                    </div>
+                  ))}
                 </div>
-                {upcomingMatches.length === 0 && matches.length === 0 ? (
-                  <div className="card">
-                    <p className="text-gray-400">No matches scheduled yet</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {(upcomingMatches.length > 0 ? upcomingMatches : matches).map((match) => (
-                      <div
-                        key={match.id}
-                        onClick={() => setSelectedMatch(match)}
-                        className="cursor-pointer"
-                      >
-                        <MatchCard
-                          match={match}
-                          onSelectMatch={() => setSelectedMatch(match)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 
-            {activeTab === 'international' && (
+            {/* 🇦🇷 Argentina */}
+            {groupedMatches.argentina.length > 0 && (
               <div>
-                <h2 className="text-2xl font-bold mb-4">🌍 International Matches</h2>
-                {upcomingMatches.filter(m => m.matchType === 'Friendly').length === 0 ? (
-                  <div className="card">
-                    <p className="text-gray-400">No international friendlies scheduled</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {upcomingMatches
-                      .filter(m => m.matchType === 'Friendly')
-                      .map((match) => (
-                        <div
-                          key={match.id}
-                          onClick={() => setSelectedMatch(match)}
-                          className="cursor-pointer"
-                        >
-                          <MatchCard
-                            match={match}
-                            onSelectMatch={() => setSelectedMatch(match)}
-                          />
-                        </div>
-                      ))}
-                  </div>
-                )}
+                <h2 className="text-2xl font-bold mb-3">🇦🇷 Argentina ({groupedMatches.argentina.length})</h2>
+                <div className="space-y-2">
+                  {groupedMatches.argentina.map((match) => (
+                    <div
+                      key={match.id}
+                      onClick={() => setSelectedMatch(match)}
+                      className="card cursor-pointer hover:bg-gray-700 transition"
+                    >
+                      <MatchCard
+                        match={match}
+                        onSelectMatch={() => setSelectedMatch(match)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 🇧🇷 Brazil */}
+            {groupedMatches.brazil.length > 0 && (
+              <div>
+                <h2 className="text-2xl font-bold mb-3">🇧🇷 Brazil ({groupedMatches.brazil.length})</h2>
+                <div className="space-y-2">
+                  {groupedMatches.brazil.map((match) => (
+                    <div
+                      key={match.id}
+                      onClick={() => setSelectedMatch(match)}
+                      className="card cursor-pointer hover:bg-gray-700 transition"
+                    >
+                      <MatchCard
+                        match={match}
+                        onSelectMatch={() => setSelectedMatch(match)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 🌍 International */}
+            {groupedMatches.international.length > 0 && (
+              <div>
+                <h2 className="text-2xl font-bold mb-3">🌍 International ({groupedMatches.international.length})</h2>
+                <div className="space-y-2">
+                  {groupedMatches.international.map((match) => (
+                    <div
+                      key={match.id}
+                      onClick={() => setSelectedMatch(match)}
+                      className="card cursor-pointer hover:bg-gray-700 transition"
+                    >
+                      <MatchCard
+                        match={match}
+                        onSelectMatch={() => setSelectedMatch(match)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {Object.values(groupedMatches).every(g => g.length === 0) && (
+              <div className="card text-center py-8">
+                <p className="text-gray-400">No matches available right now</p>
               </div>
             )}
           </div>
