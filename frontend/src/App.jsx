@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, Zap } from 'lucide-react';
 import { connectWebSocket, on, apiService } from './services/api';
-import { MatchCard, ConfidenceScore, Alert } from './components/MatchComponents';
-import { BetLogger, BetStats } from './components/BetComponents';
+import { MatchCard } from './components/MatchComponents';
+import { BetLogger } from './components/BetComponents';
 import AnalyticsModal from './components/AnalyticsModal';
-import LiveAnalysisPanel from './components/LiveAnalysisPanel';
 
 export default function App() {
   const [matches, setMatches] = useState([]);
@@ -13,14 +11,8 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('live');
+  const [activeTab, setActiveTab] = useState('leagues');
   const [selectedMatch, setSelectedMatch] = useState(null);
-  const [selectedLiveMatch, setSelectedLiveMatch] = useState(null);
-  const [leagues, setLeagues] = useState([]);
-  const [selectedLeague, setSelectedLeague] = useState(null);
-  const [matchTypes, setMatchTypes] = useState([]);
-  const [selectedMatchType, setSelectedMatchType] = useState(null);
-  const [excludeAfrica, setExcludeAfrica] = useState(true); // Default to excluding African leagues
 
   useEffect(() => {
     // Connect to WebSocket
@@ -62,22 +54,14 @@ export default function App() {
     // Fetch all data via HTTP (both initial and as fallback for WebSocket)
     const fetchData = async () => {
       try {
-        const [matchesRes, upcomingRes, leaguesRes, matchTypesRes, betsRes, statsRes] = await Promise.all([
-          apiService.getLiveMatches(selectedLeague, selectedMatchType, excludeAfrica).catch((e) => {
+        const [matchesRes, upcomingRes, betsRes, statsRes] = await Promise.all([
+          apiService.getLiveMatches().catch((e) => {
             console.error('❌ Error fetching live:', e.message);
             return { data: { matches: [] } };
           }),
-          apiService.getUpcoming(selectedLeague, selectedMatchType, excludeAfrica).catch((e) => {
+          apiService.getUpcoming().catch((e) => {
             console.error('❌ Error fetching upcoming:', e.message);
             return { data: { matches: [] } };
-          }),
-          apiService.getLeagues().catch((e) => {
-            console.error('❌ Error fetching leagues:', e.message);
-            return { data: [] };
-          }),
-          apiService.getMatchTypes().catch((e) => {
-            console.error('❌ Error fetching match types:', e.message);
-            return { data: [] };
           }),
           apiService.getBets().catch((e) => {
             console.error('❌ Error fetching bets:', e.message);
@@ -93,20 +77,12 @@ export default function App() {
         console.log('📡 API Response - Upcoming:', upcomingRes?.data);
         
         if (matchesRes?.data?.matches?.length > 0) {
-          console.log('🔴 Got', matchesRes.data.matches.length, 'live matches from HTTP');
+          console.log('🔴 Got', matchesRes.data.matches.length, 'live matches');
           setMatches(matchesRes.data.matches);
         }
         if (upcomingRes?.data?.matches?.length > 0) {
-          console.log('⏰ Got', upcomingRes.data.matches.length, 'upcoming matches from HTTP');
+          console.log('⏰ Got', upcomingRes.data.matches.length, 'upcoming matches');
           setUpcomingMatches(upcomingRes.data.matches);
-        } else {
-          console.log('⏰ No upcoming matches in response. Data:', upcomingRes?.data);
-        }
-        if (leaguesRes?.data?.length > 0) {
-          setLeagues(leaguesRes.data);
-        }
-        if (matchTypesRes?.data?.length > 0) {
-          setMatchTypes(matchTypesRes.data);
         }
         setBets(betsRes?.data?.bets || []);
         setStats(statsRes?.data);
@@ -121,7 +97,7 @@ export default function App() {
     const fetchInterval = setInterval(fetchData, 10000);
     
     return () => clearInterval(fetchInterval);
-  }, [selectedLeague, selectedMatchType, excludeAfrica]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
@@ -144,188 +120,47 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6">
-        {/* Navigation Tabs */}
-        <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4 justify-between items-start">
-          <div className="flex gap-2 flex-wrap">
-            {['live', 'upcoming', 'international', 'tracking', 'alerts'].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => {
-                  setActiveTab(tab);
-                  setSelectedMatchType(null); // Reset filters when switching tabs
-                  setSelectedLeague(null);
-                }}
-                className={`capitalize font-semibold transition-colors px-3 py-2 ${
-                  activeTab === tab
-                    ? 'text-green-400 border-b-2 border-green-400'
-                    : 'text-gray-400 hover:text-gray-300'
-                }`}
-              >
-                {tab === 'live' && `🔴 Live (${matches.length})`}
-                {tab === 'upcoming' && `⏰ Upcoming (${upcomingMatches.length})`}
-                {tab === 'international' && `🌍 International`}
-                {tab === 'tracking' && '📈 My Bets'}
-                {tab === 'alerts' && '⚡ Opportunities'}
-              </button>
-            ))}
-          </div>
-          
-          {/* Filters - Show for Live, Upcoming, and International tabs */}
-          {(activeTab === 'upcoming' || activeTab === 'live' || activeTab === 'international') && (
-            <div className="flex flex-col gap-3 items-end">
-              {/* Exclude Africa Toggle */}
-              <button
-                onClick={() => setExcludeAfrica(!excludeAfrica)}
-                className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-                  excludeAfrica
-                    ? 'bg-green-600 text-white'
-                    : 'bg-gray-700 text-gray-300'
-                }`}
-              >
-                {excludeAfrica ? '🚫 Africa Off' : '🌍 Show Africa'}
-              </button>
-              
-              {/* Match Type Tabs */}
-              {matchTypes.length > 0 && (
-                <div className="flex gap-2 flex-wrap justify-end">
-                  <button
-                    onClick={() => setSelectedMatchType(null)}
-                    className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
-                      !selectedMatchType
-                        ? 'bg-green-500 text-white'
-                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                    }`}
-                  >
-                    All
-                  </button>
-                  {activeTab === 'international' ? (
-                    // For International tab, show combined Friendly+Qualifier
-                    <>
-                      <button
-                        onClick={() => setSelectedMatchType('Friendly')}
-                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
-                          selectedMatchType === 'Friendly'
-                            ? 'bg-green-500 text-white'
-                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                        }`}
-                      >
-                        ⚽ Friendlies
-                      </button>
-                      <button
-                        onClick={() => setSelectedMatchType('Qualifier')}
-                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
-                          selectedMatchType === 'Qualifier'
-                            ? 'bg-green-500 text-white'
-                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                        }`}
-                      >
-                        🏆 Qualifiers
-                      </button>
-                    </>
-                  ) : (
-                    // For other tabs, show all match types
-                    matchTypes.map((type) => (
-                      <button
-                        key={type.name}
-                        onClick={() => setSelectedMatchType(type.name)}
-                        className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
-                          selectedMatchType === type.name
-                            ? 'bg-green-500 text-white'
-                            : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                        }`}
-                      >
-                        {type.name}
-                      </button>
-                    ))
-                  )}
-                </div>
-              )}
-              
-              {/* League Selector */}
-              {leagues.length > 0 && (
-                <select
-                  value={selectedLeague || ''}
-                  onChange={(e) => {
-                    const val = e.target.value ? parseInt(e.target.value) : null;
-                    setSelectedLeague(val);
-                  }}
-                  className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors max-w-xs text-sm"
-                >
-                  <option value="">🏆 All Leagues ({leagues.length})</option>
-                  {leagues.slice(0, 30).map((league) => (
-                    <option key={league.id} value={league.id}>
-                      {league.name} ({league.count})
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
+        {/* Navigation Tabs - Only Leagues & International */}
+        <div className="flex gap-6 mb-6 border-b border-gray-700 pb-4">
+          <button
+            onClick={() => setActiveTab('leagues')}
+            className={`font-semibold transition-colors px-3 py-2 ${
+              activeTab === 'leagues'
+                ? 'text-green-400 border-b-2 border-green-400'
+                : 'text-gray-400 hover:text-gray-300'
+            }`}
+          >
+            📺 Leagues ({upcomingMatches.length || matches.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('international')}
+            className={`font-semibold transition-colors px-3 py-2 ${
+              activeTab === 'international'
+                ? 'text-green-400 border-b-2 border-green-400'
+                : 'text-gray-400 hover:text-gray-300'
+            }`}
+          >
+            🌍 International
+          </button>
         </div>
 
         {/* Main Content */}
-        <div className={selectedLiveMatch ? 'grid grid-cols-1 gap-6' : 'grid grid-cols-1 lg:grid-cols-3 gap-6'}>
-          {/* Left Column - Matches/Content */}
-          <div className={selectedLiveMatch ? 'order-2 lg:order-1' : 'lg:col-span-2'}>
-            {activeTab === 'live' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column - Matches */}
+          <div className="lg:col-span-2">
+            {activeTab === 'leagues' && (
               <div>
-                {/* Live Matches Section */}
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-2xl font-bold">🔴 Live Matches</h2>
-                  {selectedLiveMatch && (
-                    <button
-                      onClick={() => setSelectedLiveMatch(null)}
-                      className="lg:hidden bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm transition"
-                    >
-                      ← Back
-                    </button>
-                  )}
+                <h2 className="text-2xl font-bold mb-4">📺 Available Leagues</h2>
+                <div className="text-sm text-gray-400 mb-4">
+                  🇹🇷 Turkey | 🇦🇷 Argentina | 🇧🇷 Brazil | 🌍 International
                 </div>
-                {!connected && (
-                  <div className="card bg-yellow-900 border-yellow-600 mb-4">
-                    <p className="text-yellow-200">⚠️ Connecting to live feed...</p>
-                  </div>
-                )}
-                {matches.length === 0 ? (
+                {upcomingMatches.length === 0 && matches.length === 0 ? (
                   <div className="card">
-                    <p className="text-gray-400">No live matches right now</p>
-                  </div>
-                ) : !selectedLiveMatch ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {matches.map((match) => (
-                      <div
-                        key={match.id}
-                        onClick={() => setSelectedLiveMatch(match)}
-                        className="cursor-pointer"
-                      >
-                        <MatchCard
-                          match={match}
-                          onSelectMatch={() => setSelectedMatch(match)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <MatchCard
-                      match={selectedLiveMatch}
-                      onSelectMatch={() => setSelectedMatch(selectedLiveMatch)}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === 'upcoming' && (
-              <div>
-                <h2 className="text-2xl font-bold mb-4">⏰ Upcoming Matches (Next 24h)</h2>
-                {upcomingMatches.length === 0 ? (
-                  <div className="card">
-                    <p className="text-gray-400">No upcoming matches in the next 24 hours</p>
+                    <p className="text-gray-400">No matches scheduled yet</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {upcomingMatches.map((match) => (
+                    {(upcomingMatches.length > 0 ? upcomingMatches : matches).map((match) => (
                       <div
                         key={match.id}
                         onClick={() => setSelectedMatch(match)}
@@ -342,24 +177,17 @@ export default function App() {
               </div>
             )}
 
-            {activeTab === 'tracking' && (
-              <div>
-                <h2 className="text-2xl font-bold mb-4">📈 Betting Performance</h2>
-                {stats && <BetStats stats={stats} />}
-              </div>
-            )}
-
             {activeTab === 'international' && (
               <div>
-                <h2 className="text-2xl font-bold mb-4">🌍 International Matches (Friendlies & Qualifiers)</h2>
-                {upcomingMatches.filter(m => m.matchType === 'Friendly' || m.matchType === 'Qualifier').length === 0 ? (
+                <h2 className="text-2xl font-bold mb-4">🌍 International Matches</h2>
+                {upcomingMatches.filter(m => m.matchType === 'Friendly').length === 0 ? (
                   <div className="card">
-                    <p className="text-gray-400">No international friendlies or qualifiers scheduled</p>
+                    <p className="text-gray-400">No international friendlies scheduled</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {upcomingMatches
-                      .filter(m => m.matchType === 'Friendly' || m.matchType === 'Qualifier')
+                      .filter(m => m.matchType === 'Friendly')
                       .map((match) => (
                         <div
                           key={match.id}
@@ -376,86 +204,52 @@ export default function App() {
                 )}
               </div>
             )}
-
-            {activeTab === 'alerts' && (
-              <div>
-                <h2 className="text-2xl font-bold mb-4">⚡ Betting Opportunities</h2>
-                {matches
-                  .filter((m) => m.confidence > 65)
-                  .map((match) => (
-                    <Alert
-                      key={match.id}
-                      match={match}
-                      alert={{
-                        title: `${match.home} vs ${match.away}`,
-                        description: `Confidence: ${match.confidence}% | Possession: ${match.possession.home}%`,
-                        confidence_score: match.confidence,
-                        recommended_bet: match.opportunities[0] || 'Back to Win',
-                      }}
-                    />
-                  ))}
-              </div>
-            )}
           </div>
 
-          {/* Right Column - Sidebar */}
-          <div className={`space-y-6 ${selectedLiveMatch ? 'order-1 lg:order-2' : ''}`}>
-            {/* Live Analysis Panel */}
-            {selectedLiveMatch && (
+          {/* Right Column - Sidebar with Match Details */}
+          <div className="space-y-6">
+            {selectedMatch && (
               <div>
-                <h3 className="text-xl font-bold mb-4">📊 {selectedLiveMatch.home} vs {selectedLiveMatch.away}</h3>
-                <LiveAnalysisPanel match={selectedLiveMatch} />
-              </div>
-            )}
-
-            {/* Bet Logger */}
-            {!selectedLiveMatch && <BetLogger />}
-
-            {/* Quick Stats */}
-            {stats && !selectedLiveMatch && (
-              <div className="card">
-                <h3 className="font-bold mb-4">📊 Your Stats</h3>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Total Bets:</span>
-                    <span className="font-bold">{stats.totalBets}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Win Rate:</span>
-                    <span className={`font-bold ${stats.winRate > '50%' ? 'text-green-400' : 'text-red-400'}`}>
-                      {stats.winRate}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Wins / Losses:</span>
-                    <span className="font-bold">
-                      {stats.wins} / {stats.losses}
-                    </span>
+                <button
+                  onClick={() => setSelectedMatch(null)}
+                  className="mb-4 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded transition"
+                >
+                  ← Back to Matches
+                </button>
+                <div className="card">
+                  <h3 className="text-xl font-bold mb-4">{selectedMatch.home} vs {selectedMatch.away}</h3>
+                  <div className="space-y-3 text-sm">
+                    <div>
+                      <p className="text-gray-400">League</p>
+                      <p className="text-green-400">{selectedMatch.league}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">Status</p>
+                      <p className="text-blue-400">{selectedMatch.status}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-gray-400">Possession</p>
+                        <p>{selectedMatch.possession?.home || 0}% - {selectedMatch.possession?.away || 0}%</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Shots</p>
+                        <p>{selectedMatch.shots?.home || 0} - {selectedMatch.shots?.away || 0}</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Connection Status */}
-            {!selectedLiveMatch && (
-              <div className={`card border-2 ${connected ? 'border-green-600 bg-green-900' : 'border-red-600 bg-red-900'}`}>
-                <p className="font-bold mb-2">{connected ? '✓ System Status' : '⚠️ Connection Lost'}</p>
-                <p className="text-sm text-gray-300">
-                  {connected ? 'Portal and backend are synced. Live data flowing.' : 'Attempting to reconnect...'}
-                </p>
-              </div>
-            )}
+            {/* Bet Logger */}
+            <div>
+              <h3 className="text-lg font-bold mb-3">📝 Log Bet</h3>
+              <BetLogger onBetLogged={(bet) => console.log('Bet logged:', bet)} />
+            </div>
           </div>
         </div>
       </main>
-
-      {/* Analytics Modal */}
-      {selectedMatch && (
-        <AnalyticsModal
-          match={selectedMatch}
-          onClose={() => setSelectedMatch(null)}
-        />
-      )}
     </div>
   );
 }

@@ -515,19 +515,10 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/live', (req, res) => {
-  const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
-  const excludeAfrica = req.query.excludeAfrica === 'true';
   
-  let filtered = liveMatches;
-  
-  if (excludeAfrica) {
-    filtered = filtered.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
-  }
-  
-  if (leagueId) {
-    filtered = filtered.filter(m => m.leagueId === leagueId);
-  }
+  // Only return whitelisted leagues
+  let filtered = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
   
   if (matchType) {
     filtered = filtered.filter(m => m.matchType === matchType);
@@ -536,34 +527,20 @@ app.get('/api/live', (req, res) => {
   res.json({ count: filtered.length, matches: filtered });
 });
 
-// List of African countries to exclude (to focus on major leagues)
-const AFRICAN_COUNTRIES = new Set([
-  'Nigeria', 'Egypt', 'South Africa', 'Morocco', 'Algeria', 'Tunisia',
-  'Cameroon', 'Ghana', 'Mali', 'Senegal', 'Ivory Coast', 'Kenya',
-  'Zimbabwe', 'Zambia', 'Uganda', 'Benin', 'Burkina Faso', 'Burundi',
-  'Cape Verde', 'Central African Republic', 'Chad', 'Comoros',
-  'Djibouti', 'Equatorial Guinea', 'Eritrea', 'Eswatini',
-  'Ethiopia', 'Gabon', 'Gambia', 'Guinea', 'Guinea-Bissau',
-  'Lesotho', 'Liberia', 'Libya', 'Madagascar', 'Malawi', 'Mauritania',
-  'Mauritius', 'Mozambique', 'Namibia', 'Niger', 'Rwanda', 'Sao Tome and Principe',
-  'Seychelles', 'Sierra Leone', 'Somalia', 'South Sudan', 'Sudan',
-  'Swaziland', 'Tanzania', 'Togo', 'Western Sahara'
+// WHITELIST: Only track these specific leagues (ID-based for maximum control)
+const WHITELISTED_LEAGUE_IDS = new Set([
+  205,   // Turkey - 2. Lig
+  134,   // Argentina - Torneo Federal A
+  71,    // Brazil - Serie A
+  667,   // Friendlies Clubs (International)
+  10,    // Friendlies (International)
 ]);
 
 app.get('/api/upcoming', (req, res) => {
-  const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
-  const excludeAfrica = req.query.excludeAfrica === 'true';
   
-  let filtered = upcomingMatches;
-  
-  if (excludeAfrica) {
-    filtered = filtered.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
-  }
-  
-  if (leagueId) {
-    filtered = filtered.filter(m => m.leagueId === leagueId);
-  }
+  // Only return whitelisted leagues
+  let filtered = upcomingMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
   
   if (matchType) {
     filtered = filtered.filter(m => m.matchType === matchType);
@@ -574,45 +551,44 @@ app.get('/api/upcoming', (req, res) => {
 
 app.get('/api/leagues', (req, res) => {
   const leagues = {};
-  const countByType = {};
   
-  upcomingMatches.forEach(match => {
-    if (match.leagueId !== null && match.leagueId !== undefined && match.league) {
-      if (!leagues[match.leagueId]) {
-        leagues[match.leagueId] = {
-          id: match.leagueId,
-          name: match.league,
-          country: match.leagueCountry || '',
-          matchType: match.matchType || 'League',
-          count: 0,
-        };
+  // Only include whitelisted leagues
+  upcomingMatches
+    .filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId))
+    .forEach(match => {
+      if (match.leagueId !== null && match.leagueId !== undefined && match.league) {
+        if (!leagues[match.leagueId]) {
+          leagues[match.leagueId] = {
+            id: match.leagueId,
+            name: match.league,
+            country: match.leagueCountry || '',
+            matchType: match.matchType || 'League',
+            count: 0,
+          };
+        }
+        leagues[match.leagueId].count++;
       }
-      leagues[match.leagueId].count++;
-    }
-  });
+    });
   
   const result = Object.values(leagues)
-    .sort((a, b) => b.count - a.count); // Sort by count descending
+    .sort((a, b) => b.count - a.count);
   
   res.json(result);
 });
 
 app.get('/api/matchTypes', (req, res) => {
-  const excludeAfrica = req.query.excludeAfrica === 'true';
   const types = {};
   
-  let matches = upcomingMatches;
-  if (excludeAfrica) {
-    matches = matches.filter(m => !AFRICAN_COUNTRIES.has(m.leagueCountry));
-  }
-  
-  matches.forEach(match => {
-    const type = match.matchType || 'League';
-    if (!types[type]) {
-      types[type] = { name: type, count: 0 };
-    }
-    types[type].count++;
-  });
+  // Only count whitelisted leagues
+  upcomingMatches
+    .filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId))
+    .forEach(match => {
+      const type = match.matchType || 'League';
+      if (!types[type]) {
+        types[type] = { name: type, count: 0 };
+      }
+      types[type].count++;
+    });
   
   const result = Object.values(types)
     .sort((a, b) => b.count - a.count);
