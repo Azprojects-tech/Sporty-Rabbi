@@ -255,6 +255,33 @@ async function fetchUpcomingMatches() {
   }
 }
 
+// Strip non-primitive values from match object (prevents React errors)
+function sanitizeMatch(match) {
+  return {
+    id: match.id || 0,
+    home: String(match.home || ''),
+    away: String(match.away || ''),
+    score: String(match.score || '0-0'),
+    possession: {
+      home: Number(match.possession?.home || 0),
+      away: Number(match.possession?.away || 0),
+    },
+    shots: {
+      home: Number(match.shots?.home || 0),
+      away: Number(match.shots?.away || 0),
+    },
+    xg: {
+      home: Number(match.xg?.home || 0),
+      away: Number(match.xg?.away || 0),
+    },
+    status: String(match.status || ''),
+    matchMinutes: Number(match.matchMinutes || 0),
+    confidence: Number(match.confidence || 50),
+    opportunities: Array.isArray(match.opportunities) ? match.opportunities.map(String) : [],
+    league: match.league || 'Unknown', // Add league info
+  };
+}
+
 // Analyze match for betting opportunities
 function analyzeMatch(match) {
   try {
@@ -262,6 +289,7 @@ function analyzeMatch(match) {
     const goals = match.goals || {};
     const stats = match.statistics || [];
     const teams = match.teams || {};
+    const league = match.league || {};
 
     const homeStats = (stats && stats[0]) ? stats[0].statistics || [] : [];
     const awayStats = (stats && stats[1]) ? stats[1].statistics || [] : [];
@@ -297,7 +325,7 @@ function analyzeMatch(match) {
     const kickoffTime = fixture.date ? new Date(fixture.date) : now;
     const matchMinutesElapsed = Math.max(0, Math.floor((now - kickoffTime) / 60000));
 
-    return {
+    const analyzed = {
       id: fixture.id || Math.random(),
       home: teams.home?.name || 'Unknown',
       away: teams.away?.name || 'Unknown',
@@ -306,10 +334,15 @@ function analyzeMatch(match) {
       shots,
       xg,
       status: fixture.status || 'Unknown',
-      matchMinutes: matchMinutesElapsed || 1, // For analytics calculations
+      matchMinutes: matchMinutesElapsed || 1,
       confidence: Math.min(confidence, 95),
       opportunities: confidence > 65 ? ['Strong signal detected'] : [],
+      league: league.name || 'Unknown',
+      leagueId: league.id || 0,
     };
+    
+    // Sanitize before returning
+    return sanitizeMatch(analyzed);
   } catch (error) {
     console.error('❌ Error analyzing match:', error.message);
     return null; // Skip this match
@@ -460,7 +493,30 @@ app.get('/api/live', (req, res) => {
 });
 
 app.get('/api/upcoming', (req, res) => {
-  res.json({ count: upcomingMatches.length, matches: upcomingMatches });
+  const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
+  
+  let filtered = upcomingMatches;
+  if (leagueId) {
+    filtered = upcomingMatches.filter(m => m.leagueId === leagueId);
+  }
+  
+  res.json({ count: filtered.length, matches: filtered });
+});
+
+app.get('/api/leagues', (req, res) => {
+  const leagues = {};
+  upcomingMatches.forEach(match => {
+    if (match.leagueId && match.league) {
+      leagues[match.leagueId] = match.league;
+    }
+  });
+  
+  const result = Object.keys(leagues).sort().map(id => ({
+    id: parseInt(id),
+    name: leagues[id],
+  }));
+  
+  res.json(result);
 });
 
 app.get('/api/alerts', (req, res) => {

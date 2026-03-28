@@ -35,8 +35,16 @@ export const apiService = {
   // Live matches
   getLiveMatches: () => client.get('/live'),
 
-  // Upcoming matches
-  getUpcoming: () => client.get('/upcoming'),
+  // Upcoming matches (with optional league filtering)
+  getUpcoming: (leagueId) => {
+    if (leagueId) {
+      return client.get('/upcoming', { params: { leagueId } });
+    }
+    return client.get('/upcoming');
+  },
+
+  // Leagues
+  getLeagues: () => client.get('/leagues'),
 
   // Bets
   logBet: (data) => client.post('/bets', data),

@@ -16,6 +16,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('live');
   const [selectedMatch, setSelectedMatch] = useState(null);
   const [selectedLiveMatch, setSelectedLiveMatch] = useState(null);
+  const [leagues, setLeagues] = useState([]);
+  const [selectedLeague, setSelectedLeague] = useState(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -57,14 +59,23 @@ export default function App() {
     // Fetch all data via HTTP (both initial and as fallback for WebSocket)
     const fetchData = async () => {
       try {
-        const [matchesRes, upcomingRes, betsRes, statsRes] = await Promise.all([
+        const [matchesRes, upcomingRes, leaguesRes, betsRes, statsRes] = await Promise.all([
           apiService.getLiveMatches().catch((e) => {
             console.error('❌ Error fetching live:', e.message);
             return { data: { matches: [] } };
           }),
-          apiService.getUpcoming().catch((e) => {
-            console.error('❌ Error fetching upcoming:', e.message);
-            return { data: { matches: [] } };
+          selectedLeague 
+            ? apiService.getUpcoming(selectedLeague).catch((e) => {
+                console.error('❌ Error fetching upcoming:', e.message);
+                return { data: { matches: [] } };
+              })
+            : apiService.getUpcoming().catch((e) => {
+                console.error('❌ Error fetching upcoming:', e.message);
+                return { data: { matches: [] } };
+              }),
+          apiService.getLeagues().catch((e) => {
+            console.error('❌ Error fetching leagues:', e.message);
+            return { data: [] };
           }),
           apiService.getBets().catch((e) => {
             console.error('❌ Error fetching bets:', e.message);
@@ -89,6 +100,9 @@ export default function App() {
         } else {
           console.log('⏰ No upcoming matches in response. Data:', upcomingRes?.data);
         }
+        if (leaguesRes?.data?.length > 0) {
+          setLeagues(leaguesRes.data);
+        }
         setBets(betsRes?.data?.bets || []);
         setStats(statsRes?.data);
       } catch (err) {
@@ -102,7 +116,7 @@ export default function App() {
     const fetchInterval = setInterval(fetchData, 10000);
     
     return () => clearInterval(fetchInterval);
-  }, []);
+  }, [selectedLeague]);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
@@ -126,23 +140,44 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto p-6">
         {/* Navigation Tabs */}
-        <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4">
-          {['live', 'upcoming', 'tracking', 'alerts'].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`capitalize font-semibold transition-colors ${
-                activeTab === tab
-                  ? 'text-green-400 border-b-2 border-green-400'
-                  : 'text-gray-400 hover:text-gray-300'
-              }`}
+        <div className="flex gap-4 mb-6 border-b border-gray-700 pb-4 justify-between items-center">
+          <div className="flex gap-4">
+            {['live', 'upcoming', 'tracking', 'alerts'].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`capitalize font-semibold transition-colors ${
+                  activeTab === tab
+                    ? 'text-green-400 border-b-2 border-green-400'
+                    : 'text-gray-400 hover:text-gray-300'
+                }`}
+              >
+                {tab === 'live' && '🔴 Live Matches'}
+                {tab === 'upcoming' && `⏰ Upcoming (${upcomingMatches.length})`}
+                {tab === 'tracking' && '📈 My Bets'}
+                {tab === 'alerts' && '⚡ Opportunities'}
+              </button>
+            ))}
+          </div>
+          
+          {/* League Filter - Only show on Upcoming tab */}
+          {activeTab === 'upcoming' && (
+            <select
+              value={selectedLeague || ''}
+              onChange={(e) => {
+                const val = e.target.value ? parseInt(e.target.value) : null;
+                setSelectedLeague(val);
+              }}
+              className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors"
             >
-              {tab === 'live' && '🔴 Live Matches'}
-              {tab === 'upcoming' && `⏰ Upcoming (${upcomingMatches.length})`}
-              {tab === 'tracking' && '📈 My Bets'}
-              {tab === 'alerts' && '⚡ Opportunities'}
-            </button>
-          ))}
+              <option value="">📺 All Leagues ({leagues.length})</option>
+              {leagues.slice(0, 20).map((league) => (
+                <option key={league.id} value={league.id}>
+                  {league.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Main Content */}
