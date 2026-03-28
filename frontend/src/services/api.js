@@ -36,15 +36,21 @@ export const apiService = {
   getLiveMatches: () => client.get('/live'),
 
   // Upcoming matches (with optional league filtering)
-  getUpcoming: (leagueId) => {
-    if (leagueId) {
-      return client.get('/upcoming', { params: { leagueId } });
+  getUpcoming: (leagueId, matchType) => {
+    const params = {};
+    if (leagueId) params.leagueId = leagueId;
+    if (matchType) params.matchType = matchType;
+    if (Object.keys(params).length) {
+      return client.get('/upcoming', { params });
     }
     return client.get('/upcoming');
   },
 
   // Leagues
   getLeagues: () => client.get('/leagues'),
+  
+  // Match types (Friendly, Qualifier, League, Cup)
+  getMatchTypes: () => client.get('/matchTypes'),
 
   // Bets
   logBet: (data) => client.post('/bets', data),

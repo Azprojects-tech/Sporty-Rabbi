@@ -18,6 +18,8 @@ export default function App() {
   const [selectedLiveMatch, setSelectedLiveMatch] = useState(null);
   const [leagues, setLeagues] = useState([]);
   const [selectedLeague, setSelectedLeague] = useState(null);
+  const [matchTypes, setMatchTypes] = useState([]);
+  const [selectedMatchType, setSelectedMatchType] = useState(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -59,13 +61,13 @@ export default function App() {
     // Fetch all data via HTTP (both initial and as fallback for WebSocket)
     const fetchData = async () => {
       try {
-        const [matchesRes, upcomingRes, leaguesRes, betsRes, statsRes] = await Promise.all([
+        const [matchesRes, upcomingRes, leaguesRes, matchTypesRes, betsRes, statsRes] = await Promise.all([
           apiService.getLiveMatches().catch((e) => {
             console.error('❌ Error fetching live:', e.message);
             return { data: { matches: [] } };
           }),
-          selectedLeague 
-            ? apiService.getUpcoming(selectedLeague).catch((e) => {
+          selectedLeague || selectedMatchType
+            ? apiService.getUpcoming(selectedLeague, selectedMatchType).catch((e) => {
                 console.error('❌ Error fetching upcoming:', e.message);
                 return { data: { matches: [] } };
               })
@@ -75,6 +77,10 @@ export default function App() {
               }),
           apiService.getLeagues().catch((e) => {
             console.error('❌ Error fetching leagues:', e.message);
+            return { data: [] };
+          }),
+          apiService.getMatchTypes().catch((e) => {
+            console.error('❌ Error fetching match types:', e.message);
             return { data: [] };
           }),
           apiService.getBets().catch((e) => {
@@ -103,6 +109,9 @@ export default function App() {
         if (leaguesRes?.data?.length > 0) {
           setLeagues(leaguesRes.data);
         }
+        if (matchTypesRes?.data?.length > 0) {
+          setMatchTypes(matchTypesRes.data);
+        }
         setBets(betsRes?.data?.bets || []);
         setStats(statsRes?.data);
       } catch (err) {
@@ -116,7 +125,7 @@ export default function App() {
     const fetchInterval = setInterval(fetchData, 10000);
     
     return () => clearInterval(fetchInterval);
-  }, [selectedLeague]);
+  }, [selectedLeague, selectedMatchType]);
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
@@ -160,23 +169,55 @@ export default function App() {
             ))}
           </div>
           
-          {/* League Filter - Only show on Upcoming tab */}
+          {/* League & Match Type Filters - Only show on Upcoming tab */}
           {activeTab === 'upcoming' && (
-            <select
-              value={selectedLeague || ''}
-              onChange={(e) => {
-                const val = e.target.value ? parseInt(e.target.value) : null;
-                setSelectedLeague(val);
-              }}
-              className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors"
-            >
-              <option value="">📺 All Leagues ({leagues.length})</option>
-              {leagues.slice(0, 20).map((league) => (
-                <option key={league.id} value={league.id}>
-                  {league.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-col gap-3 justify-end">
+              {/* Match Type Tabs */}
+              {matchTypes.length > 0 && (
+                <div className="flex gap-2 flex-wrap justify-end">
+                  <button
+                    onClick={() => setSelectedMatchType(null)}
+                    className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
+                      !selectedMatchType
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    All ({upcomingMatches.length})
+                  </button>
+                  {matchTypes.map((type) => (
+                    <button
+                      key={type.name}
+                      onClick={() => setSelectedMatchType(type.name)}
+                      className={`px-3 py-1 text-sm font-semibold rounded transition-colors ${
+                        selectedMatchType === type.name
+                          ? 'bg-green-500 text-white'
+                          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                      }`}
+                    >
+                      {type.name} ({type.count})
+                    </button>
+                  ))}
+                </div>
+              )}
+              
+              {/* League Selector */}
+              <select
+                value={selectedLeague || ''}
+                onChange={(e) => {
+                  const val = e.target.value ? parseInt(e.target.value) : null;
+                  setSelectedLeague(val);
+                }}
+                className="px-4 py-2 bg-gray-800 text-gray-100 border border-gray-700 rounded hover:border-green-400 focus:outline-none focus:border-green-400 transition-colors max-w-xs"
+              >
+                <option value="">🏆 All Leagues ({leagues.length})</option>
+                {leagues.slice(0, 25).map((league) => (
+                  <option key={league.id} value={league.id}>
+                    {league.name} ({league.count})
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
 

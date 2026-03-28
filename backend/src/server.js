@@ -278,7 +278,10 @@ function sanitizeMatch(match) {
     matchMinutes: Number(match.matchMinutes || 0),
     confidence: Number(match.confidence || 50),
     opportunities: Array.isArray(match.opportunities) ? match.opportunities.map(String) : [],
-    league: match.league || 'Unknown', // Add league info
+    league: String(match.league || 'Unknown'),
+    leagueId: Number(match.leagueId || 0),
+    matchType: String(match.matchType || 'League'),
+    leagueCountry: String(match.leagueCountry || ''),
   };
 }
 
@@ -325,6 +328,27 @@ function analyzeMatch(match) {
     const kickoffTime = fixture.date ? new Date(fixture.date) : now;
     const matchMinutesElapsed = Math.max(0, Math.floor((now - kickoffTime) / 60000));
 
+    // Determine match type from league name and round
+    let matchType = 'League';
+    const leagueName = (league.name || '').toLowerCase();
+    const round = (league.round || '').toLowerCase();
+    
+    if (leagueName.includes('friendly') || leagueName.includes('international')) {
+      matchType = 'Friendly';
+    } else if (round.includes('qualifier')) {
+      matchType = 'Qualifier';
+    } else if (leagueName.includes('cup') || leagueName.includes('champion')) {
+      matchType = 'Cup';
+    }
+
+    // Get status - handle both string and object format
+    let statusStr = 'NS';
+    if (typeof fixture.status === 'object' && fixture.status?.short) {
+      statusStr = fixture.status.short; // 'NS', 'LV', 'FT', etc.
+    } else if (typeof fixture.status === 'string') {
+      statusStr = fixture.status;
+    }
+
     const analyzed = {
       id: fixture.id || Math.random(),
       home: teams.home?.name || 'Unknown',
@@ -333,12 +357,14 @@ function analyzeMatch(match) {
       possession,
       shots,
       xg,
-      status: fixture.status || 'Unknown',
+      status: statusStr,
       matchMinutes: matchMinutesElapsed || 1,
       confidence: Math.min(confidence, 95),
       opportunities: confidence > 65 ? ['Strong signal detected'] : [],
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
+      matchType,
+      leagueCountry: league.country || '',
     };
     
     // Sanitize before returning
@@ -494,10 +520,16 @@ app.get('/api/live', (req, res) => {
 
 app.get('/api/upcoming', (req, res) => {
   const leagueId = req.query.leagueId ? parseInt(req.query.leagueId) : null;
+  const matchType = req.query.matchType ? String(req.query.matchType) : null;
   
   let filtered = upcomingMatches;
+  
   if (leagueId) {
-    filtered = upcomingMatches.filter(m => m.leagueId === leagueId);
+    filtered = filtered.filter(m => m.leagueId === leagueId);
+  }
+  
+  if (matchType) {
+    filtered = filtered.filter(m => m.matchType === matchType);
   }
   
   res.json({ count: filtered.length, matches: filtered });
@@ -505,16 +537,42 @@ app.get('/api/upcoming', (req, res) => {
 
 app.get('/api/leagues', (req, res) => {
   const leagues = {};
+  const countByType = {};
+  
   upcomingMatches.forEach(match => {
-    if (match.leagueId && match.league) {
-      leagues[match.leagueId] = match.league;
+    if (match.leagueId !== null && match.leagueId !== undefined && match.league) {
+      if (!leagues[match.leagueId]) {
+        leagues[match.leagueId] = {
+          id: match.leagueId,
+          name: match.league,
+          country: match.leagueCountry || '',
+          matchType: match.matchType || 'League',
+          count: 0,
+        };
+      }
+      leagues[match.leagueId].count++;
     }
   });
   
-  const result = Object.keys(leagues).sort().map(id => ({
-    id: parseInt(id),
-    name: leagues[id],
-  }));
+  const result = Object.values(leagues)
+    .sort((a, b) => b.count - a.count); // Sort by count descending
+  
+  res.json(result);
+});
+
+app.get('/api/matchTypes', (req, res) => {
+  const types = {};
+  
+  upcomingMatches.forEach(match => {
+    const type = match.matchType || 'League';
+    if (!types[type]) {
+      types[type] = { name: type, count: 0 };
+    }
+    types[type].count++;
+  });
+  
+  const result = Object.values(types)
+    .sort((a, b) => b.count - a.count);
   
   res.json(result);
 });
