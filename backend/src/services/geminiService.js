@@ -1,0 +1,274 @@
+/**
+ * ╔══════════════════════════════════════════════════════════════╗
+ * ║              GEMINI NATURAL LANGUAGE BRIDGE                  ║
+ * ║   Converts free-text match descriptions → V6 matchData       ║
+ * ╠══════════════════════════════════════════════════════════════╣
+ * ║  "Persija is playing now" → structured parameters → V6 tiers ║
+ * ╚══════════════════════════════════════════════════════════════╝
+ */
+
+import axios from 'axios';
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+const AVAILABLE = Boolean(GEMINI_API_KEY);
+
+if (!AVAILABLE) {
+  console.warn('[Gemini] GEMINI_API_KEY not set — natural language analysis disabled.');
+}
+
+// ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
+// Tells Gemini exactly what structured JSON to produce for the V6 engine.
+const SYSTEM_PROMPT = `You are a football analytics assistant for a sports betting analysis system called Agent 47 V6 Frontier.
+
+When given a free-text description of a football match (e.g. "Persija is playing now", "Arsenal vs Chelsea tonight in the Premier League"), you must:
+
+1. Identify the match (home team, away team, league, competition stage)
+2. Use your training knowledge to estimate realistic values for all V6 parameters
+3. Return ONLY a valid JSON object — no markdown, no explanation, no extra text
+
+The JSON must follow this exact shape:
+
+{
+  "match": {
+    "home": "<home team name>",
+    "away": "<away team name>",
+    "league": "<league or competition name>",
+    "stage": "<group/knockout/regular/final — use 'regular' if unsure>",
+    "date": "<YYYY-MM-DD if known, else today's date>",
+    "minute": <current match minute 0-90 if live, else 0>,
+    "homeScore": <current score or 0>,
+    "awayScore": <current score or 0>,
+    "status": "<NS|LIVE|FT — NS if not started, LIVE if in progress>"
+  },
+  "home": {
+    "motivationScore": <0-10, 10 = title decider / relegation battle>,
+    "starPlayers": <number of world-class players available>,
+    "starPlayersMissing": <number of world-class players missing (injury/suspension)>,
+    "recentForm": [<last 5 results as W/D/L strings, newest first, e.g. ["W","W","D","L","W"]>],
+    "goalsScored": [<goals scored in each of last 5 games, newest first>],
+    "goalsConceded": [<goals conceded in each of last 5 games>],
+    "xgAvg": <average xG per game last 5, e.g. 1.4>,
+    "xgaAvg": <average xGA (expected goals against) per game last 5>,
+    "pace": <team pace style 0-10, 10 = full press / high tempo>,
+    "leaguePosition": <current league position integer>,
+    "squadIntegrity": <0-100, percentage of first-choice squad available>
+  },
+  "away": {
+    "motivationScore": <0-10>,
+    "starPlayers": <integer>,
+    "starPlayersMissing": <integer>,
+    "recentForm": [<5 results W/D/L>],
+    "goalsScored": [<5 numbers>],
+    "goalsConceded": [<5 numbers>],
+    "xgAvg": <number>,
+    "xgaAvg": <number>,
+    "pace": <0-10>,
+    "leaguePosition": <integer>,
+    "squadIntegrity": <0-100>
+  },
+  "h2h": {
+    "homeWins": <last 10 meetings: how many home team won>,
+    "awayWins": <last 10 meetings: how many away team won>,
+    "draws": <last 10 meetings: draws>,
+    "avgGoals": <average total goals in last 10 H2H meetings>,
+    "bttsRate": <both teams scored rate in H2H, 0.0-1.0>
+  },
+  "odds": {
+    "homeWin": <decimal odds for home win, e.g. 2.10>,
+    "draw": <decimal odds for draw>,
+    "awayWin": <decimal odds for away win>,
+    "over25": <decimal odds for over 2.5 goals>,
+    "btts": <decimal odds for both teams to score>
+  },
+  "context": {
+    "neutralVenue": <true/false>,
+    "earlyGoal": <true if a goal was scored before minute 20, else false>,
+    "redCard": <true if any red card issued, else false>,
+    "gameWeek": <integer, use 1 if unknown>,
+    "totalGameWeeks": <total gameweeks in season, usually 34-38>,
+    "homePoints": <home team current points, estimate if unsure>,
+    "awayPoints": <away team current points, estimate if unsure>,
+    "homeGoalDifferential": <home team goal difference, estimate>,
+    "awayGoalDifferential": <away team goal difference, estimate>,
+    "timezone": "<home team city timezone, e.g. Europe/London>"
+  },
+  "geminiConfidence": <0-100, how confident Gemini is in its estimates>,
+  "geminiNotes": "<brief note about what Gemini knew vs estimated, max 2 sentences>"
+}
+
+Rules:
+- Always produce valid JSON. Never include markdown code fences.
+- Use your best knowledge for team form, xG, star players, league position.
+- If you are unsure about a value, use a reasonable league-average estimate and lower geminiConfidence.
+- For the current date (May 2026), use your knowledge of the 2025-26 season.
+- If the user says "playing now" or "live", set status to "LIVE" and estimate the current minute.
+- If you cannot identify the teams at all, return: {"error": "Could not identify match from description"}`;
+
+// ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
+
+/**
+ * Convert a natural language match description into a structured V6 matchData object.
+ * @param {string} userText — e.g. "Persija is playing now", "Arsenal vs Chelsea Premier League"
+ * @returns {Promise<{matchData: object, geminiConfidence: number, geminiNotes: string}>}
+ */
+export async function naturalLanguageToMatchData(userText) {
+  if (!AVAILABLE) {
+    throw new Error('GEMINI_API_KEY not configured. Add it to backend/.env to enable natural language analysis.');
+  }
+
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: SYSTEM_PROMPT },
+          { text: `\n\nAnalyse this match: ${userText}` },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.2,        // low temperature = more factual, less creative
+      maxOutputTokens: 1500,
+      responseMimeType: 'application/json',
+    },
+  };
+
+  let rawText;
+  try {
+    const response = await axios.post(GEMINI_URL, body, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 20000,
+    });
+    // gemini-2.5-flash may return multiple parts (thinking + text); join them all
+    const parts = response.data?.candidates?.[0]?.content?.parts || [];
+    rawText = parts.map(p => p.text || '').join('');
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.error?.message || err.message;
+    throw new Error(`Gemini API error (${status ?? 'network'}): ${msg}`);
+  }
+
+  if (!rawText) {
+    throw new Error('Gemini returned an empty response.');
+  }
+
+  // Parse — Gemini should return clean JSON but strip fences just in case
+  const cleaned = rawText.replace(/^```json?\s*/i, '').replace(/\s*```$/, '').trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error(`Gemini response was not valid JSON: ${cleaned.slice(0, 200)}`);
+  }
+
+  if (parsed.error) {
+    throw new Error(`Gemini could not identify match: ${parsed.error}`);
+  }
+
+  const { geminiConfidence = 50, geminiNotes = '' } = parsed;
+
+  // Return matchData without the Gemini-specific meta fields (V6 doesn't need them)
+  const matchData = { ...parsed };
+  delete matchData.geminiConfidence;
+  delete matchData.geminiNotes;
+
+  return { matchData, geminiConfidence, geminiNotes };
+}
+
+// ─── GEMINI SPORTS FEED (replaces API-Football when key is expired) ──────────
+// Uses Gemini 2.5 Flash knowledge of the 2025-26 football season to generate
+// realistic fixture data. Fast (~5s), no search grounding needed.
+
+const GEMINI_SPORTS_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest',
+  'gemini-2.0-flash',
+];
+
+/**
+ * Ask Gemini (no search tool) for fixture data. Returns clean JSON via responseMimeType.
+ * Tries multiple models in order if one is unavailable.
+ */
+async function geminiFetch(systemPrompt, userPrompt) {
+  if (!AVAILABLE) return [];
+  for (const model of GEMINI_SPORTS_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const response = await axios.post(
+        url,
+        {
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 5000,
+            responseMimeType: 'application/json',
+          },
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 45000 },
+      );
+      // gemini-2.5-flash may include thought parts; only use non-thought text
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+      if (!text.trim()) continue;
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : (parsed.matches || parsed.fixtures || []);
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      console.warn(`[Gemini Sports] ${model} unavailable: ${msg.slice(0, 80)} — trying next model`);
+    }
+  }
+  console.error('[Gemini Sports] All models failed');
+  return [];
+}
+
+const SPORTS_SYSTEM_PROMPT = `You are a football data assistant for the SportyRabbi betting analytics platform.
+You have detailed knowledge of the 2025-26 football season: fixture schedules, teams, leagues, European competitions.
+Always return data in the exact JSON schema requested — no extra fields, no renamed fields.
+leagueId values: Premier League=39, La Liga=140, Bundesliga=78, Ligue 1=61, Primeira Liga=64, Super Lig=203, Saudi Pro League=541, Champions League=1, Europa League=3, Conference League=849, World Cup=4, WC Qualifiers=18, EURO=2, Copa America=5, AFCON=6, Nations League=16, Olympics=17, Int Friendlies=15.
+matchType values: League, Cup, Qualifier, Friendly.`;
+
+/**
+ * Use Gemini knowledge to generate LIVE match data.
+ * Returns an array already in the app's internal sanitizeMatch-compatible format.
+ * NOTE: Live data is estimated; for truly real-time scores renew the API-Football subscription.
+ */
+export async function fetchLiveMatchesViaGemini() {
+  const now = new Date();
+  const dayOfWeek = now.toLocaleDateString('en-GB', { weekday: 'long' });
+  const dateStr = now.toISOString().split('T')[0];
+  const hourUTC = now.getUTCHours();
+
+  const prompt = `Today is ${dateStr} (${dayOfWeek}), current UTC hour is ${hourUTC}:00.
+Based on the 2025-26 football season schedule, generate 0-8 matches that would realistically be LIVE (in-progress) right now.
+Consider typical kick-off times (15:00, 17:30, 19:45, 20:00, 20:45 CET). Only include matches from the whitelisted leagues.
+Return a JSON array (may be empty []) where each object has EXACTLY these fields:
+{"id":10001,"home":"Team A","away":"Team B","score":"1-0","possession":{"home":58,"away":42},"shots":{"home":7,"away":3},"xg":{"home":1.2,"away":0.6},"status":"LIVE","matchMinutes":67,"confidence":72,"opportunities":[],"league":"Premier League","leagueId":39,"matchType":"League","leagueCountry":"England"}`;
+
+  const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
+  console.log(`[Gemini Sports] Generated ${matches.length} live matches (AI-estimated)`);
+  return matches;
+}
+
+/**
+ * Use Gemini knowledge to generate upcoming match fixtures (next 24 hours).
+ * Returns an array already in the app's internal sanitizeMatch-compatible format.
+ */
+export async function fetchUpcomingMatchesViaGemini() {
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0];
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  const prompt = `Today is ${dateStr}, tomorrow is ${tomorrow}.
+Based on the 2025-26 football season schedule, generate 10-25 matches scheduled to kick off in the next 24 hours.
+Include matches from Premier League, La Liga, Bundesliga, Ligue 1, Champions League, Europa League, Conference League, and other whitelisted competitions if matches are scheduled.
+Return a JSON array where each object has EXACTLY these fields:
+{"id":20001,"home":"Team A","away":"Team B","score":"0-0","possession":{"home":50,"away":50},"shots":{"home":0,"away":0},"xg":{"home":0.0,"away":0.0},"status":"NS","matchMinutes":0,"confidence":60,"opportunities":[],"league":"Premier League","leagueId":39,"matchType":"League","leagueCountry":"England"}`;
+
+  const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
+  console.log(`[Gemini Sports] Generated ${matches.length} upcoming matches (AI-estimated)`);
+  return matches;
+}

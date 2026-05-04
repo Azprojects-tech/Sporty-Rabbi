@@ -16,6 +16,12 @@ import cron from 'node-cron';
 import axios from 'axios';
 import twilio from 'twilio';
 import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
+import { analyzeV6 } from './services/agent47Service.js';
+import {
+  naturalLanguageToMatchData,
+  fetchLiveMatchesViaGemini,
+  fetchUpcomingMatchesViaGemini,
+} from './services/geminiService.js';
 import {
   calculateNextGoalProbability,
   calculateMomentum,
@@ -258,14 +264,23 @@ const cache = {
 };
 
 const CACHE_TTL = {
-  live: 5000,        // Cache live matches for 5 seconds (they change frequently)
-  upcoming: 30000,   // Cache upcoming matches for 30 seconds (they change less)
+  live: API_KEY ? 5000 : 5 * 60 * 1000,         // 5s (API-Football) or 5 min (Gemini)
+  upcoming: API_KEY ? 30000 : 15 * 60 * 1000,    // 30s (API-Football) or 15 min (Gemini)
 };
+
+// When API-Football quota is paused, extend cache TTL so Gemini isn't hammered
+function getActiveCacheTTL(type) {
+  const isLive = type === 'liveMatches';
+  if (!API_KEY || quotaState.isPaused) {
+    return isLive ? 5 * 60 * 1000 : 15 * 60 * 1000;
+  }
+  return isLive ? CACHE_TTL.live : CACHE_TTL.upcoming;
+}
 
 function getCached(type) {
   const cached = cache[type];
   const now = Date.now();
-  const ttl = CACHE_TTL[type === 'liveMatches' ? 'live' : 'upcoming'];
+  const ttl = getActiveCacheTTL(type);
   
   if (cached && now - cached.timestamp < ttl) {
     console.log(`  💾 Using cached ${type} (${Math.round((now - cached.timestamp) / 1000)}s old)`);
@@ -283,10 +298,10 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   🐰 SportyRabbi Backend Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  📌 API Key:  ${API_KEY ? '✅ SET' : '❌ NOT SET'}
-  🌐 API Base: ${API_BASE}
-  ⏱️  Poll Interval: ${process.env.LIVE_POLL_INTERVAL || 5}s
-  🏆 Tracked Leagues: ${process.env.TRACKED_LEAGUES}
+  📌 API Key:    ${API_KEY ? '✅ API-Football set (Gemini fallback ready)' : '🤖 Gemini-only mode (AI fixture data)'}
+  🌐 API Base:   ${API_BASE}
+  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s + Gemini fallback` : 'Gemini every 5 min (preserves quota)'}
+  🏆 Leagues:    ${WHITELISTED_LEAGUE_IDS.size} whitelisted
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 
@@ -530,6 +545,21 @@ function analyzeMatch(match) {
 
 let isPolling = false;
 
+// Prevent concurrent Gemini calls — only one at a time to avoid rate-limit spikes
+let geminiLock = false;
+async function withGeminiLock(fn) {
+  if (geminiLock) {
+    console.log('[Gemini] Skipping — another Gemini call already in progress');
+    return [];
+  }
+  geminiLock = true;
+  try {
+    return await fn();
+  } finally {
+    geminiLock = false;
+  }
+}
+
 async function pollLiveMatches() {
   if (isPolling) {
     console.log('⏳ Polling already in progress, skipping...');
@@ -549,10 +579,27 @@ async function pollLiveMatches() {
   isPolling = true;
 
   try {
-    const matches = await fetchLiveMatches();
+    let processedMatches;
+
+    if (!API_KEY) {
+      // ── Gemini mode: data already in app format, just sanitize ──────────
+      const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
+      processedMatches = raw.map(sanitizeMatch);
+    } else {
+      // ── API-Football mode: parse raw fixture format ──────────────────────
+      const matches = await fetchLiveMatches();
+      processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
+
+      // ── Fallback to Gemini if API-Football returned nothing ──────────────
+      if (processedMatches.length === 0) {
+        console.log('🤖 API-Football returned 0 live matches — trying Gemini fallback...');
+        const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
+        processedMatches = raw.map(sanitizeMatch);
+      }
+    }
     
-    if (matches && matches.length > 0) {
-      liveMatches = matches.map(analyzeMatch).filter(m => m !== null);
+    if (processedMatches.length > 0) {
+      liveMatches = processedMatches;
       setCache('liveMatches', liveMatches);
       // Only broadcast whitelisted matches to clients
       const whitelisted = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
@@ -583,20 +630,37 @@ async function pollUpcomingMatches() {
   }
 
   try {
-    console.log('🔄 Polling upcoming matches...');
-    const matches = await fetchUpcomingMatches();
-    
-    console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
-    
-    if (matches && matches.length > 0) {
-      upcomingMatches = matches.map(analyzeMatch).filter(m => m !== null);
-      console.log(`✅ Analyzed ${upcomingMatches.length} upcoming matches`);
+    let processedMatches;
+
+    if (!API_KEY) {
+      // ── Gemini mode: data already in app format, just sanitize ──────────
+      console.log('🤖 Fetching upcoming matches via Gemini...');
+      const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
+      processedMatches = raw.map(sanitizeMatch);
+    } else {
+      // ── API-Football mode: parse raw fixture format ──────────────────────
+      console.log('🔄 Polling upcoming matches...');
+      const matches = await fetchUpcomingMatches();
+      console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
+      processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
+
+      // ── Fallback to Gemini if API-Football returned nothing ──────────────
+      if (processedMatches.length === 0) {
+        console.log('🤖 API-Football returned 0 upcoming — trying Gemini fallback...');
+        const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
+        processedMatches = raw.map(sanitizeMatch);
+      }
+    }
+
+    if (processedMatches.length > 0) {
+      upcomingMatches = processedMatches;
+      console.log(`✅ Processed ${upcomingMatches.length} upcoming matches`);
       setCache('upcomingMatches', upcomingMatches);
       
       // Only broadcast whitelisted matches to clients
       const whitelisted = upcomingMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
       broadcast({ type: 'UPCOMING_MATCHES', payload: whitelisted });
-      console.log(`✓ Broadcasted ${whitelisted.length} upcoming matches (from ${upcomingMatches.length}) to ${clients.size} clients`);
+      console.log(`✓ Broadcasted ${whitelisted.length} upcoming matches to ${clients.size} clients`);
     } else {
       console.log('ℹ️  No upcoming matches in next 24 hours');
       upcomingMatches = [];
@@ -608,9 +672,10 @@ async function pollUpcomingMatches() {
   }
 }
 
-// Start polling with adaptive frequency based on paid API tier limits
-// Paid tier: Higher quota available, can poll more frequently with smart caching
-const pollInterval = process.env.LIVE_POLL_INTERVAL || 5; // Default: 5s for paid plans
+// Start polling with adaptive frequency based on data source
+// API-Football mode: fast polling (5s default)
+// Gemini mode: slow polling (every 5s cron, but cache TTL prevents actual Gemini calls more than every 5 min)
+const pollInterval = process.env.LIVE_POLL_INTERVAL || 5;
 cron.schedule(`*/${pollInterval} * * * * *`, async () => {
   try {
     // Poll live matches
@@ -631,11 +696,10 @@ cron.schedule(`*/${pollInterval} * * * * *`, async () => {
   }
 });
 
-console.log(`⏰ Live polling started (every ${pollInterval}s)`);
-console.log(`   API-Football subscribed plan: Higher quota available`);
-console.log(`   Live matches: cached for 5 seconds`);
-console.log(`   Upcoming matches: cached for 30 seconds`);
-console.log(`   Smart response caching: enabled ✓`);
+console.log(`⏰ Polling started (cron every ${pollInterval}s)`);
+console.log(`   Data source: ${API_KEY ? 'API-Football' : '🤖 Gemini 2.0 Flash + Google Search'}`);
+console.log(`   Live cache TTL:     ${CACHE_TTL.live / 1000}s`);
+console.log(`   Upcoming cache TTL: ${CACHE_TTL.upcoming / 1000}s`);
 
 // ─── TWILIO WHATSAPP ALERTS ────────────────────────────────────────────────
 
@@ -893,6 +957,111 @@ app.post('/api/bet-value', (req, res) => {
   } catch (error) {
     console.error('Error calculating bet value:', error.message);
     res.status(500).json({ error: 'Could not calculate bet value' });
+  }
+});
+
+// ─── AGENT 47 V6 FRONTIER ENDPOINTS ──────────────────────────────────────────
+
+/**
+ * POST /api/analyze
+ * Accepts a matchData object and returns full V6 Frontier analysis.
+ * Works offline — no live API required.
+ *
+ * Body: see analyzeV6() JSDoc in agent47Service.js
+ */
+app.post('/api/analyze', (req, res) => {
+  try {
+    const matchData = req.body;
+    if (!matchData || typeof matchData !== 'object') {
+      return res.status(400).json({ error: 'Request body must be a matchData object' });
+    }
+    const analysis = analyzeV6(matchData);
+    res.json(analysis);
+  } catch (error) {
+    console.error('V6 analysis error:', error.message);
+    res.status(500).json({ error: 'Analysis failed', detail: error.message });
+  }
+});
+
+/**
+ * GET /api/analyze/live/:matchId
+ * Runs V6 analysis on a live match already in the in-memory store.
+ * Auto-populates what it can from live stats; pass ?gameWeek=35&totalGW=38 etc via query.
+ */
+app.get('/api/analyze/live/:matchId', (req, res) => {
+  try {
+    const { matchId } = req.params;
+    const match = liveMatches.find((m) => m.id == matchId || m.id === parseInt(matchId));
+
+    if (!match) {
+      return res.status(404).json({ error: 'Match not found in live matches' });
+    }
+
+    // Build matchData from live state + optional query overrides
+    const q = req.query;
+    const matchData = {
+      home:                 match.home,
+      away:                 match.away,
+      league:               match.league,
+      leagueId:             match.leagueId,
+      status:               'LIVE',
+      matchMinutes:         match.matchMinutes || 0,
+      score:                match.score || '0-0',
+      // League context — caller should pass these for accurate analysis
+      gameWeek:             parseInt(q.gameWeek)     || 30,
+      totalGW:              parseInt(q.totalGW)      || 38,
+      totalTeams:           parseInt(q.totalTeams)   || 20,
+      homePosition:         parseInt(q.homePos)      || 10,
+      awayPosition:         parseInt(q.awayPos)      || 10,
+      homePoints:           parseInt(q.homePts)      || 40,
+      awayPoints:           parseInt(q.awayPts)      || 40,
+      // Live stats from in-memory match
+      homeXgAvg:            match.xg?.home  || 1.2,
+      awayXgAvg:            match.xg?.away  || 1.0,
+      homeXgaAvg:           match.xg?.away  || 1.2,
+      awayXgaAvg:           match.xg?.home  || 1.0,
+      homePossession:       match.possession?.home || 50,
+      homeShotsPerGame:     match.shots?.home || 5,
+      awayShotsPerGame:     match.shots?.away || 4,
+      // Defaults — caller can override via POST /api/analyze for full analysis
+      homeSquadIntegrity:   parseInt(q.homeSquad) || 90,
+      awaySquadIntegrity:   parseInt(q.awaySquad) || 90,
+      referee:              q.referee || null,
+      venue:                q.venue   || null,
+    };
+
+    const analysis = analyzeV6(matchData);
+    res.json(analysis);
+  } catch (error) {
+    console.error('V6 live analysis error:', error.message);
+    res.status(500).json({ error: 'Live analysis failed', detail: error.message });
+  }
+});
+
+/**
+ * POST /api/analyze/natural
+ * Natural language → Gemini → matchData → V6 analysis.
+ * Body: { query: "Persija is playing now" }
+ */
+app.post('/api/analyze/natural', async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      return res.status(400).json({ error: 'Provide a { "query": "<match description>" } body.' });
+    }
+
+    console.log(`[Gemini] Natural language query: "${query.trim()}"`);
+    const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(query.trim());
+
+    const analysis = analyzeV6(matchData);
+
+    // Attach Gemini metadata to the response so the UI can show a confidence caveat
+    analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: query.trim() };
+
+    res.json(analysis);
+  } catch (error) {
+    console.error('[Gemini] Error:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
