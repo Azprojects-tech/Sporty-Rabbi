@@ -193,7 +193,7 @@ const GEMINI_SPORTS_MODELS = [
  * Tries multiple models in order if one is unavailable.
  */
 async function geminiFetch(systemPrompt, userPrompt) {
-  if (!AVAILABLE) return [];
+  if (!AVAILABLE) return null; // triggers static fallback in callers
   for (const model of GEMINI_SPORTS_MODELS) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
@@ -248,9 +248,9 @@ const STATIC_UPCOMING_FIXTURES = [
   { id: 90010, home: 'Bayer Leverkusen', away: 'RB Leipzig', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 69, opportunities: [], league: 'Bundesliga', leagueId: 78, matchType: 'League', leagueCountry: 'Germany' },
   { id: 90011, home: 'PSG', away: 'Lyon', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 73, opportunities: [], league: 'Ligue 1', leagueId: 61, matchType: 'League', leagueCountry: 'France' },
   { id: 90012, home: 'Marseille', away: 'Monaco', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 64, opportunities: [], league: 'Ligue 1', leagueId: 61, matchType: 'League', leagueCountry: 'France' },
-  { id: 90013, home: 'Inter Milan', away: 'Lazio', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 70, opportunities: [], league: 'Serie A', leagueId: 135, matchType: 'League', leagueCountry: 'Italy' },
-  { id: 90014, home: 'AC Milan', away: 'Fiorentina', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 65, opportunities: [], league: 'Serie A', leagueId: 135, matchType: 'League', leagueCountry: 'Italy' },
-  { id: 90015, home: 'Juventus', away: 'Napoli', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 72, opportunities: [], league: 'Serie A', leagueId: 135, matchType: 'League', leagueCountry: 'Italy' },
+  { id: 90013, home: 'Inter Milan', away: 'Lazio', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 70, opportunities: [], league: 'Europa League', leagueId: 3, matchType: 'Cup', leagueCountry: 'Europe' },
+  { id: 90014, home: 'AC Milan', away: 'Fiorentina', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 65, opportunities: [], league: 'Conference League', leagueId: 849, matchType: 'Cup', leagueCountry: 'Europe' },
+  { id: 90015, home: 'Juventus', away: 'Napoli', score: '0-0', possession: { home: 50, away: 50 }, shots: { home: 0, away: 0 }, xg: { home: 0.0, away: 0.0 }, status: 'NS', matchMinutes: 0, confidence: 72, opportunities: [], league: 'Champions League', leagueId: 1, matchType: 'Cup', leagueCountry: 'Europe' },
 ];
 
 const STATIC_LIVE_FIXTURES = [

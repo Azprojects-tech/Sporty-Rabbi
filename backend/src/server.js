@@ -584,7 +584,7 @@ async function pollLiveMatches() {
     if (!API_KEY) {
       // ── Gemini mode: data already in app format, just sanitize ──────────
       const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
-      processedMatches = raw.map(sanitizeMatch);
+      processedMatches = (raw || []).map(sanitizeMatch);
     } else {
       // ── API-Football mode: parse raw fixture format ──────────────────────
       const matches = await fetchLiveMatches();
@@ -594,7 +594,7 @@ async function pollLiveMatches() {
       if (processedMatches.length === 0) {
         console.log('🤖 API-Football returned 0 live matches — trying Gemini fallback...');
         const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
-        processedMatches = raw.map(sanitizeMatch);
+        processedMatches = (raw || []).map(sanitizeMatch);
       }
     }
     
@@ -636,7 +636,7 @@ async function pollUpcomingMatches() {
       // ── Gemini mode: data already in app format, just sanitize ──────────
       console.log('🤖 Fetching upcoming matches via Gemini...');
       const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
-      processedMatches = raw.map(sanitizeMatch);
+      processedMatches = (raw || []).map(sanitizeMatch);
     } else {
       // ── API-Football mode: parse raw fixture format ──────────────────────
       console.log('🔄 Polling upcoming matches...');
@@ -648,7 +648,7 @@ async function pollUpcomingMatches() {
       if (processedMatches.length === 0) {
         console.log('🤖 API-Football returned 0 upcoming — trying Gemini fallback...');
         const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
-        processedMatches = raw.map(sanitizeMatch);
+        processedMatches = (raw || []).map(sanitizeMatch);
       }
     }
 
