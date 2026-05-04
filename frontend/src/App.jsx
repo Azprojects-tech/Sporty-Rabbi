@@ -4,6 +4,295 @@ import { MatchCard } from './components/MatchComponents';
 import { BetLogger } from './components/BetComponents';
 import AnalyticsModal from './components/AnalyticsModal';
 
+const CLUB_LEAGUES = [
+  { id: 'all', name: 'All Clubs', flag: '🌐' },
+  { id: 39,  name: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { id: 140, name: 'La Liga',        flag: '🇪🇸' },
+  { id: 78,  name: 'Bundesliga',     flag: '🇩🇪' },
+  { id: 61,  name: 'Ligue 1',        flag: '🇫🇷' },
+  { id: 64,  name: 'Primeira Liga',  flag: '🇵🇹' },
+  { id: 203, name: 'Süper Lig',      flag: '🇹🇷' },
+  { id: 541, name: 'Saudi Pro',      flag: '🇸🇦' },
+  { id: 1,   name: 'Champions League', flag: '⭐' },
+  { id: 3,   name: 'Europa League',  flag: '🟠' },
+  { id: 849, name: 'Conference Lg',  flag: '💜' },
+];
+
+const INTL_LEAGUES = [
+  { id: 'all', name: 'All International', flag: '🌍' },
+  { id: 4,  name: 'World Cup',       flag: '🏆' },
+  { id: 18, name: 'WC Qualifiers',   flag: '🎯' },
+  { id: 2,  name: 'EURO',            flag: '⚽' },
+  { id: 5,  name: 'Copa America',    flag: '🔥' },
+  { id: 6,  name: 'AFCON',           flag: '📍' },
+  { id: 16, name: 'Nations League',  flag: '🏅' },
+  { id: 17, name: 'Olympics',        flag: '🎖️' },
+  { id: 15, name: 'Friendlies',      flag: '🤝' },
+];
+
+const S = {
+  page:       { background: '#080c14', minHeight: '100vh', color: '#e2e8f0', fontFamily: "'Inter', system-ui, sans-serif" },
+  header:     { background: 'linear-gradient(180deg,#0d1117 0%,#080c14 100%)', borderBottom: '1px solid #1a2540', padding: '0 24px', height: 56, display: 'flex', alignItems: 'center' },
+  headerInner:{ maxWidth: 1440, margin: '0 auto', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  logo:       { background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 },
+  logoText:   { fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', lineHeight: 1 },
+  tabBar:     { display: 'flex', gap: 2, background: '#0d1421', borderRadius: 8, padding: 3, border: '1px solid #1a2540' },
+  sidebar:    { width: 196, flexShrink: 0, borderRight: '1px solid #1a2540', padding: '12px 0', minHeight: 'calc(100vh - 56px)', background: '#070b12' },
+  main:       { flex: 1, padding: '20px 28px', minHeight: 'calc(100vh - 56px)', maxWidth: 1060 },
+  sectionHd:  { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 },
+  emptyBox:   { textAlign: 'center', padding: '80px 0', color: '#334155' },
+};
+
+export default function App() {
+  const [matches, setMatches] = useState([]);
+  const [upcomingMatches, setUpcomingMatches] = useState([]);
+  const [bets, setBets] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('live');
+  const [sidebarTab, setSidebarTab] = useState('clubs');
+  const [selectedLeague, setSelectedLeague] = useState('all');
+  const [selectedMatch, setSelectedMatch] = useState(null);
+  const [showBets, setShowBets] = useState(false);
+
+  useEffect(() => {
+    connectWebSocket(() => {
+      setConnected(true);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+
+    on('LIVE_MATCHES',     (p) => setMatches(p || []));
+    on('UPCOMING_MATCHES', (p) => setUpcomingMatches(p || []));
+    on('BET_LOGGED',  (b) => setBets(prev => [b, ...prev]));
+    on('BET_UPDATED', (b) => setBets(prev => prev.map(x => x.id === b.id ? b : x)));
+
+    const fetchData = async () => {
+      try {
+        const [liveRes, upRes, betsRes, statsRes] = await Promise.all([
+          apiService.getLiveMatches().catch(() => ({ data: { matches: [] } })),
+          apiService.getUpcoming().catch(()   => ({ data: { matches: [] } })),
+          apiService.getBets().catch(()       => ({ data: { bets: [] } })),
+          apiService.getStats().catch(()      => ({ data: {} })),
+        ]);
+        if (liveRes?.data?.matches?.length > 0) setMatches(liveRes.data.matches);
+        if (upRes?.data?.matches?.length > 0)   setUpcomingMatches(upRes.data.matches);
+        setBets(betsRes?.data?.bets || []);
+        setStats(statsRes?.data);
+      } catch {}
+    };
+
+    fetchData();
+    const t = setInterval(fetchData, 10000);
+    return () => clearInterval(t);
+  }, []);
+
+  const currentMatches = activeTab === 'live' ? matches : upcomingMatches;
+
+  const filteredMatches = (() => {
+    if (sidebarTab === 'intl') {
+      const ids = new Set([4, 18, 2, 5, 6, 16, 17, 15]);
+      const base = currentMatches.filter(m => ids.has(m.leagueId));
+      return selectedLeague === 'all' ? base : base.filter(m => m.leagueId === Number(selectedLeague));
+    }
+    const ids = new Set([39, 140, 78, 61, 64, 203, 541, 1, 3, 849]);
+    const base = currentMatches.filter(m => ids.has(m.leagueId));
+    return selectedLeague === 'all' ? base : base.filter(m => m.leagueId === Number(selectedLeague));
+  })();
+
+  const leagueList = sidebarTab === 'clubs' ? CLUB_LEAGUES : INTL_LEAGUES;
+
+  return (
+    <div style={S.page}>
+      {/* ── HEADER ──────────────────────────────────────────────── */}
+      <header style={S.header}>
+        <div style={S.headerInner}>
+
+          {/* Logo */}
+          <button style={S.logo} onClick={() => { setSelectedMatch(null); setShowBets(false); }}>
+            <span style={{ fontSize: 22 }}>⚡</span>
+            <span style={S.logoText}>
+              <span style={{ color: '#e2e8f0' }}>Sporty</span>
+              <span style={{ color: '#00e676' }}>Rabbi</span>
+            </span>
+            <span style={{ fontSize: 10, color: '#334155', fontWeight: 700, letterSpacing: 1, marginLeft: 4, alignSelf: 'flex-end', paddingBottom: 2 }}>V8</span>
+          </button>
+
+          {/* Tab bar */}
+          <div style={S.tabBar}>
+            {[
+              { id: 'live',     label: '● LIVE',     color: '#ef4444' },
+              { id: 'upcoming', label: '◎ UPCOMING', color: '#3b82f6' },
+            ].map(t => {
+              const active = activeTab === t.id && !showBets;
+              return (
+                <button key={t.id} onClick={() => { setActiveTab(t.id); setShowBets(false); }} style={{
+                  padding: '6px 20px', borderRadius: 6, fontWeight: 700, fontSize: 12,
+                  letterSpacing: '0.6px', border: 'none', cursor: 'pointer',
+                  background: active ? t.color : 'transparent',
+                  color: active ? '#fff' : '#475569', transition: 'all 0.15s',
+                }}>
+                  {t.label}
+                </button>
+              );
+            })}
+            <button onClick={() => setShowBets(v => !v)} style={{
+              padding: '6px 20px', borderRadius: 6, fontWeight: 700, fontSize: 12,
+              letterSpacing: '0.6px', border: 'none', cursor: 'pointer',
+              background: showBets ? '#7c3aed' : 'transparent',
+              color: showBets ? '#fff' : '#475569', transition: 'all 0.15s',
+            }}>
+              📊 BETS
+            </button>
+          </div>
+
+          {/* Connection status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: connected ? '#00e676' : '#ef4444',
+              display: 'inline-block',
+              boxShadow: connected ? '0 0 10px #00e676aa' : 'none',
+            }} />
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.8px', color: connected ? '#00e676' : '#ef4444' }}>
+              {connected ? 'LIVE FEED' : 'OFFLINE'}
+            </span>
+          </div>
+
+        </div>
+      </header>
+
+      <div style={{ maxWidth: 1440, margin: '0 auto', display: 'flex' }}>
+
+        {/* ── SIDEBAR ─────────────────────────────────────────────── */}
+        {!showBets && !selectedMatch && (
+          <aside style={S.sidebar}>
+            {/* Club / Intl toggle */}
+            <div style={{ padding: '0 10px 10px', display: 'flex', gap: 3 }}>
+              {[{ id: 'clubs', label: '⚽ Club' }, { id: 'intl', label: '🌍 Intl' }].map(t => (
+                <button key={t.id} onClick={() => { setSidebarTab(t.id); setSelectedLeague('all'); }} style={{
+                  flex: 1, padding: '6px 4px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+                  letterSpacing: '0.5px', textTransform: 'uppercase', border: 'none', cursor: 'pointer',
+                  background: sidebarTab === t.id ? '#0f2040' : '#0d1421',
+                  color: sidebarTab === t.id ? '#60a5fa' : '#334155',
+                  borderBottom: sidebarTab === t.id ? '2px solid #3b82f6' : '2px solid transparent',
+                }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* League list */}
+            <nav>
+              {leagueList.map(l => {
+                const active = selectedLeague === l.id || (typeof l.id === 'number' && selectedLeague === String(l.id));
+                return (
+                  <button key={l.id} onClick={() => setSelectedLeague(l.id)} style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 14px',
+                    background: active ? '#0f2040' : 'transparent',
+                    borderLeft: active ? '3px solid #00e676' : '3px solid transparent',
+                    border: 'none', cursor: 'pointer',
+                    color: active ? '#e2e8f0' : '#475569',
+                    fontSize: 12, fontWeight: active ? 700 : 400,
+                    textAlign: 'left', transition: 'all 0.1s',
+                  }}>
+                    <span style={{ fontSize: 13 }}>{l.flag}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.name}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+        )}
+
+        {/* ── MAIN ────────────────────────────────────────────────── */}
+        <main style={S.main}>
+
+          {showBets ? (
+            /* ── BETS VIEW ── */
+            <div>
+              <div style={S.sectionHd}>
+                <span style={{ fontSize: 18, fontWeight: 700 }}>Bet Tracker</span>
+                {stats && (
+                  <div style={{ display: 'flex', gap: 12, marginLeft: 'auto' }}>
+                    {[
+                      { label: 'Bets', val: stats.totalBets || 0 },
+                      { label: 'Win %', val: `${stats.winRate || 0}%` },
+                      { label: 'P&L', val: stats.profitLoss >= 0 ? `+${stats.profitLoss}` : stats.profitLoss },
+                    ].map(s => (
+                      <div key={s.label} style={{ background: '#0d1421', border: '1px solid #1a2540', borderRadius: 8, padding: '6px 14px', textAlign: 'center' }}>
+                        <div style={{ fontSize: 10, color: '#475569', letterSpacing: '0.5px', marginBottom: 2 }}>{s.label}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>{s.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <BetLogger onBetLogged={b => setBets(prev => [b, ...prev])} />
+            </div>
+
+          ) : selectedMatch ? (
+            /* ── ANALYTICS VIEW ── */
+            <div>
+              <button onClick={() => setSelectedMatch(null)} style={{
+                marginBottom: 16, background: '#0d1421', border: '1px solid #1a2540',
+                color: '#64748b', padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                fontSize: 12, fontWeight: 700, letterSpacing: '0.5px',
+              }}>
+                ← BACK
+              </button>
+              <AnalyticsModal match={selectedMatch} onClose={() => setSelectedMatch(null)} />
+            </div>
+
+          ) : (
+            /* ── MATCH LIST VIEW ── */
+            <>
+              {/* Section header */}
+              <div style={S.sectionHd}>
+                {activeTab === 'live' ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#1a0505', border: '1px solid #7f1d1d', borderRadius: 6, padding: '3px 10px' }}>
+                    <span className="live-dot" />
+                    <span style={{ color: '#ef4444', fontWeight: 800, fontSize: 11, letterSpacing: '1px' }}>LIVE</span>
+                  </span>
+                ) : (
+                  <span style={{ background: '#0a1628', border: '1px solid #1e3a5f', borderRadius: 6, padding: '3px 10px', color: '#60a5fa', fontWeight: 700, fontSize: 11, letterSpacing: '1px' }}>
+                    UPCOMING
+                  </span>
+                )}
+                <span style={{ color: '#334155', fontSize: 12 }}>
+                  {filteredMatches.length} {filteredMatches.length === 1 ? 'match' : 'matches'}
+                </span>
+              </div>
+
+              {/* Matches */}
+              {filteredMatches.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {filteredMatches.map(m => (
+                    <MatchCard key={m.id} match={m} onSelectMatch={() => setSelectedMatch(m)} />
+                  ))}
+                </div>
+              ) : (
+                <div style={S.emptyBox}>
+                  <div style={{ fontSize: 44, marginBottom: 14 }}>{loading ? '⏳' : '📭'}</div>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: '#475569' }}>
+                    {loading ? 'Connecting to live data...' : activeTab === 'live' ? 'No live matches right now' : 'No upcoming matches found'}
+                  </p>
+                  <p style={{ fontSize: 12, color: '#1e293b', marginTop: 6 }}>
+                    {!loading && 'Refreshes every 30 seconds'}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+        </main>
+      </div>
+    </div>
+  );
+}
+
+
 export default function App() {
   const [matches, setMatches] = useState([]);
   const [upcomingMatches, setUpcomingMatches] = useState([]);

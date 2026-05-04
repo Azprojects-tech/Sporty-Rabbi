@@ -2,13 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  @apply box-border;
-}
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  @apply bg-gray-900 text-gray-100 font-sans;
+  background: #080c14;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
+
+/* Pulsing live dot */
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  display: inline-block;
+  animation: livePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 6px; }
+::-webkit-scrollbar-track { background: #080c14; }
+::-webkit-scrollbar-thumb { background: #1a2540; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #243352; }
+
+/* Keep legacy .btn/.card classes for BetLogger/AnalyticsModal */
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-primary   { background: #00c853; color: #000; font-weight: 700; }
+.btn-primary:hover  { background: #00e676; }
+.btn-secondary { background: #0d1421; color: #94a3b8; border: 1px solid #1a2540; }
+.btn-secondary:hover { background: #111c30; }
+.btn-sm { padding: 5px 12px; font-size: 12px; min-height: 32px; }
+
+.card {
+  background: #0d1421;
+  border: 1px solid #1a2540;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+.card-hover { background: #0d1421; border: 1px solid #1a2540; border-radius: 10px; padding: 16px 20px; cursor: pointer; transition: background 0.15s; }
+.card-hover:hover { background: #111c30; }
+
+input, select, textarea {
+  background: #080c14;
+  border: 1px solid #1a2540;
+  color: #e2e8f0;
+  border-radius: 7px;
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus, textarea:focus { border-color: #00e676; }
+
 
 /* Mobile optimizations */
 @media (max-width: 640px) {
