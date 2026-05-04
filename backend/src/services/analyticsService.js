@@ -1,18 +1,36 @@
 /**
  * Team & H2H Analytics Service
  * Fetches historical data for informed betting decisions
+ *
+ * ⚠️  OFFLINE MODE: When API_FOOTBALL_KEY is not set (or subscription is expired),
+ * all functions return structured fallback objects so the rest of the server keeps
+ * running.  Re-connect by setting a valid API_FOOTBALL_KEY in backend/.env.
  */
 
 import axios from 'axios';
 
 const API_BASE = 'https://v3.football.api-sports.io';
 const API_KEY = process.env.API_FOOTBALL_KEY;
+const API_AVAILABLE = Boolean(API_KEY);
+
+if (!API_AVAILABLE) {
+  console.warn('⚠️  analyticsService: API_FOOTBALL_KEY not set — running in offline mode. Historical form/H2H endpoints will return placeholder data.');
+}
 
 const axiosInstance = axios.create({
   baseURL: API_BASE,
   headers: { 'x-apisports-key': API_KEY },
   timeout: 8000,
 });
+
+// Offline fallback response shape
+function offlineFallback(type, ...ids) {
+  return {
+    offline: true,
+    message: 'API subscription inactive. Re-connect API_FOOTBALL_KEY to enable live historical data.',
+    type, ids,
+  };
+}
 
 // Cache to avoid excessive API calls
 const statsCache = new Map();
@@ -38,6 +56,7 @@ function setCache(key, data) {
  * Get team's last 10 matches and calculate form stats
  */
 export async function getTeamForm(teamId, league = null) {
+  if (!API_AVAILABLE) return offlineFallback('teamForm', teamId, league);
   try {
     const key = cacheKey('form', teamId, league);
     const cached = getCache(key);
@@ -136,6 +155,7 @@ export async function getTeamForm(teamId, league = null) {
  * Get head-to-head record between two teams
  */
 export async function getH2H(teamA, teamB) {
+  if (!API_AVAILABLE) return offlineFallback('h2h', teamA, teamB);
   try {
     const key = cacheKey('h2h', Math.min(teamA, teamB), Math.max(teamA, teamB));
     const cached = getCache(key);
@@ -216,6 +236,7 @@ export async function getH2H(teamA, teamB) {
  * Get combined fixture preview with both teams' stats
  */
 export async function getFixturePreview(fixtureId, homeTeamId, awayTeamId, leagueId) {
+  if (!API_AVAILABLE) return offlineFallback('fixturePreview', fixtureId, homeTeamId, awayTeamId);
   try {
     const [homeForm, awayForm, h2h] = await Promise.all([
       getTeamForm(homeTeamId, leagueId),

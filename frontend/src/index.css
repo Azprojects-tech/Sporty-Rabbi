@@ -2,35 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── DESIGN TOKENS ─────────────────────────────────────── */
+:root {
+  --bg-base:    #0f1117;
+  --bg-panel:   #0a0d15;
+  --bg-card:    #131826;
+  --bg-hover:   #16202e;
+  --green:      #00b859;
+  --green-dim:  #006833;
+  --green-bg:   #001f0e;
+  --red:        #ef4444;
+  --amber:      #f59e0b;
+  --blue:       #3b82f6;
+  --border:     #1e2535;
+  --text-1:     #e2e8f0;
+  --text-2:     #8b9ab3;
+  --text-3:     #4a5568;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background: #080c14;
-  color: #e2e8f0;
+  background: var(--bg-base);
+  color: var(--text-1);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ─── ANIMATIONS ─────────────────────────────────────────── */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px #ef4444; }
+  50%       { opacity: 0.35; box-shadow: none; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Pulsing live dot */
 .live-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #ef4444;
   display: inline-block;
-  animation: livePulse 1.4s ease-in-out infinite;
+  animation: livePulse 1.5s ease-in-out infinite;
 }
 
-@keyframes livePulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.4; transform: scale(0.8); }
-}
-
-/* Scrollbar */
-::-webkit-scrollbar       { width: 6px; }
-::-webkit-scrollbar-track { background: #080c14; }
-::-webkit-scrollbar-thumb { background: #1a2540; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #243352; }
+/* ─── SCROLLBAR ──────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg-panel); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #252d3d; }
 
 /* Keep legacy .btn/.card classes for BetLogger/AnalyticsModal */
 .btn {

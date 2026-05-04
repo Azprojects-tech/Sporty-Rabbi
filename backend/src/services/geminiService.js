@@ -284,6 +284,93 @@ Return a JSON array (may be empty []) where each object has EXACTLY these fields
   return matches;
 }
 
+// ─── CALIBRATE TODAY (SEARCH GROUNDING) ──────────────────────────────────────
+
+const CALIBRATION_SYSTEM_PROMPT = `You are Agent 47, the global football analytics engine for SportyRabbi.
+
+Using Google Search, find ALL real football matches scheduled for today globally across all regulated professional leagues.
+For each match, estimate V8 analytics parameters from your knowledge of team form, xG, squad, motivation, H2H etc.
+Return ONLY a valid JSON array — no markdown, no explanation, nothing else outside the array brackets.
+
+Each element MUST follow EXACTLY this schema (no extra fields, no renamed fields):
+{
+  "match": { "home": "Team Name", "away": "Team Name", "league": "League Name", "leagueId": 39, "country": "England", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "2026-05-04T19:45:00Z" },
+  "home": { "motivationScore": 7, "starPlayers": 3, "starPlayersMissing": 1, "recentForm": ["W","W","D","L","W"], "goalsScored": [2,1,2,1,3], "goalsConceded": [0,1,1,2,1], "xgAvg": 1.8, "xgaAvg": 1.1, "pace": 7, "leaguePosition": 3, "squadIntegrity": 90 },
+  "away": { "motivationScore": 6, "starPlayers": 2, "starPlayersMissing": 0, "recentForm": ["W","D","W","L","D"], "goalsScored": [1,2,1,0,2], "goalsConceded": [1,1,0,2,1], "xgAvg": 1.4, "xgaAvg": 1.3, "pace": 6, "leaguePosition": 7, "squadIntegrity": 88 },
+  "h2h": { "homeWins": 4, "awayWins": 3, "draws": 3, "avgGoals": 2.6, "bttsRate": 0.65 },
+  "odds": { "homeWin": 2.1, "draw": 3.4, "awayWin": 3.8, "over25": 1.9, "btts": 1.8 },
+  "context": { "neutralVenue": false, "earlyGoal": false, "redCard": false, "gameWeek": 35, "totalGameWeeks": 38, "homePoints": 55, "awayPoints": 42, "homeGoalDifferential": 20, "awayGoalDifferential": 5, "timezone": "Europe/London" }
+}
+
+leagueId reference: Premier League=39, La Liga=140, Bundesliga=78, Serie A=135, Ligue 1=61, Eredivisie=88, Primeira Liga=64, Super Lig=203, Saudi Pro=541, Champions League=1, Europa League=3, Conference League=849, World Cup=4, WC Qualifiers=18, EURO=2, Copa America=5, AFCON=6, Nations League=16, Olympics=17, Int Friendlies=15, J-League=98, K-League=292, A-League=188, MLS=253, Brazilian Serie A=71, Argentine Liga=128, Colombian Primera=239, Greek Super League=197, Polish Ekstraklasa=106, Scottish Premiership=179, Belgian Pro League=144, Russian Premier=235.
+
+Include ALL global regulated professional leagues. Target 15-60 matches. Do NOT include amateur or youth competitions.`;
+
+/**
+ * Calibrate today's global football schedule using Gemini with Google Search grounding.
+ * Returns array of V6-compatible fixture objects, or null if all models fail.
+ * @returns {Promise<Array|null>}
+ */
+export async function calibrateDay() {
+  if (!AVAILABLE) throw new Error('GEMINI_API_KEY not configured');
+
+  const today = new Date().toISOString().split('T')[0];
+
+  for (const model of GEMINI_SPORTS_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const body = {
+        tools: [{ google_search: {} }],
+        systemInstruction: { parts: [{ text: CALIBRATION_SYSTEM_PROMPT }] },
+        contents: [{
+          role: 'user',
+          parts: [{ text: `Today is ${today}. Use Google Search to find all football matches scheduled globally today and return them as a JSON array per your instructions schema.` }],
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 16000,
+        },
+      };
+
+      const response = await axios.post(url, body, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 90000,
+      });
+
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+
+      if (!text.trim()) {
+        console.warn(`[Calibrate] ${model} returned empty text`);
+        continue;
+      }
+
+      // Find JSON array bounds in response (may have surrounding explanation)
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start === -1 || end === -1 || end <= start) {
+        console.warn(`[Calibrate] ${model} no JSON array found in response`);
+        continue;
+      }
+
+      const fixtures = JSON.parse(text.slice(start, end + 1));
+      if (!Array.isArray(fixtures) || fixtures.length === 0) {
+        console.warn(`[Calibrate] ${model} returned empty array`);
+        continue;
+      }
+
+      console.log(`[Calibrate] ${model}: ${fixtures.length} global fixtures via search grounding`);
+      return fixtures;
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      console.warn(`[Calibrate] ${model} failed: ${msg.slice(0, 100)}`);
+    }
+  }
+
+  console.warn('[Calibrate] All models failed — falling back to static fixtures');
+  return null;
+}
+
 /**
  * Use Gemini knowledge to generate upcoming match fixtures (next 24 hours).
  * Returns an array already in the app's internal sanitizeMatch-compatible format.

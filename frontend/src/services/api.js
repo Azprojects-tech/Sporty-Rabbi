@@ -74,6 +74,17 @@ export const apiService = {
 
   // Alerts
   getAlerts: () => client.get('/alerts'),
+
+  // ─── V6 FRONTIER ANALYSIS ──────────────────────────────────────────────────
+
+  // Natural language → Gemini → V6: "Persija is playing now"
+  analyzeNatural: (query) => client.post('/analyze/natural', { query }, { timeout: 25000 }),
+
+  // Direct V6 analysis from a structured matchData object
+  analyzeMatch: (matchData) => client.post('/analyze', matchData),
+
+  // V6 analysis on a live match already in server memory
+  analyzeLive: (matchId, params = {}) => client.get(`/analyze/live/${matchId}`, { params }),
 };
 
 // ─── WEBSOCKET CLIENT ─────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import {
   naturalLanguageToMatchData,
   fetchLiveMatchesViaGemini,
   fetchUpcomingMatchesViaGemini,
+  calibrateDay,
 } from './services/geminiService.js';
 import {
   calculateNextGoalProbability,
@@ -90,6 +91,7 @@ let liveMatches = [];
 let upcomingMatches = [];
 let alerts = [];
 let bets = [];
+let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
 
 // ─── WEBSOCKET SERVER ──────────────────────────────────────────────────────
 
@@ -1062,6 +1064,129 @@ app.post('/api/analyze/natural', async (req, res) => {
   } catch (error) {
     console.error('[Gemini] Error:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── CALIBRATION & SEARCH ENDPOINTS ─────────────────────────────────────────
+
+/**
+ * POST /api/calibrate
+ * Uses Gemini Search grounding to find today's global fixtures,
+ * runs V8 on every match, stores and returns all results + 80%+ picks.
+ */
+app.post('/api/calibrate', async (req, res) => {
+  try {
+    console.log('[Calibrate] Starting global day calibration via Gemini Search...');
+    const fixtures = await calibrateDay();
+    const raw = fixtures || [];
+
+    // If Gemini returned nothing, use static upcoming as fallback
+    const source = fixtures ? 'Gemini Search' : 'static fallback';
+    console.log(`[Calibrate] Processing ${raw.length} fixtures from ${source}`);
+
+    const analyzed = [];
+    for (const f of raw) {
+      try {
+        const matchMeta = f.match || {};
+        const matchData = {
+          home: matchMeta.home || f.home || 'Unknown',
+          away: matchMeta.away || f.away || 'Unknown',
+          league: matchMeta.league || 'Unknown',
+          leagueId: matchMeta.leagueId || 0,
+          status: matchMeta.status || 'NS',
+          matchMinutes: matchMeta.minute || 0,
+          score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
+          // V8 parameters from Gemini estimation
+          home: f.home,
+          away: f.away,
+          h2h: f.h2h,
+          odds: f.odds,
+          context: f.context,
+          homeXgAvg: f.home?.xgAvg || 1.3,
+          awayXgAvg: f.away?.xgAvg || 1.1,
+          homeXgaAvg: f.away?.xgaAvg || 1.2,
+          awayXgaAvg: f.home?.xgaAvg || 1.2,
+          homePossession: 50,
+          homeShotsPerGame: 12,
+          awayShotsPerGame: 10,
+        };
+
+        const analysis = analyzeV6(matchData);
+        const matchObj = sanitizeMatch({
+          id: `cal_${matchMeta.home}_${matchMeta.away}_${Date.now()}`.replace(/\s/g, '_').slice(0, 60),
+          home: matchMeta.home || 'Unknown',
+          away: matchMeta.away || 'Unknown',
+          score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
+          possession: { home: 50, away: 50 },
+          shots: { home: 0, away: 0 },
+          xg: { home: f.home?.xgAvg || 1.2, away: f.away?.xgAvg || 1.0 },
+          status: matchMeta.status || 'NS',
+          matchMinutes: matchMeta.minute || 0,
+          confidence: analysis.overallScore || 50,
+          opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
+          league: matchMeta.league || 'Unknown',
+          leagueId: matchMeta.leagueId || 0,
+          matchType: 'League',
+          leagueCountry: matchMeta.country || '',
+        });
+        // Attach kickoff and full analysis
+        matchObj.kickoffUTC = matchMeta.kickoffUTC || null;
+        matchObj.analysis = analysis;
+
+        analyzed.push(matchObj);
+      } catch (vErr) {
+        // Skip matches that fail V8
+        console.warn(`[Calibrate] V8 skip: ${f.match?.home} vs ${f.match?.away}: ${vErr.message}`);
+      }
+    }
+
+    const highConfidence = analyzed.filter(m => m.confidence >= 80);
+    calibrationStore = {
+      matches: analyzed,
+      highConfidence,
+      calibratedAt: new Date().toISOString(),
+      totalScanned: raw.length,
+    };
+
+    console.log(`[Calibrate] Done: ${analyzed.length} analyzed, ${highConfidence.length} high confidence (≥80%)`);
+    res.json({
+      success: true,
+      totalScanned: raw.length,
+      total: analyzed.length,
+      highConfidenceCount: highConfidence.length,
+      calibratedAt: calibrationStore.calibratedAt,
+      matches: analyzed,
+      highConfidence,
+    });
+  } catch (err) {
+    console.error('[Calibrate] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/calibrate/results
+ * Returns the last stored calibration results without re-running.
+ */
+app.get('/api/calibrate/results', (req, res) => {
+  res.json(calibrationStore);
+});
+
+/**
+ * GET /api/search?q=Arsenal
+ * Natural language team/match search → Gemini → V8 analysis.
+ */
+app.get('/api/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'Provide ?q=team+name or match description' });
+  try {
+    const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(q);
+    const analysis = analyzeV6(matchData);
+    analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: q };
+    res.json(analysis);
+  } catch (err) {
+    console.error('[Search] Error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
