@@ -1,0 +1,13 @@
+# nixpacks.toml — Railway build config
+# This repo is a monorepo (frontend + backend).
+# Railway only hosts the BACKEND (Express API).
+# The frontend is deployed separately on Netlify.
+
+[phases.install]
+cmds = ["npm install --prefix backend"]
+
+[phases.build]
+cmds = ["echo 'Backend ready — no build step required'"]
+
+[start]
+cmd = "node backend/src/server.js"
