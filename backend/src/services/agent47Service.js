@@ -14,28 +14,43 @@
 
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
 export const TIERS = {
-  1: { name: 'Capital Security',  minConfidence: 82, description: 'High-stake singles. Maximum reliability.' },
-  2: { name: 'Commander Play',    minConfidence: 72, description: 'Balanced value. Standard strategic bets.' },
-  3: { name: 'Value Play',        minConfidence: 62, description: 'Calculated risk with higher yields.' },
-  4: { name: 'Calculated Chaos',  minConfidence: 52, description: 'Sniper alerts. Instant goal monitoring.' },
+  1: { name: 'Capital Security',  minConfidence: 85, description: 'High-stake singles. Maximum reliability. 3–5% purse.' },
+  2: { name: 'Balanced Play',     minConfidence: 72, description: 'Balanced value. Standard strategic bets. 2–3% purse.' },
+  3: { name: 'Aggressive Play',   minConfidence: 65, description: 'Calculated risk with higher yields. 1–2% purse.' },
+  4: { name: 'Calculated Chaos',  minConfidence: 55, description: 'Sniper alerts. Instant goal monitoring. ≤1% purse.' },
 };
 
-// ─── PARAMETER WEIGHTS (sum = 1.0) ────────────────────────────────────────────
+// ─── PARAMETER WEIGHTS (sum = 1.00) — V8 Master ──────────────────────────────
+// P15 (Crisis/Drought) added at 10%. Other weights redistributed accordingly.
 const W = {
-  p1_motivation:     0.12,
-  p2_starPower:      0.08,
-  p3_h2h:           0.07,
-  p4_form:          0.10,
-  p5_scoringTiming: 0.06,
-  p6_defensiveGap:  0.10,
+  p1_motivation:     0.16,  // ▲ central late-season driver
+  p2_starPower:      0.07,
+  p3_h2h:           0.08,
+  p4_form:          0.12,  // ▲ + last-5 recency overweight (60% heavier)
+  p5_scoringTiming: 0.07,
+  p6_defensiveGap:  0.07,
   p7_poisson:       0.09,
-  p8_xg:            0.09,
-  p9_xga:           0.09,
-  p10_pace:         0.07,
-  p11_timezone:     0.01,   // structural check — always passes
-  p12_fixture:      0.01,   // structural check — always passes
-  p13_squad:        0.07,
-  p14_lifecycle:    0.05,
+  p8_xg:            0.06,  // ▼ tighter — no coiled spring if xG also declining
+  p9_xga:           0.05,
+  p10_pace:         0.04,
+  p11_timezone:     0.02,  // referee / structural
+  p12_fixture:      0.01,
+  p13_squad:        0.05,
+  p14_lifecycle:    0.01,
+  p15_crisis:       0.10,  // ★ NEW — Crisis/Drought Mode (V8)
+};
+
+// ─── LEAGUE VARIANCE SCALARS ───────────────────────────────────────────────────
+// Applied to the composite score to account for league predictability variance.
+// Top-5 Europe = 1.0 (baseline). Higher-variance leagues = 1.15.
+const LEAGUE_SCALARS = {
+  39:  1.00,  // Premier League
+  140: 1.00,  // La Liga
+  78:  1.00,  // Bundesliga
+  61:  1.00,  // Ligue 1
+  135: 1.00,  // Serie A
+  71:  1.15,  // Brasileirão Serie A
+  313: 1.15,  // Indonesian Liga 1
 };
 
 // ─── RESEARCH CONSTANTS (April 2026 end-of-season findings) ───────────────────
@@ -207,17 +222,39 @@ function scoreH2H(history = []) {
   };
 }
 
-// P4 — FORM (L10) with Coiled Spring detection
-function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeGoalsAvg = 1.5, awayGoalsAvg = 1.0) {
+// P4 — FORM (L10) with recency overweight + tighter Coiled Spring (V8)
+// V8: last 5 results weighted 60% heavier than previous 5 (RECENT_WEIGHT = 1.6×)
+function weightedFormScore(raw) {
+  if (!raw) return 50;
+  const parts = Array.isArray(raw) ? raw : String(raw).toUpperCase().split(/[-,\s]+/);
+  const RECENT_W = 1.6; // newest 5 games are 60% heavier
+  let weighted = 0, maxWeight = 0;
+  parts.forEach((r, i) => {
+    const w = i < 5 ? RECENT_W : 1.0; // i=0 is newest
+    weighted  += (r === 'W' ? 3 : r === 'D' ? 1 : 0) * w;
+    maxWeight += 3 * w;
+  });
+  return maxWeight > 0 ? (weighted / maxWeight) * 100 : 50;
+}
+
+function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeGoalsAvg = 1.5, awayGoalsAvg = 1.0, homeXgTrend = null, awayXgTrend = null) {
   const hF = parseForm(homeFormStr);
   const aF = parseForm(awayFormStr);
 
-  // Coiled Spring: high xG but under-converting actual goals (goals overdue)
-  const hCoil = homeXgAvg > 0 && homeGoalsAvg > 0 && (homeXgAvg / homeGoalsAvg) > 1.35;
-  const aCoil = awayXgAvg  > 0 && awayGoalsAvg  > 0 && (awayXgAvg  / awayGoalsAvg)  > 1.35;
+  // V8 Tighter Coiled Spring: only fires if xG is NOT also collapsing.
+  // If xG trend is negative (declining), the spring has no tension — no boost.
+  const hCoil = homeXgAvg > 0 && homeGoalsAvg > 0 && (homeXgAvg / homeGoalsAvg) > 1.35
+    && (homeXgTrend === null || homeXgTrend >= 0);
+  const aCoil = awayXgAvg  > 0 && awayGoalsAvg  > 0 && (awayXgAvg  / awayGoalsAvg)  > 1.35
+    && (awayXgTrend === null || awayXgTrend >= 0);
 
-  const hScore = Math.round(hF.winRate * 45 + (hF.total > 0 ? hF.points / (hF.total * 3) : 0) * 35 + (hCoil ? 15 : 0));
-  const aScore = Math.round(aF.winRate * 45 + (aF.total > 0 ? aF.points / (aF.total * 3) : 0) * 35 + (aCoil ? 15 : 0));
+  // V8: blend recency-weighted score (60%) with flat win-rate base (40%)
+  const hRecent = weightedFormScore(homeFormStr);
+  const aRecent = weightedFormScore(awayFormStr);
+  const hBase = hF.winRate * 45 + (hF.total > 0 ? hF.points / (hF.total * 3) : 0) * 35;
+  const aBase = aF.winRate * 45 + (aF.total > 0 ? aF.points / (aF.total * 3) : 0) * 35;
+  const hScore = Math.round(hRecent * 0.6 + hBase * 0.4 + (hCoil ? 12 : 0));
+  const aScore = Math.round(aRecent * 0.6 + aBase * 0.4 + (aCoil ? 12 : 0));
 
   let edge = 'NEUTRAL';
   if (hScore > aScore + 15) edge = 'HOME';
@@ -229,10 +266,10 @@ function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeG
     away: { ...aF, coiledSpring: aCoil, score: aScore },
     edge,
     assessment: [
-      `Home form: ${hF.formStr} (${hF.wins}W ${hF.draws}D ${hF.losses}L)`,
-      `Away form: ${aF.formStr} (${aF.wins}W ${aF.draws}D ${aF.losses}L)`,
-      hCoil ? `⚠️ Home Coiled Spring — xG overperforming, goals overdue` : '',
-      aCoil ? `⚠️ Away Coiled Spring — xG overperforming, goals overdue` : '',
+      `Home form: ${hF.formStr} (${hF.wins}W ${hF.draws}D ${hF.losses}L, recency-weighted)`,
+      `Away form: ${aF.formStr} (${aF.wins}W ${aF.draws}D ${aF.losses}L, recency-weighted)`,
+      hCoil ? `⚠️ Home Coiled Spring — xG overperforming goals (trend stable)` : '',
+      aCoil ? `⚠️ Away Coiled Spring — xG overperforming goals (trend stable)` : '',
     ].filter(Boolean).join('. '),
   };
 }
@@ -336,6 +373,90 @@ function scoreLifecycle(gameWeek = 30, totalGW = 38) {
     gameWeek, totalGW, lifecyclePct: Math.round(pct * 100),
     phase, pressureMultiplier: mult,
     assessment: `GW ${gameWeek}/${totalGW} (${Math.round(pct * 100)}%) — ${phase}. Pressure ×${mult}`,
+  };
+}
+
+// P15 — CRISIS / DROUGHT MODE (★ V8 NEW — 10% weight) ─────────────────────────
+// Penalises: goal drought (3+ games), losing runs (4+ straight), interim chaos.
+// Rewards:   settled new permanent manager (6+ weeks, improving results).
+//
+// Coach stability rule:
+//   isInterim + gamesInRole ≤ 3   → −15 to −25 hit (chaos)
+//   !isInterim + tenureWeeks ≥ 6 + improving → +10 to +18 boost (new coach bounce)
+function scoreCrisisMode({
+  homeGoalDrought = 0, awayGoalDrought = 0,
+  homeRecentLosses = 0, awayRecentLosses = 0,
+  homeCoach = {}, awayCoach = {},
+}) {
+  let homeScore = 70; // baseline — no crisis signals
+  let awayScore = 70;
+  const flags = [];
+
+  // ── Goal drought ──────────────────────────────────────────────────────────
+  if (homeGoalDrought >= 5) {
+    homeScore -= 35;
+    flags.push(`🚨 Home goal drought: ${homeGoalDrought} games scoreless — full Crisis Mode`);
+  } else if (homeGoalDrought >= 3) {
+    homeScore -= 20;
+    flags.push(`⚠️ Home goal drought: ${homeGoalDrought} games without scoring`);
+  } else if (homeGoalDrought === 2) {
+    homeScore -= 8;
+  }
+
+  if (awayGoalDrought >= 5) {
+    awayScore -= 35;
+    flags.push(`🚨 Away goal drought: ${awayGoalDrought} games scoreless — full Crisis Mode`);
+  } else if (awayGoalDrought >= 3) {
+    awayScore -= 20;
+    flags.push(`⚠️ Away goal drought: ${awayGoalDrought} games without scoring`);
+  } else if (awayGoalDrought === 2) {
+    awayScore -= 8;
+  }
+
+  // ── Consecutive losses ────────────────────────────────────────────────────
+  if (homeRecentLosses >= 4) {
+    homeScore -= 20;
+    flags.push(`📉 Home in freefall: ${homeRecentLosses} straight losses`);
+  } else if (homeRecentLosses === 3) {
+    homeScore -= 10;
+    flags.push(`⚠️ Home losing run: ${homeRecentLosses} games`);
+  }
+
+  if (awayRecentLosses >= 4) {
+    awayScore -= 18;
+    flags.push(`📉 Away in freefall: ${awayRecentLosses} straight losses`);
+  } else if (awayRecentLosses === 3) {
+    awayScore -= 8;
+    flags.push(`⚠️ Away losing run: ${awayRecentLosses} games`);
+  }
+
+  // ── Coach stability ───────────────────────────────────────────────────────
+  for (const [coach, label, isHome] of [[homeCoach, 'Home', true], [awayCoach, 'Away', false]]) {
+    const { isInterim = false, gamesInRole = 20, tenureWeeks = 20, improving = false } = coach;
+    if (isInterim && gamesInRole <= 3) {
+      const hit = gamesInRole <= 1 ? 25 : gamesInRole <= 2 ? 20 : 15;
+      if (isHome) homeScore -= hit; else awayScore -= hit;
+      flags.push(`🔴 ${label} interim chaos: only ${gamesInRole} game(s) in charge`);
+    } else if (!isInterim && tenureWeeks >= 6 && improving) {
+      const boost = tenureWeeks >= 10 ? 18 : tenureWeeks >= 8 ? 14 : 10;
+      if (isHome) homeScore += boost; else awayScore += boost;
+      flags.push(`✅ ${label} new coach bounce: ${tenureWeeks} weeks in, results improving`);
+    }
+  }
+
+  const hClamped = Math.min(Math.max(homeScore, 0), 100);
+  const aClamped = Math.min(Math.max(awayScore, 0), 100);
+  const score    = Math.round((hClamped + aClamped) / 2);
+  const crisisLevel =
+    score < 30 ? 'MELTDOWN' :
+    score < 50 ? 'CRITICAL' :
+    score < 65 ? 'STRESSED' : 'STABLE';
+
+  return {
+    score, homeScore: hClamped, awayScore: aClamped, crisisLevel, flags,
+    assessment: flags.length
+      ? `[${crisisLevel}] ${flags.join('. ')}`
+      : `[STABLE] No crisis signals — both teams in normal operational state`,
   };
 }
 
@@ -577,13 +698,21 @@ export function analyzeV6(matchData = {}) {
     homePossession = 50,
     homeCBInjured = false, awayGKError = false,
     referee = null, venue = null,
+    // V8 — P15 Crisis/Drought Mode inputs
+    homeGoalDrought = 0, awayGoalDrought = 0,
+    homeRecentLosses = 0, awayRecentLosses = 0,
+    homeCoach = {}, awayCoach = {},
+    // V8 — xG trend (positive = improving, negative = declining, null = unknown)
+    homeXgTrend = null, awayXgTrend = null,
+    // V8 — league scalar override (auto-resolved from leagueId if not provided)
+    leagueScalar = null,
   } = matchData;
 
-  // ── Run all 14 parameters ──────────────────────────────────────────────────
+  // ── Run all 15 parameters (V8 Master) ─────────────────────────────────────
   const p1  = scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, totalTeams, gameWeek, totalGW });
   const p2  = scoreStarPower(homeSquadIntegrity, awaySquadIntegrity, homeKeyAbsences, awayKeyAbsences);
   const p3  = scoreH2H(h2hHistory);
-  const p4  = scoreForm(homeForm, awayForm, homeXgAvg, awayXgAvg, homeGoalsAvgFor, awayGoalsAvgFor);
+  const p4  = scoreForm(homeForm, awayForm, homeXgAvg, awayXgAvg, homeGoalsAvgFor, awayGoalsAvgFor, homeXgTrend, awayXgTrend);
   const p5  = scoreTiming(homeLateGoalPct, awayLateGoalPct);
   const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, 1.35, homeCBInjured, awayGKError);
   const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg);
@@ -595,9 +724,11 @@ export function analyzeV6(matchData = {}) {
   const p12 = { score: 100, assessment: `Fixture confirmed: ${home} vs ${away} | ${league} GW${gameWeek}` };
   const p13 = scoreSquadIntegrity(homeSquadIntegrity, awaySquadIntegrity);
   const p14 = scoreLifecycle(gameWeek, totalGW);
+  const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
 
-  // ── Weighted composite score ───────────────────────────────────────────────
-  const overall = Math.round(Math.min(
+  // ── Weighted composite score (V8: 15 parameters + league scalar) ──────────
+  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 1.0;
+  const rawScore =
     p1.score  * W.p1_motivation  +
     p2.score  * W.p2_starPower   +
     p3.score  * W.p3_h2h         +
@@ -611,8 +742,9 @@ export function analyzeV6(matchData = {}) {
     p11.score * W.p11_timezone   +
     p12.score * W.p12_fixture    +
     p13.score * W.p13_squad      +
-    p14.score * W.p14_lifecycle,
-  100));
+    p14.score * W.p14_lifecycle  +
+    p15.score * W.p15_crisis;
+  const overall = Math.round(Math.min(rawScore * scalar, 100));
 
   // ── Chaos variables ────────────────────────────────────────────────────────
   const chaos = evaluateChaos({ motivation: p1, form: p4, matchMinutes, earlyGoalScored, earlyGoalMinute,
@@ -630,12 +762,14 @@ export function analyzeV6(matchData = {}) {
     parameters: { p1_motivation: p1, p2_starPower: p2, p3_h2h: p3, p4_form: p4,
                   p5_scoringTiming: p5, p6_defensiveGap: p6, p7_poisson: p7,
                   p8_xg: p8, p9_xga: p9, p10_pace: p10,
-                  p11_timezone: p11, p12_fixture: p12, p13_squad: p13, p14_lifecycle: p14 },
+                  p11_timezone: p11, p12_fixture: p12, p13_squad: p13, p14_lifecycle: p14,
+                  p15_crisis: p15 },
     poisson: poi,
     chaosVariables: chaos,
     overallScore: overall,
+    leagueScalarApplied: scalar,
     bookieEdges,
-    analysisVersion: 'V6-Frontier',
+    analysisVersion: 'V8-Master',
     analysisTimestamp: new Date().toISOString(),
   };
 }
