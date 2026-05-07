@@ -22,6 +22,7 @@ import {
   fetchLiveMatchesViaGemini,
   fetchUpcomingMatchesViaGemini,
   calibrateDay,
+  enrichFixturesWithV8,
 } from './services/geminiService.js';
 import {
   calculateNextGoalProbability,
@@ -369,6 +370,32 @@ async function fetchLiveMatches() {
       setQuotaPause('Received 429 from API-Football', getNextUtcMidnightIso());
       console.error('⚠️  API RATE LIMIT EXCEEDED - quota guard enabled until UTC reset');
     }
+    return [];
+  }
+}
+
+/**
+ * Fetch ALL of today's fixtures from API-Football (one call, very cheap).
+ * Returns raw API-Football fixture objects (not yet analyzed).
+ */
+async function fetchTodayFixturesFromApi() {
+  if (!API_KEY || shouldSkipApiCalls()) return [];
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    console.log(`[Calibrate] Fetching today's schedule from API-Football: ${today}`);
+    const response = await axios.get(`${API_BASE}/fixtures`, {
+      params: { date: today, timezone: 'UTC' },
+      headers: { 'x-apisports-key': API_KEY },
+      timeout: 10000,
+    });
+    updateQuotaFromHeaders(response.headers);
+    const fixtures = response.data.response || [];
+    console.log(`[Calibrate] API-Football: ${fixtures.length} fixtures for today`);
+    return fixtures;
+  } catch (err) {
+    console.warn(`[Calibrate] API-Football today fetch failed: ${err.message}`);
+    if (err.response?.headers) updateQuotaFromHeaders(err.response.headers);
+    if (err.response?.status === 429) setQuotaPause('429 on today fixtures', getNextUtcMidnightIso());
     return [];
   }
 }
@@ -1097,11 +1124,39 @@ app.post('/api/analyze/natural', async (req, res) => {
  * Called on startup, every 6 hours, and via POST /api/calibrate.
  */
 async function runCalibration() {
-  console.log('[Calibrate] Starting global day calibration via Gemini Search...');
-  const fixtures = await calibrateDay();
-  const raw = fixtures || [];
+  console.log('[Calibrate] Starting day calibration (API-Football + Gemini V8)...');
+  let raw = [];
 
-  const source = fixtures ? 'Gemini Search' : 'static fallback';
+  // ── Step 1: Get real fixture list from API-Football (authoritative — no hallucinations) ──
+  const apiFixtures = await fetchTodayFixturesFromApi();
+  if (apiFixtures.length > 0) {
+    const fixtureList = apiFixtures
+      .filter(f => WHITELISTED_LEAGUE_IDS.has(f.league?.id))
+      .map(f => ({
+        home: f.teams?.home?.name,
+        away: f.teams?.away?.name,
+        league: f.league?.name,
+        leagueId: f.league?.id,
+        country: f.league?.country,
+        kickoffUTC: f.fixture?.date,
+      }))
+      .filter(f => f.home && f.away);
+
+    console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini V8...`);
+    if (fixtureList.length > 0) {
+      const enriched = await enrichFixturesWithV8(fixtureList);
+      raw = enriched || [];
+    }
+  }
+
+  // ── Step 2: Fall back to Gemini Search if API-Football gave nothing ──────────
+  if (raw.length === 0) {
+    console.log('[Calibrate] API-Football empty/unavailable — falling back to Gemini Search...');
+    const fixtures = await calibrateDay();
+    raw = fixtures || [];
+  }
+
+  const source = raw.length > 0 ? (apiFixtures.length > 0 ? 'API-Football + Gemini V8' : 'Gemini Search') : 'static fallback';
   console.log(`[Calibrate] Processing ${raw.length} fixtures from ${source}`);
 
   const analyzed = [];

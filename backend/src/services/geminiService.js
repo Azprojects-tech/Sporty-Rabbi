@@ -373,6 +373,64 @@ export async function calibrateDay() {
 }
 
 /**
+ * Given a confirmed fixture list from API-Football, ask Gemini to add V8 analytics.
+ * This avoids hallucinated team names — the fixture list is authoritative.
+ * @param {Array<{home,away,league,leagueId,country,kickoffUTC}>} fixtureList
+ * @returns {Promise<Array|null>}
+ */
+export async function enrichFixturesWithV8(fixtureList) {
+  if (!AVAILABLE) throw new Error('GEMINI_API_KEY not configured');
+  if (!fixtureList || fixtureList.length === 0) return null;
+
+  const today = new Date().toISOString().split('T')[0];
+  const prompt = `Today is ${today}. Below are today's CONFIRMED real football fixtures from the official API. DO NOT change the team names, league, leagueId, country, or kickoffUTC — they are authoritative.
+
+For each fixture, add V8 analytics based on your knowledge of each team's current form, xG, squad depth, motivation, H2H record, and estimated odds. Set status to "NS" for all.
+
+Confirmed fixtures:
+${JSON.stringify(fixtureList, null, 2)}
+
+Return ONLY a valid JSON array — no markdown, no explanation. Each element MUST use EXACTLY this schema:
+{
+  "match": { "home": "<exact as provided>", "away": "<exact as provided>", "league": "<exact as provided>", "leagueId": <exact as provided>, "country": "<exact as provided>", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "<exact as provided>" },
+  "home": { "motivationScore": 7, "starPlayers": 3, "starPlayersMissing": 1, "recentForm": ["W","W","D","L","W"], "goalsScored": [2,1,2,1,3], "goalsConceded": [0,1,1,2,1], "xgAvg": 1.8, "xgaAvg": 1.1, "pace": 7, "leaguePosition": 3, "squadIntegrity": 90 },
+  "away": { "motivationScore": 6, "starPlayers": 2, "starPlayersMissing": 0, "recentForm": ["W","D","W","L","D"], "goalsScored": [1,2,1,0,2], "goalsConceded": [1,1,0,2,1], "xgAvg": 1.4, "xgaAvg": 1.3, "pace": 6, "leaguePosition": 7, "squadIntegrity": 88 },
+  "h2h": { "homeWins": 4, "awayWins": 3, "draws": 3, "avgGoals": 2.6, "bttsRate": 0.65 },
+  "odds": { "homeWin": 2.1, "draw": 3.4, "awayWin": 3.8, "over25": 1.9, "btts": 1.8 },
+  "context": { "neutralVenue": false, "earlyGoal": false, "redCard": false, "gameWeek": 35, "totalGameWeeks": 38, "homePoints": 55, "awayPoints": 42, "homeGoalDifferential": 20, "awayGoalDifferential": 5, "timezone": "Europe/London" }
+}`;
+
+  for (const model of GEMINI_SPORTS_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const body = {
+        systemInstruction: { parts: [{ text: 'You are a football analytics AI. Return only valid JSON arrays with no markdown and no extra text.' }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 32000 },
+      };
+      const response = await axios.post(url, body, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 120000,
+      });
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+      if (!text.trim()) { console.warn(`[Enrich] ${model} empty response`); continue; }
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start === -1 || end === -1 || end <= start) { console.warn(`[Enrich] ${model} no JSON array`); continue; }
+      const enriched = JSON.parse(text.slice(start, end + 1));
+      if (!Array.isArray(enriched) || enriched.length === 0) { console.warn(`[Enrich] ${model} empty array`); continue; }
+      console.log(`[Enrich] ${model}: enriched ${enriched.length} fixtures with V8 analytics`);
+      return enriched;
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      console.warn(`[Enrich] ${model} failed: ${msg.slice(0, 120)}`);
+    }
+  }
+  return null;
+}
+
+/**
  * Use Gemini knowledge to generate upcoming match fixtures (next 24 hours).
  * Returns an array already in the app's internal sanitizeMatch-compatible format.
  */
