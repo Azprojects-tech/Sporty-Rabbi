@@ -92,7 +92,7 @@ function TierCard({ tier, data, type = 'single' }) {
           <span style={{ fontSize: 10, color: '#4a5568' }}>{meta.sub}</span>
         </div>
         <p style={{ fontSize: 11, color: '#4a5568' }}>
-          Not enough qualifying fixtures right now. Recalibrate to refresh.
+          No fixtures above {tier === 1 ? '85%' : tier === 2 ? '72%' : '65%'} confidence today. Best available picks shown in lower tiers.
         </p>
       </div>
     );

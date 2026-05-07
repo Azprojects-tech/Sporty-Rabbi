@@ -911,7 +911,7 @@ function bestSelection(match) {
 
 function generateBetSlips(bankroll = BANKROLL) {
   const pool = calibrationStore.matches.filter(m =>
-    m.status === 'NS' && (m.confidence || 0) >= 65 && m.leagueId > 0
+    m.status === 'NS' && (m.confidence || 0) >= 55
   );
 
   if (pool.length === 0) {
@@ -920,8 +920,10 @@ function generateBetSlips(bankroll = BANKROLL) {
 
   pool.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
-  // ── TIER 1: Singles ≥90% ──────────────────────────────────────────────────
-  const tier1Candidates = pool.filter(m => (m.confidence || 0) >= 90).slice(0, 3);
+  // ── TIER 1: Singles ≥85% — fall back to top match if none qualify ─────────
+  const tier1Candidates = (pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3).length > 0
+    ? pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3)
+    : pool.slice(0, 1)); // best available if no high-confidence match
   const tier1 = tier1Candidates.map(m => {
     const sel = bestSelection(m);
     const odds = oddsForSelection(m, sel.type);
@@ -941,10 +943,12 @@ function generateBetSlips(bankroll = BANKROLL) {
     };
   });
 
-  // ── TIER 2: Accumulator 2-3 legs, each ≥82% ───────────────────────────────
-  const tier2Legs = pool
-    .filter(m => (m.confidence || 0) >= 82 && !tier1Candidates.find(t => t.id === m.id))
-    .slice(0, 3);
+  // ── TIER 2: Accumulator 2-3 legs, each ≥72% — fall back to top 3 available ─
+  const tier2Legs = (pool
+    .filter(m => (m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id))
+    .slice(0, 3).length >= 2
+      ? pool.filter(m => (m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id)).slice(0, 3)
+      : pool.filter(m => !tier1Candidates.find(t => t.id === m.id)).slice(0, 3));
   const tier2Combined = tier2Legs.reduce((acc, m) => {
     const sel = bestSelection(m);
     return {
@@ -969,10 +973,12 @@ function generateBetSlips(bankroll = BANKROLL) {
     potentialProfit: Math.round(tier2Stake * (tier2Combined.combinedOdds - 1)),
   } : null;
 
-  // ── TIER 3: Value combo 2-4 legs ≥72% — mix of Over2.5/BTTS/Win ──────────
-  const tier3Candidates = pool
-    .filter(m => (m.confidence || 0) >= 72 && (m.confidence || 0) < 82)
-    .slice(0, 4);
+  // ── TIER 3: Value combo 2-4 legs ≥65% — fall back to remaining pool ────────
+  const tier3Candidates = (pool
+    .filter(m => (m.confidence || 0) >= 65 && (m.confidence || 0) < 72)
+    .slice(0, 4).length >= 2
+      ? pool.filter(m => (m.confidence || 0) >= 65 && (m.confidence || 0) < 72).slice(0, 4)
+      : pool.filter(m => !tier1Candidates.find(t => t.id === m.id) && !tier2Legs.find(t => t.id === m.id)).slice(0, 4));
   // Prefer Over2.5 / BTTS for attacking games, Win for dominant home sides
   const tier3Legs = tier3Candidates.map(m => {
     const recs = m.analysis?.recommendations || [];
@@ -1507,16 +1513,18 @@ async function runCalibration() {
   for (const f of raw) {
     try {
       const matchMeta = f.match || {};
+      const homeName = matchMeta.home || (typeof f.home === 'string' ? f.home : null) || 'Unknown';
+      const awayName = matchMeta.away || (typeof f.away === 'string' ? f.away : null) || 'Unknown';
       const matchData = {
-        home: matchMeta.home || f.home || 'Unknown',
-        away: matchMeta.away || f.away || 'Unknown',
+        home: homeName,
+        away: awayName,
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
-        home: f.home,
-        away: f.away,
+        homeStats: f.home,
+        awayStats: f.away,
         h2h: f.h2h,
         odds: f.odds,
         context: f.context,
