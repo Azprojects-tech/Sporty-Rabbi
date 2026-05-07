@@ -288,13 +288,14 @@ Return a JSON array (may be empty []) where each object has EXACTLY these fields
 
 const CALIBRATION_SYSTEM_PROMPT = `You are Agent 47, the global football analytics engine for SportyRabbi.
 
-Using Google Search, find ALL real football matches scheduled for today globally across all regulated professional leagues.
-For each match, estimate V8 analytics parameters from your knowledge of team form, xG, squad, motivation, H2H etc.
+Using Google Search, find ALL real football matches SCHEDULED (not yet started) for today globally across all regulated professional leagues.
+IMPORTANT: Only include matches with status "NS" (not started). Do NOT include live or finished matches.
+Estimate V8 analytics parameters from your knowledge of team form, xG, squad, motivation, H2H etc.
 Return ONLY a valid JSON array — no markdown, no explanation, nothing else outside the array brackets.
 
 Each element MUST follow EXACTLY this schema (no extra fields, no renamed fields):
 {
-  "match": { "home": "Team Name", "away": "Team Name", "league": "League Name", "leagueId": 39, "country": "England", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "2026-05-04T19:45:00Z" },
+  "match": { "home": "Team Name", "away": "Team Name", "league": "League Name", "leagueId": 39, "country": "England", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "2026-05-07T19:45:00Z" },
   "home": { "motivationScore": 7, "starPlayers": 3, "starPlayersMissing": 1, "recentForm": ["W","W","D","L","W"], "goalsScored": [2,1,2,1,3], "goalsConceded": [0,1,1,2,1], "xgAvg": 1.8, "xgaAvg": 1.1, "pace": 7, "leaguePosition": 3, "squadIntegrity": 90 },
   "away": { "motivationScore": 6, "starPlayers": 2, "starPlayersMissing": 0, "recentForm": ["W","D","W","L","D"], "goalsScored": [1,2,1,0,2], "goalsConceded": [1,1,0,2,1], "xgAvg": 1.4, "xgaAvg": 1.3, "pace": 6, "leaguePosition": 7, "squadIntegrity": 88 },
   "h2h": { "homeWins": 4, "awayWins": 3, "draws": 3, "avgGoals": 2.6, "bttsRate": 0.65 },
@@ -304,7 +305,7 @@ Each element MUST follow EXACTLY this schema (no extra fields, no renamed fields
 
 leagueId reference: Premier League=39, La Liga=140, Bundesliga=78, Serie A=135, Ligue 1=61, Eredivisie=88, Primeira Liga=64, Super Lig=203, Saudi Pro=541, Champions League=1, Europa League=3, Conference League=849, World Cup=4, WC Qualifiers=18, EURO=2, Copa America=5, AFCON=6, Nations League=16, Olympics=17, Int Friendlies=15, J-League=98, K-League=292, A-League=188, MLS=253, Brazilian Serie A=71, Argentine Liga=128, Colombian Primera=239, Greek Super League=197, Polish Ekstraklasa=106, Scottish Premiership=179, Belgian Pro League=144, Russian Premier=235.
 
-Include ALL global regulated professional leagues. Target 15-60 matches. Do NOT include amateur or youth competitions.`;
+Include ALL global regulated professional leagues. Target 10-60 matches. Do NOT include amateur or youth competitions. Do NOT invent matches — only include matches you can confirm exist today via search.`;
 
 /**
  * Calibrate today's global football schedule using Gemini with Google Search grounding.

@@ -581,29 +581,20 @@ async function pollLiveMatches() {
   isPolling = true;
 
   try {
-    let processedMatches;
+    let processedMatches = [];
 
-    if (!API_KEY) {
-      // ── Gemini mode: data already in app format, just sanitize ──────────
-      const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
-      processedMatches = (raw || []).map(sanitizeMatch);
-    } else {
-      // ── API-Football mode: parse raw fixture format ──────────────────────
+    if (API_KEY && !shouldSkipApiCalls()) {
+      // ── API-Football mode only — no Gemini fallback for live scores ──────
+      // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
       processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
-
-      // ── Fallback to Gemini if API-Football returned nothing ──────────────
-      if (processedMatches.length === 0) {
-        console.log('🤖 API-Football returned 0 live matches — trying Gemini fallback...');
-        const raw = await withGeminiLock(() => fetchLiveMatchesViaGemini());
-        processedMatches = (raw || []).map(sanitizeMatch);
-      }
     }
+    // If API-Football quota is exhausted or unavailable, live tab stays empty.
+    // Real-time scores require a real-time source.
     
     if (processedMatches.length > 0) {
       liveMatches = processedMatches;
       setCache('liveMatches', liveMatches);
-      // Only broadcast whitelisted matches to clients
       const whitelisted = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
       broadcast({ type: 'LIVE_MATCHES', payload: whitelisted });
       console.log(`✓ Updated ${liveMatches.length} live matches (${whitelisted.length} whitelisted)`);
@@ -611,6 +602,7 @@ async function pollLiveMatches() {
       console.log('ℹ️  No live matches right now');
       liveMatches = [];
       setCache('liveMatches', []);
+      broadcast({ type: 'LIVE_MATCHES', payload: [] });
     }
   } catch (error) {
     console.error('❌ Poll error:', error.message);
@@ -1158,6 +1150,11 @@ async function runCalibration() {
       });
       matchObj.kickoffUTC = matchMeta.kickoffUTC || null;
       matchObj.analysis = analysis;
+      // Calibration is for scheduled fixtures only — no real-time scores available.
+      // Force NS so fabricated live states never reach the UI.
+      matchObj.status = 'NS';
+      matchObj.score = '0-0';
+      matchObj.matchMinutes = 0;
       analyzed.push(matchObj);
     } catch (vErr) {
       console.warn(`[Calibrate] V8 skip: ${f.match?.home} vs ${f.match?.away}: ${vErr.message}`);
