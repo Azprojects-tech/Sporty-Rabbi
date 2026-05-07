@@ -38,28 +38,10 @@ const PORT = process.env.PORT || 3000;
 
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
-// TOP 5 EUROPEAN LEAGUES + ADDITIONAL LEAGUES + EUROPEAN CUPS
-const WHITELISTED_LEAGUE_IDS = new Set([
-  39,    // Premier League (England)
-  140,   // La Liga (Spain)
-  78,    // Serie A (Italy)
-  61,    // Ligue 1 (France)
-  64,    // Primeira Liga (Portugal)
-  203,   // Turkey Super Lig (Turkey)
-  541,   // Saudi Pro League (Saudi Arabia)
-  1,     // Champions League (UCL)
-  3,     // Europa League (UEFA)
-  849,   // Conference League (UEFA)
-  // FIFA TOURNAMENTS & QUALIFIERS & FRIENDLIES (International)
-  4,     // World Cup
-  18,    // World Cup Qualifiers
-  2,     // European Championship (EURO)
-  5,     // Copa America
-  6,     // African Cup of Nations
-  16,    // UEFA Nations League
-  17,    // Olympic Games
-  15,    // International Friendlies
-]);
+// All regulated leagues are shown — no whitelist restriction.
+// V8 confidence filtering (>=80%) is done on the frontend "80%+ Picks" tab.
+// The constant below is kept only for the TheSportsDB league-ID lookup helper.
+const WHITELISTED_LEAGUE_IDS = null; // null = accept all leagues
 
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────
 
@@ -492,9 +474,9 @@ async function fetchTodayFixturesFromSportsDB() {
           },
         };
       })
-      .filter(f => WHITELISTED_LEAGUE_IDS.has(f.league.id));
+      .filter(f => !!f.league.id); // all regulated leagues
 
-    console.log(`[Calibrate] TheSportsDB: ${fixtures.length} whitelisted fixtures found`);
+    console.log(`[Calibrate] TheSportsDB: ${fixtures.length} fixtures found`);
     return fixtures;
   } catch (err) {
     console.warn(`[Calibrate] TheSportsDB fetch failed: ${err.message}`);
@@ -724,9 +706,8 @@ async function pollLiveMatches() {
     if (processedMatches.length > 0) {
       liveMatches = processedMatches;
       setCache('liveMatches', liveMatches);
-      const whitelisted = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
-      broadcast({ type: 'LIVE_MATCHES', payload: whitelisted });
-      console.log(`✓ Updated ${liveMatches.length} live matches (${whitelisted.length} whitelisted)`);
+      broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+      console.log(`✓ Updated ${liveMatches.length} live matches`);
     } else {
       console.log('ℹ️  No live matches right now');
       liveMatches = [];
@@ -794,10 +775,8 @@ async function pollUpcomingMatches() {
       console.log(`✅ Processed ${upcomingMatches.length} upcoming matches`);
       setCache('upcomingMatches', upcomingMatches);
       
-      // Only broadcast whitelisted matches to clients
-      const whitelisted = upcomingMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
-      broadcast({ type: 'UPCOMING_MATCHES', payload: whitelisted });
-      console.log(`✓ Broadcasted ${whitelisted.length} upcoming matches to ${clients.size} clients`);
+      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+      console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
     } else {
       console.log('ℹ️  No upcoming matches in next 24 hours');
       upcomingMatches = [];
@@ -879,6 +858,165 @@ async function sendWhatsAppAlert(message) {
   }
 }
 
+// ─── BET SLIP TIER ENGINE ─────────────────────────────────────────────────────
+/**
+ * Generates Tier 1 / Tier 2 / Tier 3 bet slips from the calibration store.
+ *
+ * BANKROLL MODEL  (₦250,000 daily / target ₦100,000 profit):
+ *   Tier 1 — near-certain singles (≥90% confidence, implied odds 1.05-1.50)
+ *             Stake: 35% bankroll → target +₦35–52k on ~1.4 avg odds
+ *   Tier 2 — accumulator 2-3 legs (each ≥82% confidence, combined 2.0–3.5x)
+ *             Stake: 25% bankroll → target +₦50–88k on ~3.0 avg combined odds
+ *   Tier 3 — value combos 2-4 legs (each ≥72% confidence, combined 4.0–8.0x)
+ *             Stake: 10% bankroll → target +₦40–80k on ~5.0 avg combined odds
+ *
+ * Total expected if all hit: ~₦125–220k profit from ₦70k total stake.
+ * Realistic expectation (70% hit rate): ~₦90–150k profit.
+ */
+
+const BANKROLL = 250000; // ₦ — adjust via env if needed later
+
+function oddsForSelection(match, selType) {
+  const o = match.analysis?.odds || match.odds || {};
+  const conf = match.confidence || 50;
+  // Use Gemini-estimated odds if available, otherwise derive from confidence
+  const deriveOdds = (impliedProb) => Math.max(1.05, +(1 / Math.min(impliedProb, 0.97)).toFixed(2));
+  switch (selType) {
+    case 'home_win':  return o.homeWin  || deriveOdds(conf / 100);
+    case 'away_win':  return o.awayWin  || deriveOdds(conf / 100);
+    case 'over25':    return o.over25   || deriveOdds(0.62);
+    case 'btts':      return o.btts     || deriveOdds(0.55);
+    case 'draw':      return o.draw     || deriveOdds(0.28);
+    default:          return 1.5;
+  }
+}
+
+function bestSelection(match) {
+  const recs = match.analysis?.recommendations || [];
+  if (recs.length > 0) {
+    const top = recs[0];
+    return { label: top.selection || top.label || 'Win', type: top.type || 'home_win' };
+  }
+  // Fallback: home win if confidence high enough
+  return { label: `${match.home} Win`, type: 'home_win' };
+}
+
+function generateBetSlips(bankroll = BANKROLL) {
+  const pool = calibrationStore.matches.filter(m =>
+    m.status === 'NS' && (m.confidence || 0) >= 65 && m.leagueId > 0
+  );
+
+  if (pool.length === 0) {
+    return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
+  }
+
+  pool.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+  // ── TIER 1: Singles ≥90% ──────────────────────────────────────────────────
+  const tier1Candidates = pool.filter(m => (m.confidence || 0) >= 90).slice(0, 3);
+  const tier1 = tier1Candidates.map(m => {
+    const sel = bestSelection(m);
+    const odds = oddsForSelection(m, sel.type);
+    const stake = Math.round(bankroll * 0.35 / Math.max(tier1Candidates.length, 1));
+    return {
+      match: `${m.home} vs ${m.away}`,
+      league: m.league,
+      leagueId: m.leagueId,
+      kickoffUTC: m.kickoffUTC,
+      selection: sel.label,
+      selectionType: sel.type,
+      confidence: m.confidence,
+      odds: +odds.toFixed(2),
+      stake,
+      potentialReturn: Math.round(stake * odds),
+      potentialProfit: Math.round(stake * (odds - 1)),
+    };
+  });
+
+  // ── TIER 2: Accumulator 2-3 legs, each ≥82% ───────────────────────────────
+  const tier2Legs = pool
+    .filter(m => (m.confidence || 0) >= 82 && !tier1Candidates.find(t => t.id === m.id))
+    .slice(0, 3);
+  const tier2Combined = tier2Legs.reduce((acc, m) => {
+    const sel = bestSelection(m);
+    return {
+      legs: [...acc.legs, {
+        match: `${m.home} vs ${m.away}`,
+        league: m.league,
+        leagueId: m.leagueId,
+        kickoffUTC: m.kickoffUTC,
+        selection: sel.label,
+        selectionType: sel.type,
+        confidence: m.confidence,
+        odds: +oddsForSelection(m, sel.type).toFixed(2),
+      }],
+      combinedOdds: +(acc.combinedOdds * oddsForSelection(m, sel.type)).toFixed(2),
+    };
+  }, { legs: [], combinedOdds: 1.0 });
+  const tier2Stake = Math.round(bankroll * 0.25);
+  const tier2 = tier2Legs.length >= 2 ? {
+    ...tier2Combined,
+    stake: tier2Stake,
+    potentialReturn: Math.round(tier2Stake * tier2Combined.combinedOdds),
+    potentialProfit: Math.round(tier2Stake * (tier2Combined.combinedOdds - 1)),
+  } : null;
+
+  // ── TIER 3: Value combo 2-4 legs ≥72% — mix of Over2.5/BTTS/Win ──────────
+  const tier3Candidates = pool
+    .filter(m => (m.confidence || 0) >= 72 && (m.confidence || 0) < 82)
+    .slice(0, 4);
+  // Prefer Over2.5 / BTTS for attacking games, Win for dominant home sides
+  const tier3Legs = tier3Candidates.map(m => {
+    const recs = m.analysis?.recommendations || [];
+    // Pick highest-odds V8-backed rec that isn't straight win
+    const valueRec = recs.find(r =>
+      r.type === 'over25' || r.type === 'btts' || r.type === 'away_win'
+    ) || recs[0];
+    const sel = valueRec
+      ? { label: valueRec.selection || valueRec.label, type: valueRec.type || 'over25' }
+      : { label: `${m.home} or ${m.away} Over 2.5`, type: 'over25' };
+    return {
+      match: `${m.home} vs ${m.away}`,
+      league: m.league,
+      leagueId: m.leagueId,
+      kickoffUTC: m.kickoffUTC,
+      selection: sel.label,
+      selectionType: sel.type,
+      confidence: m.confidence,
+      odds: +oddsForSelection(m, sel.type).toFixed(2),
+    };
+  });
+  const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
+  const tier3Stake = Math.round(bankroll * 0.10);
+  const tier3 = tier3Legs.length >= 2 ? {
+    legs: tier3Legs,
+    combinedOdds: tier3CombinedOdds,
+    stake: tier3Stake,
+    potentialReturn: Math.round(tier3Stake * tier3CombinedOdds),
+    potentialProfit: Math.round(tier3Stake * (tier3CombinedOdds - 1)),
+  } : null;
+
+  const totalStake = (tier1.reduce((s, t) => s + t.stake, 0)) +
+    (tier2?.stake || 0) + (tier3?.stake || 0);
+  const bestCaseProfit = (tier1.reduce((s, t) => s + t.potentialProfit, 0)) +
+    (tier2?.potentialProfit || 0) + (tier3?.potentialProfit || 0);
+
+  return {
+    tier1,
+    tier2,
+    tier3,
+    summary: {
+      bankroll,
+      totalStake,
+      totalStakePercent: +((totalStake / bankroll) * 100).toFixed(1),
+      bestCaseProfit,
+      bestCaseProfitPercent: +((bestCaseProfit / bankroll) * 100).toFixed(1),
+    },
+    pool: pool.length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 // ─── REST API ENDPOINTS ────────────────────────────────────────────────────
 
 app.get('/api/health', (req, res) => {
@@ -906,36 +1044,21 @@ app.get('/api/health', (req, res) => {
 app.get('/api/live', (req, res) => {
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
   
-  // Only return whitelisted leagues
-  let filtered = liveMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
-  
-  if (matchType) {
-    filtered = filtered.filter(m => m.matchType === matchType);
-  }
-  
+  let filtered = matchType ? liveMatches.filter(m => m.matchType === matchType) : liveMatches;
   res.json({ count: filtered.length, matches: filtered });
 });
 
 app.get('/api/upcoming', (req, res) => {
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
   
-  // Only return whitelisted leagues
-  let filtered = upcomingMatches.filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId));
-  
-  if (matchType) {
-    filtered = filtered.filter(m => m.matchType === matchType);
-  }
-  
+  let filtered = matchType ? upcomingMatches.filter(m => m.matchType === matchType) : upcomingMatches;
   res.json({ count: filtered.length, matches: filtered });
 });
 
 app.get('/api/leagues', (req, res) => {
   const leagues = {};
   
-  // Only include whitelisted leagues
-  upcomingMatches
-    .filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId))
-    .forEach(match => {
+  upcomingMatches.forEach(match => {
       if (match.leagueId !== null && match.leagueId !== undefined && match.league) {
         if (!leagues[match.leagueId]) {
           leagues[match.leagueId] = {
@@ -959,10 +1082,7 @@ app.get('/api/leagues', (req, res) => {
 app.get('/api/matchTypes', (req, res) => {
   const types = {};
   
-  // Only count whitelisted leagues
-  upcomingMatches
-    .filter(m => WHITELISTED_LEAGUE_IDS.has(m.leagueId))
-    .forEach(match => {
+  upcomingMatches.forEach(match => {
       const type = match.matchType || 'League';
       if (!types[type]) {
         types[type] = { name: type, count: 0 };
@@ -982,6 +1102,13 @@ app.get('/api/alerts', (req, res) => {
 
 app.get('/api/bets', (req, res) => {
   res.json({ count: bets.length, bets });
+});
+
+// ── Bet slip tier suggestions ─────────────────────────────────────────────
+app.get('/api/bets/slips', (req, res) => {
+  const bankroll = Number(req.query.bankroll) || BANKROLL;
+  const slips = generateBetSlips(bankroll);
+  res.json(slips);
 });
 
 app.post('/api/bets', (req, res) => {
@@ -1234,7 +1361,7 @@ async function runCalibration() {
   const apiFixtures = await fetchTodayFixturesFromApi();
   if (apiFixtures.length > 0) {
     const fixtureList = apiFixtures
-      .filter(f => WHITELISTED_LEAGUE_IDS.has(f.league?.id))
+      .filter(f => !!f.league?.id) // all leagues
       .map(f => ({
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,

@@ -68,6 +68,7 @@ export const apiService = {
   logBet: (data) => client.post('/bets', data),
   getBets: () => client.get('/bets'),
   updateBet: (id, data) => client.patch(`/bets/${id}`, data),
+  getBetSlips: (bankroll) => client.get('/bets/slips', { params: bankroll ? { bankroll } : {} }),
 
   // Stats
   getStats: () => client.get('/stats'),

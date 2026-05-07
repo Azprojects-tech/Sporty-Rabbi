@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
 import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
+import BetSlips from './components/BetSlips';
 
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
@@ -18,6 +19,7 @@ export default function App() {
  const [searchQuery, setSearchQuery] = useState('');
  const [searching, setSearching] = useState(false);
  const [showBets, setShowBets] = useState(false);
+ const [betTab, setBetTab] = useState('slips'); // 'slips' | 'logger'
  const [bets, setBets] = useState([]);
 
  // â”€â”€ Merge helper: keep calibrated matches separate so they survive live updates â”€â”€
@@ -302,9 +304,35 @@ export default function App() {
 
  {/* CENTER FEED */}
  {showBets ? (
+ <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+ {/* Bet panel tab bar */}
+ <div style={{
+ display: 'flex', gap: 0, borderBottom: '1px solid #1e2535',
+ background: '#0a0d15', flexShrink: 0,
+ }}>
+ {[['slips', 'V8 Bet Slips'], ['logger', 'Bet Logger']].map(([id, label]) => (
+ <button
+ key={id}
+ onClick={() => setBetTab(id)}
+ style={{
+ padding: '10px 18px', border: 'none', cursor: 'pointer',
+ background: 'transparent',
+ borderBottom: betTab === id ? '2px solid #00b859' : '2px solid transparent',
+ color: betTab === id ? '#00b859' : '#8b9ab3',
+ fontSize: 12, fontWeight: betTab === id ? 700 : 500,
+ }}
+ >
+ {label}
+ </button>
+ ))}
+ </div>
+ {betTab === 'slips' ? (
+ <BetSlips />
+ ) : (
  <div style={{ flex: 1, padding: '24px 28px', overflowY: 'auto' }}>
- <div style={{ marginBottom: 20, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>Bet Tracker</div>
  <BetLogger onBetLogged={b => setBets(p => [b, ...p])} />
+ </div>
+ )}
  </div>
  ) : (
  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
