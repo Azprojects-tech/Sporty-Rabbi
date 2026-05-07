@@ -248,13 +248,14 @@ export default function BetSlips() {
 
       {/* Bankroll input */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18,
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
         background: '#131826', border: '1px solid #1e2535', borderRadius: 7, padding: '10px 14px',
       }}>
         <span style={{ fontSize: 11, color: '#8b9ab3', flexShrink: 0 }}>Daily Bankroll (₦)</span>
         <input
           value={inputBankroll}
           onChange={handleBankrollChange}
+          placeholder="e.g. 100000"
           style={{
             flex: 1, background: 'transparent', border: 'none', outline: 'none',
             color: '#e2e8f0', fontSize: 13, fontWeight: 700,
@@ -272,6 +273,15 @@ export default function BetSlips() {
           Apply
         </button>
       </div>
+      {/* Allocation hint — changes based on bankroll size */}
+      {slips?.summary?.allocation && (
+        <div style={{ fontSize: 10, color: '#4a5568', marginBottom: 14, paddingLeft: 2 }}>
+          Stake split: T1&nbsp;<strong style={{ color: '#00b859' }}>{slips.summary.allocation.tier1}%</strong>
+          &nbsp;&middot;&nbsp;T2&nbsp;<strong style={{ color: '#fbbf24' }}>{slips.summary.allocation.tier2}%</strong>
+          &nbsp;&middot;&nbsp;T3&nbsp;<strong style={{ color: '#f97316' }}>{slips.summary.allocation.tier3}%</strong>
+          &nbsp;— adjusted for your bankroll to minimise losses
+        </div>
+      )}
 
       {/* Summary bar */}
       {slips?.summary && (

@@ -441,14 +441,20 @@ function sportsDbLeagueToId(leagueName) {
 async function fetchTodayFixturesFromSportsDB() {
   try {
     const today = new Date().toISOString().split('T')[0];
-    console.log(`[Calibrate] Fetching today's fixtures from TheSportsDB: ${today}`);
-    const response = await axios.get(
-      `https://www.thesportsdb.com/api/v1/json/3/eventsday.php`,
-      { params: { d: today, s: 'Soccer' }, timeout: 10000 }
-    );
-    const events = response.data?.events || [];
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    console.log(`[Calibrate] Fetching today+tomorrow fixtures from TheSportsDB: ${today} + ${tomorrow}`);
+
+    const [todayRes, tomorrowRes] = await Promise.all([
+      axios.get('https://www.thesportsdb.com/api/v1/json/3/eventsday.php', { params: { d: today, s: 'Soccer' }, timeout: 10000 }),
+      axios.get('https://www.thesportsdb.com/api/v1/json/3/eventsday.php', { params: { d: tomorrow, s: 'Soccer' }, timeout: 10000 }),
+    ]);
+
+    const todayEvents    = todayRes.data?.events    || [];
+    const tomorrowEvents = tomorrowRes.data?.events || [];
+    const events = [...todayEvents, ...tomorrowEvents];
+
     if (!events.length) {
-      console.log('[Calibrate] TheSportsDB: no events for today');
+      console.log('[Calibrate] TheSportsDB: no events for today or tomorrow');
       return [];
     }
 
@@ -461,7 +467,6 @@ async function fetchTodayFixturesFromSportsDB() {
           ? `${e.dateEvent}T${e.strTime}Z`
           : null;
         return {
-          // Wrap in the API-Football-like shape that the caller converts
           fixture: { id: e.idEvent, date: kickoffUTC },
           teams: {
             home: { name: e.strHomeTeam, id: null },
@@ -474,11 +479,10 @@ async function fetchTodayFixturesFromSportsDB() {
           },
         };
       })
-      // Don't filter by leagueId here — unrecognised leagues get leagueId=0
-      // and are shown as "Other" rather than being silently dropped.
+      // Don't filter by leagueId — unrecognised leagues get leagueId=0, shown as "Other"
       .filter(f => !!f.teams.home.name && !!f.teams.away.name);
 
-    console.log(`[Calibrate] TheSportsDB: ${fixtures.length} fixtures found`);
+    console.log(`[Calibrate] TheSportsDB: ${todayEvents.length} today + ${tomorrowEvents.length} tomorrow = ${fixtures.length} fixtures`);
     return fixtures;
   } catch (err) {
     console.warn(`[Calibrate] TheSportsDB fetch failed: ${err.message}`);
@@ -920,6 +924,24 @@ function generateBetSlips(bankroll = BANKROLL) {
 
   pool.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
+  // ── Dynamic stake allocation: protect capital when bankroll is small ─────
+  // Low bankroll → heavier weight on Tier 1 (safest), smaller Tiers 2+3.
+  // Kelly-inspired: never risk more than 60% of bankroll total.
+  //   bankroll < 20k  → Tier1=50%, Tier2=10%, Tier3=skip
+  //   bankroll < 50k  → Tier1=45%, Tier2=15%, Tier3=5%
+  //   bankroll < 100k → Tier1=40%, Tier2=20%, Tier3=8%
+  //   bankroll ≥ 100k → Tier1=35%, Tier2=25%, Tier3=10%
+  let t1Pct, t2Pct, t3Pct;
+  if (bankroll < 20000) {
+    t1Pct = 0.50; t2Pct = 0.10; t3Pct = 0.00;
+  } else if (bankroll < 50000) {
+    t1Pct = 0.45; t2Pct = 0.15; t3Pct = 0.05;
+  } else if (bankroll < 100000) {
+    t1Pct = 0.40; t2Pct = 0.20; t3Pct = 0.08;
+  } else {
+    t1Pct = 0.35; t2Pct = 0.25; t3Pct = 0.10;
+  }
+
   // ── TIER 1: Singles ≥85% — fall back to top match if none qualify ─────────
   const tier1Candidates = (pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3).length > 0
     ? pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3)
@@ -927,7 +949,7 @@ function generateBetSlips(bankroll = BANKROLL) {
   const tier1 = tier1Candidates.map(m => {
     const sel = bestSelection(m);
     const odds = oddsForSelection(m, sel.type);
-    const stake = Math.round(bankroll * 0.35 / Math.max(tier1Candidates.length, 1));
+    const stake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
     return {
       match: `${m.home} vs ${m.away}`,
       league: m.league,
@@ -965,7 +987,7 @@ function generateBetSlips(bankroll = BANKROLL) {
       combinedOdds: +(acc.combinedOdds * oddsForSelection(m, sel.type)).toFixed(2),
     };
   }, { legs: [], combinedOdds: 1.0 });
-  const tier2Stake = Math.round(bankroll * 0.25);
+  const tier2Stake = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
   const tier2 = tier2Legs.length >= 2 ? {
     ...tier2Combined,
     stake: tier2Stake,
@@ -1001,7 +1023,7 @@ function generateBetSlips(bankroll = BANKROLL) {
     };
   });
   const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
-  const tier3Stake = Math.round(bankroll * 0.10);
+  const tier3Stake = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
   const tier3 = tier3Legs.length >= 2 ? {
     legs: tier3Legs,
     combinedOdds: tier3CombinedOdds,
@@ -1025,8 +1047,8 @@ function generateBetSlips(bankroll = BANKROLL) {
       totalStakePercent: +((totalStake / bankroll) * 100).toFixed(1),
       bestCaseProfit,
       bestCaseProfitPercent: +((bestCaseProfit / bankroll) * 100).toFixed(1),
+      allocation: { tier1: Math.round(t1Pct * 100), tier2: Math.round(t2Pct * 100), tier3: Math.round(t3Pct * 100) },
     },
-    pool: pool.length,
     generatedAt: new Date().toISOString(),
   };
 }
