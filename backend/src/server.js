@@ -768,10 +768,10 @@ async function pollUpcomingMatches() {
       broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
       console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
     } else {
-      console.log('ℹ️  No upcoming matches in next 24 hours');
-      upcomingMatches = [];
-      setCache('upcomingMatches', []);
-      broadcast({ type: 'UPCOMING_MATCHES', payload: [] });
+      // Do NOT cache [] or broadcast [] — calibration data is the source of truth.
+      // Wiping the feed here would erase valid calibration matches while the cron
+      // is firing before calibration has had time to complete on a fresh deploy.
+      console.log('ℹ️  API-Football returned 0 upcoming fixtures this cycle — retaining existing data');
     }
   } catch (error) {
     console.error('❌ Upcoming matches poll error:', error.message);
@@ -813,7 +813,23 @@ console.log(`   Upcoming cache TTL: ${CACHE_TTL.upcoming / 1000}s`);
 
 setTimeout(() => {
   console.log('[AutoCal] Startup calibration — fetching today\'s real fixtures via Gemini Search...');
-  runCalibration().catch(err => console.error('[AutoCal] Startup failed:', err.message));
+  runCalibration().then(store => {
+    if (!store || store.matches.length === 0) {
+      // Retry once after 3 minutes if startup calibration produced nothing
+      console.warn('[AutoCal] Startup produced 0 matches — scheduling retry in 3 minutes...');
+      setTimeout(() => {
+        console.log('[AutoCal] Retry calibration (first attempt yielded 0 matches)...');
+        runCalibration().catch(err => console.error('[AutoCal] Retry failed:', err.message));
+      }, 3 * 60 * 1000);
+    }
+  }).catch(err => {
+    console.error('[AutoCal] Startup failed:', err.message);
+    // Retry once after 3 minutes on error too
+    setTimeout(() => {
+      console.log('[AutoCal] Retry calibration after startup error...');
+      runCalibration().catch(e => console.error('[AutoCal] Retry failed:', e.message));
+    }, 3 * 60 * 1000);
+  });
 }, 5000);
 
 // Re-calibrate at top of every 6th hour (00:00, 06:00, 12:00, 18:00 UTC)
@@ -1041,7 +1057,13 @@ app.get('/api/live', (req, res) => {
 app.get('/api/upcoming', (req, res) => {
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
   
-  let filtered = matchType ? upcomingMatches.filter(m => m.matchType === matchType) : upcomingMatches;
+  // Prefer in-memory upcomingMatches; fall back to calibrationStore if it's richer
+  let source = upcomingMatches;
+  if (source.length === 0 && calibrationStore.matches.length > 0) {
+    source = calibrationStore.matches;
+  }
+  
+  let filtered = matchType ? source.filter(m => m.matchType === matchType) : source;
   res.json({ count: filtered.length, matches: filtered });
 });
 
