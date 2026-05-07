@@ -36,6 +36,11 @@ export function MatchCard({ match, onSelectMatch }) {
             </span>
           )}
           <span style={{ color: '#334155', fontSize: 11, fontWeight: 600 }}>{match.league || ''}</span>
+          {match.round && (
+            <span style={{ background: '#1a2540', border: '1px solid #2d4a8a', borderRadius: 5, padding: '2px 7px', color: '#93c5fd', fontSize: 10, fontWeight: 700 }}>
+              {match.round}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: CONF_COLOR(conf) }}>
@@ -68,6 +73,13 @@ export function MatchCard({ match, onSelectMatch }) {
           {match.away}
         </span>
       </div>
+
+      {/* Knockout notes — e.g. "2nd Leg - Nottingham lead 1-0 on aggregate" */}
+      {match.notes && (
+        <div style={{ fontSize: 10, color: '#6b7fa3', fontStyle: 'italic', marginBottom: 8, marginTop: -4, paddingLeft: 2 }}>
+          {match.notes}
+        </div>
+      )}
 
       {/* Row 3: stats pills + confidence bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

@@ -452,61 +452,67 @@ function sportsDbLeagueToId(leagueName) {
 }
 
 /**
- * Fetch today + tomorrow fixtures from ESPN's unofficial scoreboard API.
+ * Fetch TODAY-ONLY fixtures from ESPN's unofficial scoreboard API.
  * Covers UEFA Europa League, Conference League, Turkish Cup, Russian Cup, all top leagues.
- * Returns fixtures in the same shape as fetchTodayFixturesFromSportsDB.
+ * Returns fixtures with enriched context (round, notes) for the V8 engine.
  */
 async function fetchFixturesFromESPN() {
   try {
-    const today    = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0].replace(/-/g, '');
-    console.log(`[Calibrate] ESPN: fetching today (${today}) + tomorrow (${tomorrow})`);
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    console.log(`[Calibrate] ESPN: fetching today's fixtures (${today})`);
 
-    const [r1, r2] = await Promise.all([
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { params: { dates: today }, timeout: 10000 }),
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { params: { dates: tomorrow }, timeout: 10000 }),
-    ]);
+    const r = await axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', {
+      params: { dates: today },
+      timeout: 10000,
+    });
 
-    const allEvents = [...(r1.data?.events || []), ...(r2.data?.events || [])];
+    const allEvents = r.data?.events || [];
     if (!allEvents.length) {
-      console.log('[Calibrate] ESPN: no events returned');
+      console.log('[Calibrate] ESPN: no events returned for today');
       return [];
     }
 
     const fixtures = allEvents
       .filter(e => {
         const status = e.competitions?.[0]?.status?.type?.name || '';
-        // Keep scheduled and in-progress; skip finished
         return status !== 'STATUS_FINAL' && status !== 'STATUS_FULL_TIME' && status !== 'STATUS_FT';
       })
       .map(e => {
-        const comp       = e.competitions?.[0];
-        const home       = comp?.competitors?.find(c => c.homeAway === 'home');
-        const away       = comp?.competitors?.find(c => c.homeAway === 'away');
-        const homeName   = home?.team?.displayName || home?.team?.name;
-        const awayName   = away?.team?.displayName || away?.team?.name;
+        const comp     = e.competitions?.[0];
+        const home     = comp?.competitors?.find(c => c.homeAway === 'home');
+        const away     = comp?.competitors?.find(c => c.homeAway === 'away');
+        const homeName = home?.team?.displayName || home?.team?.name;
+        const awayName = away?.team?.displayName || away?.team?.name;
         if (!homeName || !awayName) return null;
 
-        // Extract ESPN league ID from event uid (format: s:600~l:776~e:...)
+        // ESPN league ID from uid: s:600~l:776~e:... → leagueId 776
         const espnLeagueId = (e.uid || '').match(/l:(\d+)/)?.[1] || '0';
         const leagueInfo   = ESPN_LEAGUE_MAP[espnLeagueId] || { name: 'International', leagueId: 0 };
 
+        // Enrich with knockout/round context from ESPN metadata
+        const seriesTitle  = comp?.series?.title || null;         // "Semifinals", "Final", etc.
+        const notesLine    = comp?.notes?.[0]?.headline || null;  // "2nd Leg — Nottingham lead 1-0"
+        const isKnockout   = !!(seriesTitle || notesLine?.toLowerCase().includes('leg'));
+
         return {
-          fixture: { id: e.id, date: e.date },
+          fixture:    { id: e.id, date: e.date },
           teams: {
             home: { name: homeName, id: home?.team?.id || null },
             away: { name: awayName, id: away?.team?.id || null },
           },
           league: {
-            id:      leagueInfo.leagueId,
-            name:    leagueInfo.name,
-            country: '',
+            id:          leagueInfo.leagueId,
+            name:        leagueInfo.name,
+            country:     '',
+            isKnockout,
+            round:       seriesTitle,
+            notes:       notesLine,
           },
         };
       })
       .filter(Boolean);
 
-    console.log(`[Calibrate] ESPN: ${fixtures.length} fixtures (today ${r1.data?.events?.length || 0} + tomorrow ${r2.data?.events?.length || 0})`);
+    console.log(`[Calibrate] ESPN: ${fixtures.length} today's fixtures (from ${allEvents.length} total events)`);
     return fixtures;
   } catch (err) {
     console.warn(`[Calibrate] ESPN fetch failed: ${err.message}`);
@@ -1477,57 +1483,143 @@ app.post('/api/analyze/natural', async (req, res) => {
  * @param {{ home, away, league, leagueId, country, kickoffUTC }} f
  */
 function buildDefaultV8Fixture(f) {
+  const leagueId   = f.leagueId || 0;
+  const leagueName = (f.league || '').toLowerCase();
+
+  // ── Classify competition type ───────────────────────────────────────────────
+  const isUEFAKnockout = [2, 3, 848].includes(leagueId) ||
+    leagueName.includes('europa') || leagueName.includes('conference') || leagueName.includes('champions');
+  const isDomesticCup  = !isUEFAKnockout && (
+    leagueName.includes('cup') || leagueName.includes('copa') || leagueName.includes('coupe')
+    || leagueName.includes('pokal') || leagueName.includes('vase') || f.isKnockout === true
+  );
+  const isTopLeague    = [39, 140, 78, 61, 135].includes(leagueId);
+  const isMidLeague    = [64, 88, 144, 179, 203, 235, 253, 307, 94].includes(leagueId);
+
+  // ── Set context per competition tier ───────────────────────────────────────
+  // UEFA knockouts: both finalists/semifinalists — max motivation, strong form
+  // Domestic cup: knockout game — high urgency, moderate form unknown
+  // Top-5 league end of season: title/relegation/European spots at stake
+  // Mid-tier league: moderate competitive stakes
+  // Other: baseline defaults
+  let homePos, awayPos, homePoints, awayPoints, totalTeams, gameWeek, totalGW,
+      homeForm, awayForm, homeXg, awayXg, homeXga, awayXga, squadInt,
+      homeStar, homeShotsAvg, awayShotsAvg, h2hHW, h2hAW, h2hD, h2hGoals, bttsRate,
+      homeConv, awayConv;
+
+  if (isUEFAKnockout || isDomesticCup) {
+    // Knockout stage — survival motivation maxed for both sides
+    // Simulate as "late stage of a 14-round knockout" (lifecycle ≈ 0.93 → "Death Run")
+    homePos = 1; awayPos = 2;
+    homePoints = 24; awayPoints = 21;  // knockout points (wins × 3)
+    totalTeams = 8; gameWeek = 13; totalGW = 14;
+    homeForm = 'W-W-D-W-W'; awayForm = 'W-W-W-D-W';
+    homeXg = 1.7; awayXg = 1.5;
+    homeXga = 1.0; awayXga = 1.1;
+    squadInt = 88;
+    homeStar = 3; homeShotsAvg = 15; awayShotsAvg = 13;
+    homeConv = 14; awayConv = 13;
+    h2hHW = 2; h2hAW = 2; h2hD = 1; h2hGoals = 3.2; bttsRate = 0.65;
+  } else if (isTopLeague) {
+    // Top-5 European league, end of season (GW35/38 → lifecycle 0.92 → "End-Game")
+    // Home side assumed to have mild advantage (upper-mid table vs lower-mid)
+    homePos = 6; awayPos = 15;
+    homePoints = 54; awayPoints = 36;
+    totalTeams = 20; gameWeek = 35; totalGW = 38;
+    homeForm = 'W-D-W-D-W'; awayForm = 'L-D-L-W-D';
+    homeXg = 1.6; awayXg = 1.1;
+    homeXga = 1.1; awayXga = 1.6;
+    squadInt = 86;
+    homeStar = 2; homeShotsAvg = 14; awayShotsAvg = 10;
+    homeConv = 12; awayConv = 10;
+    h2hHW = 3; h2hAW = 2; h2hD = 5; h2hGoals = 2.5; bttsRate = 0.55;
+  } else if (isMidLeague) {
+    // Mid-tier European / international league — neutral defaults, slight home edge
+    homePos = 7; awayPos = 10;
+    homePoints = 42; awayPoints = 36;
+    totalTeams = 18; gameWeek = 28; totalGW = 34;
+    homeForm = 'W-D-W-L-W'; awayForm = 'D-L-W-D-L';
+    homeXg = 1.4; awayXg = 1.2;
+    homeXga = 1.2; awayXga = 1.4;
+    squadInt = 82;
+    homeStar = 2; homeShotsAvg = 12; awayShotsAvg = 10;
+    homeConv = 11; awayConv = 10;
+    h2hHW = 3; h2hAW = 3; h2hD = 4; h2hGoals = 2.4; bttsRate = 0.52;
+  } else {
+    // Lower / international / unknown league — conservative defaults
+    homePos = 8; awayPos = 11;
+    homePoints = 35; awayPoints = 28;
+    totalTeams = 16; gameWeek = 22; totalGW = 30;
+    homeForm = 'W-D-L-W-D'; awayForm = 'L-D-W-L-D';
+    homeXg = 1.2; awayXg = 1.1;
+    homeXga = 1.3; awayXga = 1.4;
+    squadInt = 78;
+    homeStar = 1; homeShotsAvg = 11; awayShotsAvg = 9;
+    homeConv = 10; awayConv = 9;
+    h2hHW = 3; h2hAW = 3; h2hD = 4; h2hGoals = 2.3; bttsRate = 0.50;
+  }
+
   return {
     match: {
-      home: f.home,
-      away: f.away,
+      home: f.home, away: f.away,
       league: f.league || 'Unknown',
-      leagueId: f.leagueId || 0,
+      leagueId,
       country: f.country || '',
-      status: 'NS',
-      minute: 0,
-      homeScore: 0,
-      awayScore: 0,
+      status: 'NS', minute: 0, homeScore: 0, awayScore: 0,
       kickoffUTC: f.kickoffUTC || null,
+      // Context fields consumed by runCalibration → analyzeV6
+      homePosition: homePos,  awayPosition: awayPos,
+      homePoints,             awayPoints,
+      totalTeams,             gameWeek,     totalGW,
+      homeForm,               awayForm,
+      // ESPN enrichment notes (e.g. "2nd Leg — Forest lead 1-0")
+      round: f.round || null,
+      notes: f.notes || null,
     },
     home: {
-      motivationScore: 6,
-      starPlayers: 2,
+      motivationScore: isUEFAKnockout || isDomesticCup ? 9 : isTopLeague ? 7 : 6,
+      starPlayers: homeStar,
       starPlayersMissing: 0,
-      recentForm: ['W', 'D', 'L', 'W', 'D'],
-      goalsScored: [1, 2, 1, 0, 2],
-      goalsConceded: [1, 1, 0, 2, 1],
-      xgAvg: 1.3,
-      xgaAvg: 1.2,
-      pace: 6,
-      leaguePosition: 8,
-      squadIntegrity: 85,
+      recentForm: homeForm.split('-'),
+      goalsScored:    [2, 1, 2, 1, 2].map(v => Math.round(v * (homeXg / 1.5))),
+      goalsConceded:  [0, 1, 1, 0, 1].map(v => Math.round(v * (homeXga / 1.0))),
+      xgAvg: homeXg, xgaAvg: homeXga,
+      pace: isUEFAKnockout ? 8 : 6,
+      leaguePosition: homePos,
+      squadIntegrity: squadInt,
+      conversionPct: homeConv,
+      shotsPerGame: homeShotsAvg,
     },
     away: {
-      motivationScore: 6,
-      starPlayers: 2,
+      motivationScore: isUEFAKnockout || isDomesticCup ? 9 : isTopLeague ? 5 : 5,
+      starPlayers: homeStar,
       starPlayersMissing: 0,
-      recentForm: ['W', 'D', 'L', 'D', 'W'],
-      goalsScored: [1, 1, 2, 0, 1],
-      goalsConceded: [1, 0, 1, 2, 1],
-      xgAvg: 1.2,
-      xgaAvg: 1.3,
-      pace: 6,
-      leaguePosition: 10,
-      squadIntegrity: 83,
+      recentForm: awayForm.split('-'),
+      goalsScored:    [1, 1, 2, 1, 1].map(v => Math.round(v * (awayXg / 1.2))),
+      goalsConceded:  [1, 1, 0, 1, 2].map(v => Math.round(v * (awayXga / 1.3))),
+      xgAvg: awayXg, xgaAvg: awayXga,
+      pace: isUEFAKnockout ? 7 : 5,
+      leaguePosition: awayPos,
+      squadIntegrity: squadInt - 2,
+      conversionPct: awayConv,
+      shotsPerGame: awayShotsAvg,
     },
-    h2h: { homeWins: 3, awayWins: 3, draws: 4, avgGoals: 2.4, bttsRate: 0.55 },
-    odds: { homeWin: 2.3, draw: 3.2, awayWin: 3.1, over25: 1.9, btts: 1.85 },
+    h2h: { homeWins: h2hHW, awayWins: h2hAW, draws: h2hD, avgGoals: h2hGoals, bttsRate },
+    odds: {
+      homeWin: isUEFAKnockout ? 1.9 : 2.2,
+      draw: 3.2,
+      awayWin: isUEFAKnockout ? 2.0 : 3.3,
+      over25: isUEFAKnockout ? 1.65 : 1.85,
+      btts: isUEFAKnockout ? 1.70 : 1.85,
+    },
     context: {
-      neutralVenue: false,
-      earlyGoal: false,
-      redCard: false,
-      gameWeek: 30,
-      totalGameWeeks: 38,
-      homePoints: 40,
-      awayPoints: 38,
-      homeGoalDifferential: 5,
-      awayGoalDifferential: 3,
+      neutralVenue: false, earlyGoal: false, redCard: false,
+      gameWeek, totalGameWeeks: totalGW,
+      homePoints, awayPoints,
+      homePosition: homePos, awayPosition: awayPos,
+      totalTeams,
+      homeGoalDifferential: Math.round(homeXg * gameWeek * 0.3),
+      awayGoalDifferential: Math.round(awayXg * gameWeek * 0.2),
       timezone: 'UTC',
     },
   };
@@ -1585,6 +1677,9 @@ async function runCalibration() {
         leagueId: f.league?.id || 0,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
+        isKnockout: f.league?.isKnockout || false,
+        round: f.league?.round || null,
+        notes: f.league?.notes || null,
       })).filter(f => f.home && f.away);
 
       console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini V8...`);
@@ -1627,18 +1722,40 @@ async function runCalibration() {
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
+        // ── Competition context (from buildDefaultV8Fixture / Gemini enrichment) ──
+        homePosition:      f.home?.leaguePosition  || f.context?.homePosition  || matchMeta.homePosition  || 10,
+        awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
+        homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
+        awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 38,
+        totalTeams:        f.context?.totalTeams   || matchMeta.totalTeams   || 20,
+        gameWeek:          f.context?.gameWeek     || matchMeta.gameWeek     || 30,
+        totalGW:           f.context?.totalGameWeeks || matchMeta.totalGW   || 38,
+        // ── Team form strings ──────────────────────────────────────────────────
+        homeForm: Array.isArray(f.home?.recentForm)
+          ? f.home.recentForm.join('-')
+          : (matchMeta.homeForm || 'W-D-L-W-D'),
+        awayForm: Array.isArray(f.away?.recentForm)
+          ? f.away.recentForm.join('-')
+          : (matchMeta.awayForm || 'D-L-W-D-L'),
+        // ── Squad quality ──────────────────────────────────────────────────────
+        homeSquadIntegrity: f.home?.squadIntegrity || 85,
+        awaySquadIntegrity: f.away?.squadIntegrity || 83,
+        // ── Goal expectation ──────────────────────────────────────────────────
+        homeXgAvg:  f.home?.xgAvg  || 1.3,
+        awayXgAvg:  f.away?.xgAvg  || 1.1,
+        homeXgaAvg: f.home?.xgaAvg || 1.2,
+        awayXgaAvg: f.away?.xgaAvg || 1.3,
+        // ── Conversion / shots ────────────────────────────────────────────────
+        homeConversionPct: f.home?.conversionPct || 11,
+        awayConversionPct: f.away?.conversionPct || 10,
+        homeShotsPerGame:  f.home?.shotsPerGame  || 12,
+        awayShotsPerGame:  f.away?.shotsPerGame  || 10,
+        homePossession: 50,
         homeStats: f.home,
         awayStats: f.away,
         h2h: f.h2h,
         odds: f.odds,
         context: f.context,
-        homeXgAvg: f.home?.xgAvg || 1.3,
-        awayXgAvg: f.away?.xgAvg || 1.1,
-        homeXgaAvg: f.away?.xgaAvg || 1.2,
-        awayXgaAvg: f.home?.xgaAvg || 1.2,
-        homePossession: 50,
-        homeShotsPerGame: 12,
-        awayShotsPerGame: 10,
       };
 
       const analysis = analyzeV6(matchData);
@@ -1660,6 +1777,8 @@ async function runCalibration() {
         leagueCountry: matchMeta.country || '',
       });
       matchObj.kickoffUTC = matchMeta.kickoffUTC || null;
+      matchObj.round = matchMeta.round || null;
+      matchObj.notes = matchMeta.notes || null;
       matchObj.analysis = analysis;
       // Calibration is for scheduled fixtures only — no real-time scores available.
       // Force NS so fabricated live states never reach the UI.
