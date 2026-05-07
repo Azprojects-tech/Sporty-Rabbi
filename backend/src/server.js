@@ -160,7 +160,7 @@ function broadcast(message) {
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
-const API_DAILY_SOFT_STOP = Number(process.env.API_DAILY_SOFT_STOP || 25);
+const API_DAILY_SOFT_STOP = Number(process.env.API_DAILY_SOFT_STOP || 50); // stop at 50 remaining (saves 50 for the day)
 const API_MINUTE_SOFT_STOP = Number(process.env.API_MINUTE_SOFT_STOP || 1);
 
 const quotaState = {
@@ -267,8 +267,8 @@ const cache = {
 };
 
 const CACHE_TTL = {
-  live: API_KEY ? 5000 : 5 * 60 * 1000,         // 5s (API-Football) or 5 min (Gemini)
-  upcoming: API_KEY ? 30000 : 15 * 60 * 1000,    // 30s (API-Football) or 15 min (Gemini)
+  live: API_KEY ? 2 * 60 * 1000 : 5 * 60 * 1000,      // 2 min (API-Football) or 5 min (no key)
+  upcoming: API_KEY ? 5 * 60 * 1000 : 15 * 60 * 1000,  // 5 min (API-Football) or 15 min (no key)
 };
 
 // When API-Football quota is paused, extend cache TTL so Gemini isn't hammered
@@ -395,7 +395,109 @@ async function fetchTodayFixturesFromApi() {
   } catch (err) {
     console.warn(`[Calibrate] API-Football today fetch failed: ${err.message}`);
     if (err.response?.headers) updateQuotaFromHeaders(err.response.headers);
-    if (err.response?.status === 429) setQuotaPause('429 on today fixtures', getNextUtcMidnightIso());
+    if (err.response?.status === 429 || err.response?.status === 402) {
+      setQuotaPause('API-Football suspended/rate-limited', getNextUtcMidnightIso());
+    }
+    return [];
+  }
+}
+
+// League name → leagueId mapping for TheSportsDB responses
+const SPORTSDB_LEAGUE_MAP = {
+  'english premier league': 39,
+  'premier league': 39,
+  'spanish la liga': 140,
+  'la liga': 140,
+  'german bundesliga': 78,
+  'bundesliga': 78,
+  'italian serie a': 135,
+  'serie a': 135,
+  'french ligue 1': 61,
+  'ligue 1': 61,
+  'portuguese primeira liga': 64,
+  'primeira liga': 64,
+  'liga nos': 64,
+  'turkish super lig': 203,
+  'süper lig': 203,
+  'saudi professional league': 541,
+  'saudi pro league': 541,
+  'champions league': 1,
+  'uefa champions league': 1,
+  'europa league': 3,
+  'uefa europa league': 3,
+  'conference league': 849,
+  'uefa europa conference league': 849,
+  'world cup': 4,
+  'fifa world cup': 4,
+  'world cup qualification': 18,
+  'european championship': 2,
+  'copa america': 5,
+  'africa cup of nations': 6,
+  'nations league': 16,
+  'uefa nations league': 16,
+  'mls': 253,
+  'major league soccer': 253,
+  'scottish premiership': 179,
+  'eredivisie': 88,
+  'belgian pro league': 144,
+  'serie a (brazil)': 71,
+  'brasileirao': 71,
+};
+
+function sportsDbLeagueToId(leagueName) {
+  const key = (leagueName || '').toLowerCase().trim();
+  for (const [name, id] of Object.entries(SPORTSDB_LEAGUE_MAP)) {
+    if (key.includes(name) || name.includes(key)) return id;
+  }
+  return 0;
+}
+
+/**
+ * Fetch today's fixtures from TheSportsDB (completely free, no API key).
+ * Returns fixtures in the same shape as fetchTodayFixturesFromApi() consumers expect.
+ */
+async function fetchTodayFixturesFromSportsDB() {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    console.log(`[Calibrate] Fetching today's fixtures from TheSportsDB: ${today}`);
+    const response = await axios.get(
+      `https://www.thesportsdb.com/api/v1/json/3/eventsday.php`,
+      { params: { d: today, s: 'Soccer' }, timeout: 10000 }
+    );
+    const events = response.data?.events || [];
+    if (!events.length) {
+      console.log('[Calibrate] TheSportsDB: no events for today');
+      return [];
+    }
+
+    // Normalise to the shape runCalibration expects for enrichFixturesWithV8
+    const fixtures = events
+      .filter(e => e.strHomeTeam && e.strAwayTeam && e.strStatus !== 'Match Finished')
+      .map(e => {
+        const leagueId = sportsDbLeagueToId(e.strLeague || '');
+        const kickoffUTC = (e.dateEvent && e.strTime)
+          ? `${e.dateEvent}T${e.strTime}Z`
+          : null;
+        return {
+          // Wrap in the API-Football-like shape that the caller converts
+          fixture: { id: e.idEvent, date: kickoffUTC },
+          teams: {
+            home: { name: e.strHomeTeam, id: null },
+            away: { name: e.strAwayTeam, id: null },
+          },
+          league: {
+            id: leagueId,
+            name: e.strLeague || 'Unknown',
+            country: e.strCountry || '',
+          },
+        };
+      })
+      .filter(f => WHITELISTED_LEAGUE_IDS.has(f.league.id));
+
+    console.log(`[Calibrate] TheSportsDB: ${fixtures.length} whitelisted fixtures found`);
+    return fixtures;
+  } catch (err) {
+    console.warn(`[Calibrate] TheSportsDB fetch failed: ${err.message}`);
     return [];
   }
 }
@@ -1124,10 +1226,11 @@ app.post('/api/analyze/natural', async (req, res) => {
  * Called on startup, every 6 hours, and via POST /api/calibrate.
  */
 async function runCalibration() {
-  console.log('[Calibrate] Starting day calibration (API-Football + Gemini V8)...');
+  console.log('[Calibrate] Starting day calibration (API-Football → TheSportsDB → Gemini Search)...');
   let raw = [];
+  let dataSource = 'unknown';
 
-  // ── Step 1: Get real fixture list from API-Football (authoritative — no hallucinations) ──
+  // ── Step 1: Real fixture list from API-Football ────────────────────────────
   const apiFixtures = await fetchTodayFixturesFromApi();
   if (apiFixtures.length > 0) {
     const fixtureList = apiFixtures
@@ -1146,18 +1249,42 @@ async function runCalibration() {
     if (fixtureList.length > 0) {
       const enriched = await enrichFixturesWithV8(fixtureList);
       raw = enriched || [];
+      dataSource = 'API-Football + Gemini V8';
     }
   }
 
-  // ── Step 2: Fall back to Gemini Search if API-Football gave nothing ──────────
+  // ── Step 2: TheSportsDB (free, no API key) ─────────────────────────────────
   if (raw.length === 0) {
-    console.log('[Calibrate] API-Football empty/unavailable — falling back to Gemini Search...');
-    const fixtures = await calibrateDay();
-    raw = fixtures || [];
+    console.log('[Calibrate] API-Football unavailable — trying TheSportsDB (free)...');
+    const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
+    if (sportsDbFixtures.length > 0) {
+      const fixtureList = sportsDbFixtures.map(f => ({
+        home: f.teams?.home?.name,
+        away: f.teams?.away?.name,
+        league: f.league?.name,
+        leagueId: f.league?.id,
+        country: f.league?.country,
+        kickoffUTC: f.fixture?.date,
+      })).filter(f => f.home && f.away);
+
+      console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini V8...`);
+      if (fixtureList.length > 0) {
+        const enriched = await enrichFixturesWithV8(fixtureList);
+        raw = enriched || [];
+        dataSource = 'TheSportsDB + Gemini V8';
+      }
+    }
   }
 
-  const source = raw.length > 0 ? (apiFixtures.length > 0 ? 'API-Football + Gemini V8' : 'Gemini Search') : 'static fallback';
-  console.log(`[Calibrate] Processing ${raw.length} fixtures from ${source}`);
+  // ── Step 3: Gemini Search grounding (last resort) ──────────────────────────
+  if (raw.length === 0) {
+    console.log('[Calibrate] Both fixture APIs unavailable — falling back to Gemini Search grounding...');
+    const fixtures = await calibrateDay();
+    raw = fixtures || [];
+    dataSource = 'Gemini Search';
+  }
+
+  console.log(`[Calibrate] Processing ${raw.length} fixtures from ${dataSource}`);
 
   const analyzed = [];
   for (const f of raw) {
