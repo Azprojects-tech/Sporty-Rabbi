@@ -286,7 +286,7 @@ console.log(`
   📌 API Key:    ${API_KEY ? '✅ API-Football set (Gemini fallback ready)' : '🤖 Gemini-only mode (AI fixture data)'}
   🌐 API Base:   ${API_BASE}
   ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s + Gemini fallback` : 'Gemini every 5 min (preserves quota)'}
-  🏆 Leagues:    ${WHITELISTED_LEAGUE_IDS.size} whitelisted
+  🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 
