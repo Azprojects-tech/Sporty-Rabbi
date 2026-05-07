@@ -474,7 +474,9 @@ async function fetchTodayFixturesFromSportsDB() {
           },
         };
       })
-      .filter(f => !!f.league.id); // all regulated leagues
+      // Don't filter by leagueId here — unrecognised leagues get leagueId=0
+      // and are shown as "Other" rather than being silently dropped.
+      .filter(f => !!f.teams.home.name && !!f.teams.away.name);
 
     console.log(`[Calibrate] TheSportsDB: ${fixtures.length} fixtures found`);
     return fixtures;
@@ -1359,6 +1361,69 @@ app.post('/api/analyze/natural', async (req, res) => {
 // ─── SHARED CALIBRATION LOGIC ────────────────────────────────────────────────
 
 /**
+ * Build a minimal V8-compatible fixture object from a bare fixture list entry.
+ * Used as a fallback when Gemini enrichment is unavailable (quota exhausted).
+ * Analytics are neutral defaults — V6 engine will still score the match.
+ * @param {{ home, away, league, leagueId, country, kickoffUTC }} f
+ */
+function buildDefaultV8Fixture(f) {
+  return {
+    match: {
+      home: f.home,
+      away: f.away,
+      league: f.league || 'Unknown',
+      leagueId: f.leagueId || 0,
+      country: f.country || '',
+      status: 'NS',
+      minute: 0,
+      homeScore: 0,
+      awayScore: 0,
+      kickoffUTC: f.kickoffUTC || null,
+    },
+    home: {
+      motivationScore: 6,
+      starPlayers: 2,
+      starPlayersMissing: 0,
+      recentForm: ['W', 'D', 'L', 'W', 'D'],
+      goalsScored: [1, 2, 1, 0, 2],
+      goalsConceded: [1, 1, 0, 2, 1],
+      xgAvg: 1.3,
+      xgaAvg: 1.2,
+      pace: 6,
+      leaguePosition: 8,
+      squadIntegrity: 85,
+    },
+    away: {
+      motivationScore: 6,
+      starPlayers: 2,
+      starPlayersMissing: 0,
+      recentForm: ['W', 'D', 'L', 'D', 'W'],
+      goalsScored: [1, 1, 2, 0, 1],
+      goalsConceded: [1, 0, 1, 2, 1],
+      xgAvg: 1.2,
+      xgaAvg: 1.3,
+      pace: 6,
+      leaguePosition: 10,
+      squadIntegrity: 83,
+    },
+    h2h: { homeWins: 3, awayWins: 3, draws: 4, avgGoals: 2.4, bttsRate: 0.55 },
+    odds: { homeWin: 2.3, draw: 3.2, awayWin: 3.1, over25: 1.9, btts: 1.85 },
+    context: {
+      neutralVenue: false,
+      earlyGoal: false,
+      redCard: false,
+      gameWeek: 30,
+      totalGameWeeks: 38,
+      homePoints: 40,
+      awayPoints: 38,
+      homeGoalDifferential: 5,
+      awayGoalDifferential: 3,
+      timezone: 'UTC',
+    },
+  };
+}
+
+/**
  * runCalibration()
  * Uses Gemini Search grounding to fetch today's real global fixtures,
  * runs V8 analysis on each, populates calibrationStore + upcomingMatches.
@@ -1373,12 +1438,11 @@ async function runCalibration() {
   const apiFixtures = await fetchTodayFixturesFromApi();
   if (apiFixtures.length > 0) {
     const fixtureList = apiFixtures
-      .filter(f => !!f.league?.id) // all leagues
       .map(f => ({
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,
         league: f.league?.name,
-        leagueId: f.league?.id,
+        leagueId: f.league?.id || 0,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
       }))
@@ -1386,9 +1450,16 @@ async function runCalibration() {
 
     console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini V8...`);
     if (fixtureList.length > 0) {
-      const enriched = await enrichFixturesWithV8(fixtureList);
-      raw = enriched || [];
-      dataSource = 'API-Football + Gemini V8';
+      const enriched = await enrichFixturesWithV8(fixtureList).catch(() => null);
+      if (enriched && enriched.length > 0) {
+        raw = enriched;
+        dataSource = 'API-Football + Gemini V8';
+      } else {
+        // Gemini enrichment failed (quota exhausted etc.) — use raw fixtures with neutral defaults
+        raw = fixtureList.map(f => buildDefaultV8Fixture(f));
+        dataSource = 'API-Football (no Gemini)';
+        console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} API-Football fixtures with default analytics`);
+      }
     }
   }
 
@@ -1401,16 +1472,23 @@ async function runCalibration() {
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,
         league: f.league?.name,
-        leagueId: f.league?.id,
+        leagueId: f.league?.id || 0,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
       })).filter(f => f.home && f.away);
 
       console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini V8...`);
       if (fixtureList.length > 0) {
-        const enriched = await enrichFixturesWithV8(fixtureList);
-        raw = enriched || [];
-        dataSource = 'TheSportsDB + Gemini V8';
+        const enriched = await enrichFixturesWithV8(fixtureList).catch(() => null);
+        if (enriched && enriched.length > 0) {
+          raw = enriched;
+          dataSource = 'TheSportsDB + Gemini V8';
+        } else {
+          // Gemini enrichment failed — use raw fixtures with neutral defaults
+          raw = fixtureList.map(f => buildDefaultV8Fixture(f));
+          dataSource = 'TheSportsDB (no Gemini)';
+          console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} TheSportsDB fixtures with default analytics`);
+        }
       }
     }
   }
