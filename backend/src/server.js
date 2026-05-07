@@ -384,46 +384,63 @@ async function fetchTodayFixturesFromApi() {
   }
 }
 
-// League name → leagueId mapping for TheSportsDB responses
+// ESPN league ID → { name, leagueId } map
+// leagueId values mirror API-Football IDs where known for frontend filter compatibility
+const ESPN_LEAGUE_MAP = {
+  '776':   { name: 'UEFA Europa League',       leagueId: 3 },
+  '20296': { name: 'UEFA Conference League',   leagueId: 848 },
+  '600':   { name: 'UEFA Champions League',    leagueId: 2 },
+  '700':   { name: 'English Premier League',   leagueId: 39 },
+  '701':   { name: 'English Championship',     leagueId: 40 },
+  '710':   { name: 'French Ligue 1',           leagueId: 61 },
+  '711':   { name: 'French Ligue 2',           leagueId: 62 },
+  '720':   { name: 'German Bundesliga',        leagueId: 78 },
+  '721':   { name: 'German 2. Bundesliga',     leagueId: 79 },
+  '730':   { name: 'Italian Serie A',          leagueId: 135 },
+  '731':   { name: 'Italian Serie B',          leagueId: 136 },
+  '740':   { name: 'Spanish La Liga',          leagueId: 140 },
+  '741':   { name: 'Spanish Segunda',          leagueId: 141 },
+  '750':   { name: 'Portuguese Primeira Liga', leagueId: 94 },
+  '760':   { name: 'Scottish Premiership',     leagueId: 179 },
+  '770':   { name: 'Dutch Eredivisie',         leagueId: 88 },
+  '780':   { name: 'Belgian Pro League',       leagueId: 144 },
+  '3939':  { name: 'Russian Premier League',   leagueId: 235 },
+  '3946':  { name: 'Turkish Super Lig',        leagueId: 203 },
+  '3947':  { name: 'Turkish Cup',              leagueId: 204 },
+  '3940':  { name: 'Russian Cup',              leagueId: 236 },
+  '4002':  { name: 'Saudi Pro League',         leagueId: 307 },
+  '21231': { name: 'Saudi Pro League',         leagueId: 307 },
+  '1':     { name: 'FIFA World Cup',           leagueId: 1 },
+  '2':     { name: 'UEFA European Championship', leagueId: 4 },
+  '5':     { name: 'Copa America',             leagueId: 9 },
+  '253':   { name: 'MLS',                      leagueId: 253 },
+  '783':   { name: 'Brazilian Serie A',        leagueId: 71 },
+};
+
+// TheSportsDB league name → leagueId fallback
 const SPORTSDB_LEAGUE_MAP = {
-  'english premier league': 39,
-  'premier league': 39,
-  'spanish la liga': 140,
-  'la liga': 140,
-  'german bundesliga': 78,
-  'bundesliga': 78,
-  'italian serie a': 135,
-  'serie a': 135,
-  'french ligue 1': 61,
-  'ligue 1': 61,
-  'portuguese primeira liga': 64,
-  'primeira liga': 64,
-  'liga nos': 64,
-  'turkish super lig': 203,
-  'süper lig': 203,
-  'saudi professional league': 541,
-  'saudi pro league': 541,
-  'champions league': 1,
-  'uefa champions league': 1,
-  'europa league': 3,
-  'uefa europa league': 3,
-  'conference league': 849,
-  'uefa europa conference league': 849,
-  'world cup': 4,
-  'fifa world cup': 4,
-  'world cup qualification': 18,
-  'european championship': 2,
-  'copa america': 5,
-  'africa cup of nations': 6,
-  'nations league': 16,
-  'uefa nations league': 16,
-  'mls': 253,
-  'major league soccer': 253,
+  'english premier league': 39,   'premier league': 39,
+  'spanish la liga': 140,         'la liga': 140,
+  'german bundesliga': 78,        'bundesliga': 78,
+  'italian serie a': 135,         'serie a': 135,
+  'french ligue 1': 61,           'ligue 1': 61,
+  'portuguese primeira liga': 94, 'primeira liga': 94,
+  'turkish super lig': 203,       'sper lig': 203,
+  'saudi professional league': 307, 'saudi pro league': 307,
+  'champions league': 2,          'uefa champions league': 2,
+  'europa league': 3,             'uefa europa league': 3,
+  'conference league': 848,       'uefa europa conference league': 848,
+  'russian premier league': 235,  'russian cup': 236,
+  'turkish cup': 204,
+  'world cup': 1,                 'fifa world cup': 1,
+  'european championship': 4,
+  'copa america': 9,
+  'nations league': 16,           'uefa nations league': 16,
+  'mls': 253,                     'major league soccer': 253,
   'scottish premiership': 179,
   'eredivisie': 88,
   'belgian pro league': 144,
-  'serie a (brazil)': 71,
-  'brasileirao': 71,
+  'brasileirao': 71,              'serie a (brazil)': 71,
 };
 
 function sportsDbLeagueToId(leagueName) {
@@ -435,14 +452,83 @@ function sportsDbLeagueToId(leagueName) {
 }
 
 /**
- * Fetch today's fixtures from TheSportsDB (completely free, no API key).
- * Returns fixtures in the same shape as fetchTodayFixturesFromApi() consumers expect.
+ * Fetch today + tomorrow fixtures from ESPN's unofficial scoreboard API.
+ * Covers UEFA Europa League, Conference League, Turkish Cup, Russian Cup, all top leagues.
+ * Returns fixtures in the same shape as fetchTodayFixturesFromSportsDB.
+ */
+async function fetchFixturesFromESPN() {
+  try {
+    const today    = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0].replace(/-/g, '');
+    console.log(`[Calibrate] ESPN: fetching today (${today}) + tomorrow (${tomorrow})`);
+
+    const [r1, r2] = await Promise.all([
+      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { params: { dates: today }, timeout: 10000 }),
+      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { params: { dates: tomorrow }, timeout: 10000 }),
+    ]);
+
+    const allEvents = [...(r1.data?.events || []), ...(r2.data?.events || [])];
+    if (!allEvents.length) {
+      console.log('[Calibrate] ESPN: no events returned');
+      return [];
+    }
+
+    const fixtures = allEvents
+      .filter(e => {
+        const status = e.competitions?.[0]?.status?.type?.name || '';
+        // Keep scheduled and in-progress; skip finished
+        return status !== 'STATUS_FINAL' && status !== 'STATUS_FULL_TIME' && status !== 'STATUS_FT';
+      })
+      .map(e => {
+        const comp       = e.competitions?.[0];
+        const home       = comp?.competitors?.find(c => c.homeAway === 'home');
+        const away       = comp?.competitors?.find(c => c.homeAway === 'away');
+        const homeName   = home?.team?.displayName || home?.team?.name;
+        const awayName   = away?.team?.displayName || away?.team?.name;
+        if (!homeName || !awayName) return null;
+
+        // Extract ESPN league ID from event uid (format: s:600~l:776~e:...)
+        const espnLeagueId = (e.uid || '').match(/l:(\d+)/)?.[1] || '0';
+        const leagueInfo   = ESPN_LEAGUE_MAP[espnLeagueId] || { name: 'International', leagueId: 0 };
+
+        return {
+          fixture: { id: e.id, date: e.date },
+          teams: {
+            home: { name: homeName, id: home?.team?.id || null },
+            away: { name: awayName, id: away?.team?.id || null },
+          },
+          league: {
+            id:      leagueInfo.leagueId,
+            name:    leagueInfo.name,
+            country: '',
+          },
+        };
+      })
+      .filter(Boolean);
+
+    console.log(`[Calibrate] ESPN: ${fixtures.length} fixtures (today ${r1.data?.events?.length || 0} + tomorrow ${r2.data?.events?.length || 0})`);
+    return fixtures;
+  } catch (err) {
+    console.warn(`[Calibrate] ESPN fetch failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Fetch today + tomorrow fixtures.
+ * Primary: ESPN unofficial API (~88 events, covers UEL/UECL/Turkish Cup/Russian Cup).
+ * Fallback: TheSportsDB (free, but only ~6 fixtures on quiet days).
  */
 async function fetchTodayFixturesFromSportsDB() {
+  // Try ESPN first
+  const espnFixtures = await fetchFixturesFromESPN();
+  if (espnFixtures.length > 0) return espnFixtures;
+
+  // ESPN failed — fall back to TheSportsDB
+  console.log('[Calibrate] ESPN returned 0 fixtures, trying TheSportsDB fallback...');
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    console.log(`[Calibrate] Fetching today+tomorrow fixtures from TheSportsDB: ${today} + ${tomorrow}`);
+    const today    = new Date().toISOString().split('T')[0];
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
 
     const [todayRes, tomorrowRes] = await Promise.all([
       axios.get('https://www.thesportsdb.com/api/v1/json/3/eventsday.php', { params: { d: today, s: 'Soccer' }, timeout: 10000 }),
@@ -458,14 +544,11 @@ async function fetchTodayFixturesFromSportsDB() {
       return [];
     }
 
-    // Normalise to the shape runCalibration expects for enrichFixturesWithV8
     const fixtures = events
       .filter(e => e.strHomeTeam && e.strAwayTeam && e.strStatus !== 'Match Finished')
       .map(e => {
         const leagueId = sportsDbLeagueToId(e.strLeague || '');
-        const kickoffUTC = (e.dateEvent && e.strTime)
-          ? `${e.dateEvent}T${e.strTime}Z`
-          : null;
+        const kickoffUTC = (e.dateEvent && e.strTime) ? `${e.dateEvent}T${e.strTime}Z` : null;
         return {
           fixture: { id: e.idEvent, date: kickoffUTC },
           teams: {
@@ -473,19 +556,18 @@ async function fetchTodayFixturesFromSportsDB() {
             away: { name: e.strAwayTeam, id: null },
           },
           league: {
-            id: leagueId,
-            name: e.strLeague || 'Unknown',
+            id:      leagueId,
+            name:    e.strLeague || 'Unknown',
             country: e.strCountry || '',
           },
         };
       })
-      // Don't filter by leagueId — unrecognised leagues get leagueId=0, shown as "Other"
       .filter(f => !!f.teams.home.name && !!f.teams.away.name);
 
-    console.log(`[Calibrate] TheSportsDB: ${todayEvents.length} today + ${tomorrowEvents.length} tomorrow = ${fixtures.length} fixtures`);
+    console.log(`[Calibrate] TheSportsDB fallback: ${todayEvents.length} today + ${tomorrowEvents.length} tomorrow = ${fixtures.length} fixtures`);
     return fixtures;
   } catch (err) {
-    console.warn(`[Calibrate] TheSportsDB fetch failed: ${err.message}`);
+    console.warn(`[Calibrate] TheSportsDB fallback failed: ${err.message}`);
     return [];
   }
 }
