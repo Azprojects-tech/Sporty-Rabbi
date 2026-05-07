@@ -1,27 +1,26 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { apiService } from '../services/api';
 
-// â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const TIER_COLORS = { 1: '#f59e0b', 2: '#00b859', 3: '#fbbf24', 4: '#f97316' };
 const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
 const TIER_BORDER = { 1: '#78350f55', 2: '#00683355', 3: '#78350f55', 4: '#7c2d1255' };
 
 const PARAMS = [
-  { key: 'p1_motivation',  label: 'Motivation',   weight: '16%', icon: 'ðŸ”¥' },
-  { key: 'p4_form',        label: 'Form (L10)',    weight: '12%', icon: 'ðŸ“ˆ' },
-  { key: 'p7_poisson',     label: 'Poisson',       weight: '9%',  icon: 'ðŸ§®' },
-  { key: 'p3_h2h',         label: 'H2H',           weight: '8%',  icon: 'âš”ï¸' },
-  { key: 'p2_starPower',   label: 'Star Power',    weight: '7%',  icon: 'â­' },
-  { key: 'p5_timing',      label: 'Timing',        weight: '7%',  icon: 'â±ï¸' },
-  { key: 'p6_defensive',   label: 'Defensive',     weight: '7%',  icon: 'ðŸ›¡ï¸' },
-  { key: 'p8_xg',          label: 'xG Attack',     weight: '6%',  icon: 'ðŸŽ¯' },
-  { key: 'p15_crisis',     label: 'Crisis',        weight: '10%', icon: 'ðŸš¨' },
-  { key: 'p9_xga',         label: 'xGA Defence',   weight: '5%',  icon: 'ðŸ§±' },
-  { key: 'p13_squad',      label: 'Squad',         weight: '5%',  icon: 'ðŸ’ª' },
-  { key: 'p10_pace',       label: 'Pace',          weight: '4%',  icon: 'âš¡' },
-  { key: 'p11_timezone',   label: 'Timezone',      weight: '2%',  icon: 'ðŸ' },
-  { key: 'p14_lifecycle',  label: 'Lifecycle',     weight: '1%',  icon: 'ðŸ“…' },
-  { key: 'p12_fixture',    label: 'Fixture',       weight: '1%',  icon: 'ðŸ“Œ' },
+  { key: 'p1_motivation',  label: 'Motivation',  weight: '16%', icon: 'MOT' },
+  { key: 'p4_form',        label: 'Form (L10)',   weight: '12%', icon: 'FRM' },
+  { key: 'p7_poisson',     label: 'Poisson',      weight: '9%',  icon: 'PSN' },
+  { key: 'p3_h2h',         label: 'H2H',          weight: '8%',  icon: 'H2H' },
+  { key: 'p2_starPower',   label: 'Star Power',   weight: '7%',  icon: 'STR' },
+  { key: 'p5_timing',      label: 'Timing',       weight: '7%',  icon: 'TIM' },
+  { key: 'p6_defensive',   label: 'Defensive',    weight: '7%',  icon: 'DEF' },
+  { key: 'p8_xg',          label: 'xG Attack',    weight: '6%',  icon: 'XGA' },
+  { key: 'p15_crisis',     label: 'Crisis',       weight: '10%', icon: 'CRS' },
+  { key: 'p9_xga',         label: 'xGA Defence',  weight: '5%',  icon: 'XGD' },
+  { key: 'p13_squad',      label: 'Squad',        weight: '5%',  icon: 'SQD' },
+  { key: 'p10_pace',       label: 'Pace',         weight: '4%',  icon: 'PAC' },
+  { key: 'p11_timezone',   label: 'Timezone',     weight: '2%',  icon: 'TZ'  },
+  { key: 'p14_lifecycle',  label: 'Lifecycle',    weight: '1%',  icon: 'LFC' },
+  { key: 'p12_fixture',    label: 'Fixture',      weight: '1%',  icon: 'FIX' },
 ];
 
 function scoreColor(s) {
@@ -55,7 +54,6 @@ function edgeBadge(edge) {
   );
 }
 
-// â”€â”€â”€ Form badges (W/D/L coloured dots) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function FormBadges({ formStr }) {
   if (!formStr) return <span style={{ fontSize: 11, color: '#4a5568' }}>No data</span>;
   const results = String(formStr).toUpperCase().split(/[-,\s]+/).filter(Boolean).slice(0, 10);
@@ -75,9 +73,10 @@ function FormBadges({ formStr }) {
   );
 }
 
-// â”€â”€â”€ Expanded detail renderer per parameter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ParamDetail({ paramKey, p, match }) {
-  const assessment = Array.isArray(p.assessment) ? p.assessment.join('. ') : (p.assessment || '');
+  const assessment = Array.isArray(p.assessment)
+    ? p.assessment.filter(Boolean).join('. ')
+    : (p.assessment || '');
 
   if (paramKey === 'p4_form') {
     const homeFormStr = p.home?.formStr || p.homeForm || '';
@@ -85,7 +84,7 @@ function ParamDetail({ paramKey, p, match }) {
     return (
       <div style={{ paddingTop: 8, paddingBottom: 4, paddingLeft: 4, borderTop: '1px solid #1e253522' }}>
         <div style={{ fontSize: 11, color: '#8b9ab3', marginBottom: 6, fontWeight: 600 }}>
-          Last 10 results (newest â†’ oldest):
+          Last 10 results (newest to oldest):
         </div>
         <div style={{ fontSize: 11, color: '#4a5568', marginBottom: 3 }}>{match?.home || 'Home'}</div>
         <FormBadges formStr={homeFormStr} />
@@ -99,8 +98,8 @@ function ParamDetail({ paramKey, p, match }) {
   }
 
   if (paramKey === 'p3_h2h') {
-    const hw = p.homeWins ?? (p.home?.wins);
-    const aw = p.awayWins ?? (p.away?.wins);
+    const hw = p.homeWins ?? p.home?.wins;
+    const aw = p.awayWins ?? p.away?.wins;
     const d  = p.draws;
     const goalsAvg = p.goalsAvg;
     const overRate = p.overRate != null ? Math.round(p.overRate * 100) : null;
@@ -109,9 +108,9 @@ function ParamDetail({ paramKey, p, match }) {
         {(hw != null || aw != null) && (
           <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
             {[
-              { label: match?.home || 'Home', val: hw, color: '#3b82f6' },
-              { label: 'Draws', val: d, color: '#fbbf24' },
-              { label: match?.away || 'Away', val: aw, color: '#a78bfa' },
+              { label: match?.home || 'Home', val: hw,       color: '#3b82f6' },
+              { label: 'Draws',               val: d,        color: '#fbbf24' },
+              { label: match?.away || 'Away', val: aw,       color: '#a78bfa' },
             ].map(({ label, val, color }) => val != null ? (
               <div key={label} style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 16, fontWeight: 800, color }}>{val}</div>
@@ -137,7 +136,6 @@ function ParamDetail({ paramKey, p, match }) {
     );
   }
 
-  // Generic: just show assessment text
   return assessment ? (
     <div style={{ paddingTop: 8, paddingLeft: 4, borderTop: '1px solid #1e253522' }}>
       <p style={{ fontSize: 11, color: '#4a5568', lineHeight: 1.7, margin: 0 }}>{assessment}</p>
@@ -145,13 +143,11 @@ function ParamDetail({ paramKey, p, match }) {
   ) : null;
 }
 
-// â”€â”€â”€ Main component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 export default function DetailPanel({ match, analysis: preloadedAnalysis, onClose }) {
-  const [analysis, setAnalysis] = useState(preloadedAnalysis || null);
-  const [loading, setLoading]   = useState(!preloadedAnalysis);
-  const [error, setError]       = useState(null);
-  const [section, setSection]   = useState('params');
+  const [analysis, setAnalysis]     = useState(preloadedAnalysis || null);
+  const [loading, setLoading]       = useState(!preloadedAnalysis);
+  const [error, setError]           = useState(null);
+  const [section, setSection]       = useState('params');
   const [expandedParam, setExpandedParam] = useState(null);
 
   useEffect(() => {
@@ -198,25 +194,23 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     overflow: 'hidden',
   };
 
-  // â”€â”€ Loading â”€â”€
   if (loading) return (
     <div style={panelStyle}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <div style={{ width: 28, height: 28, border: '2px solid #1e2535', borderTopColor: '#00b859', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V8 analysisâ€¦</p>
+        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V8 analysis...</p>
       </div>
     </div>
   );
 
-  // â”€â”€ Error â”€â”€
   if (error) return (
     <div style={panelStyle}>
       <div style={{ padding: '14px 16px', borderBottom: '1px solid #1e2535', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#8b9ab3' }}>V8 Analysis</span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 20 }}>Ã—</button>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 20 }}>x</button>
       </div>
       <div style={{ padding: 20 }}>
-        <p style={{ color: '#ef4444', fontSize: 12, marginBottom: 12 }}>âš ï¸ {error}</p>
+        <p style={{ color: '#ef4444', fontSize: 12, marginBottom: 12 }}>! {error}</p>
         <button onClick={loadAnalysis} style={{ background: '#001f0e', border: '1px solid #006833', borderRadius: 6, padding: '8px 16px', color: '#00b859', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>Retry</button>
       </div>
     </div>
@@ -229,7 +223,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   } = analysis || {};
   const probs = poisson?.probabilities || {};
 
-  // â”€â”€ Top picks: normalise selection to string â”€â”€
   const topPicks = recommendations
     .slice(0, 3)
     .map(r => ({
@@ -241,19 +234,20 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
 
   return (
     <div style={panelStyle}>
-      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+
+      {/* Header */}
       <div style={{ padding: '13px 16px', borderBottom: '1px solid #1e2535', flexShrink: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {match.home} <span style={{ color: '#1e2535', fontWeight: 400 }}>vs</span> {match.away}
+              {match.home} <span style={{ color: '#4a5568', fontWeight: 400 }}>vs</span> {match.away}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
                 V8-MASTER
               </span>
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>
-                T{tier} Â· {tierName}
+                T{tier} &middot; {tierName}
               </span>
               <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(overallScore) }}>
                 {overallScore}%
@@ -265,11 +259,13 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               )}
             </div>
           </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 22, lineHeight: 1, padding: '0 0 0 8px', flexShrink: 0 }}>Ã—</button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 22, lineHeight: 1, padding: '0 0 0 8px', flexShrink: 0 }}>
+            &times;
+          </button>
         </div>
       </div>
 
-      {/* â”€â”€ Agent Recommendation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* Agent Recommendation */}
       {topPicks.length > 0 && (
         <div style={{
           padding: '12px 14px',
@@ -278,7 +274,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
           background: '#001a0a',
         }}>
           <div style={{ fontSize: 9, fontWeight: 800, color: '#00b859', letterSpacing: '1px', marginBottom: 8 }}>
-            ðŸ¤– AGENT RECOMMENDATION
+            AGENT RECOMMENDATION
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {topPicks.map((r, i) => (
@@ -288,7 +284,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                 borderRadius: 8,
                 padding: '10px 13px',
               }}>
-                {/* Tier badge + confidence */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
                   <span style={{
                     fontSize: 9, fontWeight: 800, color: TIER_COLORS[r.tier],
@@ -298,19 +293,17 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                   }}>
                     TIER {r.tier}
                   </span>
-                  <span style={{ fontSize: 9, color: '#4a5568' }}>Â·</span>
+                  <span style={{ fontSize: 9, color: '#4a5568' }}>&middot;</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: scoreColor(r.confidence) }}>
                     {r.confidence}% confidence
                   </span>
                 </div>
-                {/* Selection â€” large, clear */}
                 <div style={{ fontSize: 14, fontWeight: 800, color: '#e2e8f0', marginBottom: 5, lineHeight: 1.3 }}>
-                  âœ“ {r.selection}
+                  &rsaquo; {r.selection}
                 </div>
-                {/* Logic */}
                 {r.logic && (
                   <div style={{ fontSize: 11, color: '#6b7d96', lineHeight: 1.5 }}>
-                    {r.logic.length > 100 ? r.logic.slice(0, 100) + 'â€¦' : r.logic}
+                    {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
                   </div>
                 )}
               </div>
@@ -319,7 +312,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         </div>
       )}
 
-      {/* â”€â”€ Section tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* Section tabs */}
       <div style={{ display: 'flex', borderBottom: '1px solid #1e2535', flexShrink: 0 }}>
         {[['params', 'Parameters'], ['poisson', 'Poisson'], ['chaos', 'Chaos'], ['edges', 'Edges']].map(([k, l]) => (
           <button key={k} onClick={() => setSection(k)} style={{
@@ -327,21 +320,20 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             padding: '9px 4px', fontSize: 11, fontWeight: section === k ? 700 : 500,
             color: section === k ? '#00b859' : '#4a5568',
             borderBottom: section === k ? '2px solid #00b859' : '2px solid transparent',
-            transition: 'color 0.1s',
           }}>
             {l}
           </button>
         ))}
       </div>
 
-      {/* â”€â”€ Content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px' }}>
 
         {/* PARAMETERS */}
         {section === 'params' && (
           <div>
             <div style={{ fontSize: 10, color: '#4a5568', marginBottom: 8 }}>
-              Tap a parameter to see detail â†“
+              Tap a parameter to see detail
             </div>
             {PARAMS.map(({ key, label, weight, icon }) => {
               const p = P[key] || {};
@@ -360,13 +352,15 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                     borderRadius: isExpanded ? 6 : 0,
                     background: isExpanded ? '#0f1117' : 'transparent',
                     padding: isExpanded ? '8px 8px 10px' : '8px 0',
-                    transition: 'background 0.15s',
                     marginBottom: isExpanded ? 4 : 0,
                   }}
                 >
-                  {/* Row */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 13, width: 20, textAlign: 'center', flexShrink: 0 }}>{icon}</span>
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, color: '#4a5568',
+                      width: 28, flexShrink: 0, textAlign: 'center',
+                      background: '#0f1117', borderRadius: 3, padding: '2px 0',
+                    }}>{icon}</span>
                     <div style={{ width: 84, flexShrink: 0 }}>
                       <div style={{ fontSize: 11, fontWeight: 600, color: isExpanded ? '#e2e8f0' : '#8b9ab3', display: 'flex', alignItems: 'center' }}>
                         {label}
@@ -376,12 +370,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                     </div>
                     <ScoreBar score={p.score || 0} />
                     {hasDetail && (
-                      <span style={{ fontSize: 11, color: '#4a5568', flexShrink: 0, marginLeft: 4 }}>
-                        {isExpanded ? 'â–²' : 'â–¼'}
+                      <span style={{ fontSize: 10, color: '#4a5568', flexShrink: 0, marginLeft: 4 }}>
+                        {isExpanded ? '[^]' : '[v]'}
                       </span>
                     )}
                   </div>
-                  {/* Expanded detail */}
                   {isExpanded && (
                     <ParamDetail paramKey={key} p={p} match={match} />
                   )}
@@ -398,11 +391,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>EXPECTED GOALS</div>
                 <div style={{ fontSize: 26, fontWeight: 800, color: '#00b859' }}>{poisson.expectedTotalGoals}</div>
-                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda} Â· A:{poisson.awayLambda}</div>
+                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda} &middot; A:{poisson.awayLambda}</div>
               </div>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>LIKELY SCORE</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: '#3b82f6' }}>{poisson.likelyScore?.score || 'â€”'}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: '#3b82f6' }}>{poisson.likelyScore?.score || '--'}</div>
                 <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>{poisson.likelyScore?.probability}%</div>
               </div>
             </div>
@@ -434,11 +427,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         {section === 'chaos' && chaos && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {[
-              { label: 'MWV Index',    val: chaos.mwvLabel,                          active: chaos.mwvIndex > 0.5 },
-              { label: 'Early Goal',   val: chaos.earlyGoalActive ? 'ACTIVE' : 'NO', active: chaos.earlyGoalActive },
-              { label: 'Bivariate',    val: chaos.bivariateDependency ? 'YES' : 'NO', active: chaos.bivariateDependency },
-              { label: 'PSG Trap',     val: chaos.psgTrapWarning ? 'WARNING' : 'CLEAR', active: chaos.psgTrapWarning },
-              { label: 'High Line',    val: chaos.highLineRisk ? 'ACTIVE' : 'NO',    active: chaos.highLineRisk },
+              { label: 'MWV Index',  val: chaos.mwvLabel,                           active: chaos.mwvIndex > 0.5 },
+              { label: 'Early Goal', val: chaos.earlyGoalActive ? 'ACTIVE' : 'NO',  active: chaos.earlyGoalActive },
+              { label: 'Bivariate',  val: chaos.bivariateDependency ? 'YES' : 'NO', active: chaos.bivariateDependency },
+              { label: 'PSG Trap',   val: chaos.psgTrapWarning ? 'WARNING' : 'CLEAR', active: chaos.psgTrapWarning },
+              { label: 'High Line',  val: chaos.highLineRisk ? 'ACTIVE' : 'NO',     active: chaos.highLineRisk },
             ].map(({ label, val, active }) => (
               <div key={label} style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -468,7 +461,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                 borderRadius: 7, padding: '10px 14px', marginBottom: 8,
                 fontSize: 11, color: '#d97706', lineHeight: 1.6,
               }}>
-                ðŸ’° {e}
+                $ {e}
               </div>
             ))}
           </div>
@@ -478,5 +471,3 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     </div>
   );
 }
-
-

@@ -748,27 +748,17 @@ async function pollUpcomingMatches() {
   }
 
   try {
-    let processedMatches;
+    let processedMatches = [];
 
-    if (!API_KEY) {
-      // ── Gemini mode: data already in app format, just sanitize ──────────
-      console.log('🤖 Fetching upcoming matches via Gemini...');
-      const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
-      processedMatches = (raw || []).map(sanitizeMatch);
-    } else {
+    if (API_KEY) {
       // ── API-Football mode: parse raw fixture format ──────────────────────
       console.log('🔄 Polling upcoming matches...');
       const matches = await fetchUpcomingMatches();
       console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
       processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
-
-      // ── Fallback to Gemini if API-Football returned nothing ──────────────
-      if (processedMatches.length === 0) {
-        console.log('🤖 API-Football returned 0 upcoming — trying Gemini fallback...');
-        const raw = await withGeminiLock(() => fetchUpcomingMatchesViaGemini());
-        processedMatches = (raw || []).map(sanitizeMatch);
-      }
     }
+    // No Gemini fallback — it hallucinates wrong fixtures.
+    // If API-Football is unavailable, calibration data (above) is the source of truth.
 
     if (processedMatches.length > 0) {
       upcomingMatches = processedMatches;
