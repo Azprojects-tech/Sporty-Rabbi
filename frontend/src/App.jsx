@@ -21,6 +21,14 @@ export default function App() {
  const [showBets, setShowBets] = useState(false);
  const [betTab, setBetTab] = useState('slips'); // 'slips' | 'logger'
  const [bets, setBets] = useState([]);
+ const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+ const [sidebarOpen, setSidebarOpen] = useState(false);
+
+ useEffect(() => {
+   const check = () => setIsMobile(window.innerWidth < 768);
+   window.addEventListener('resize', check);
+   return () => window.removeEventListener('resize', check);
+ }, []);
 
  // â”€â”€ Merge helper: keep calibrated matches separate so they survive live updates â”€â”€
  function mergeInto(prev, incoming, source) {
@@ -197,6 +205,20 @@ export default function App() {
  flexShrink: 0, zIndex: 10,
  }}>
 
+ {/* Hamburger — mobile only */}
+ {isMobile && (
+   <button
+     onClick={() => setSidebarOpen(v => !v)}
+     style={{
+       background: 'none', border: '1px solid #1e2535', borderRadius: 6,
+       color: '#8b9ab3', fontSize: 18, lineHeight: 1,
+       padding: '6px 10px', cursor: 'pointer', flexShrink: 0,
+     }}
+   >
+     ☰
+   </button>
+ )}
+
  {/* Logo */}
  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, cursor: 'pointer' }}
  onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); }}>
@@ -291,7 +313,7 @@ export default function App() {
  {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• BODY â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
  <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
- {/* LEFT SIDEBAR */}
+ {/* LEFT SIDEBAR — always mounted, mobile turns it into a drawer overlay */}
  {!showBets && (
  <Sidebar
  filter={filter}
@@ -299,6 +321,9 @@ export default function App() {
  selectedLeague={selectedLeague}
  setSelectedLeague={setSelectedLeague}
  leagueCounts={leagueCounts}
+ open={sidebarOpen}
+ onClose={() => setSidebarOpen(false)}
+ isMobile={isMobile}
  />
  )}
 
