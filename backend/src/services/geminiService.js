@@ -372,9 +372,62 @@ export async function calibrateDay() {
   return null;
 }
 
+// ─── ENRICHMENT CACHE ─────────────────────────────────────────────────────────
+// Prevents re-burning Gemini quota on Railway restarts or frequent recalibrations.
+// Cache keyed by "home|away" fixture pairs. Expires after 12 hours.
+const enrichCache = new Map(); // key: "home|away" → { data, expiresAt }
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
+function getCached(home, away) {
+  const key = `${home}|${away}`.toLowerCase();
+  const entry = enrichCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { enrichCache.delete(key); return null; }
+  return entry.data;
+}
+
+function setCache(home, away, data) {
+  const key = `${home}|${away}`.toLowerCase();
+  enrichCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+// ─── ENRICHMENT PROMPT ────────────────────────────────────────────────────────
+function buildEnrichPrompt(batch, today) {
+  return `Today is ${today}. The following football fixtures are CONFIRMED for today. Your task is to look up each team's real current-season data using Google Search and fill in the V8 analytics schema accurately.
+
+For each fixture, search for:
+- Current league standings (position, points, goal difference)
+- Last 5-10 match results (W/D/L), goals scored and conceded
+- Average xG and xGA this season
+- Key squad absences (injuries/suspensions of important players)
+- Head-to-head record in recent seasons
+- Typical kick-off odds from major bookmakers
+
+DO NOT change the team names, league, leagueId, country, or kickoffUTC — these are authoritative.
+Set status "NS" for all. Return ONLY a valid JSON array.
+
+Confirmed fixtures:
+${JSON.stringify(batch, null, 2)}
+
+Each element MUST use EXACTLY this schema:
+{
+  "match": { "home": "<exact>", "away": "<exact>", "league": "<exact>", "leagueId": <exact>, "country": "<exact>", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "<exact>" },
+  "home": { "motivationScore": 7, "starPlayers": 3, "starPlayersMissing": 1, "recentForm": ["W","W","D","L","W"], "goalsScored": [2,1,2,1,3], "goalsConceded": [0,1,1,2,1], "xgAvg": 1.8, "xgaAvg": 1.1, "pace": 7, "leaguePosition": 3, "squadIntegrity": 90 },
+  "away": { "motivationScore": 6, "starPlayers": 2, "starPlayersMissing": 0, "recentForm": ["W","D","W","L","D"], "goalsScored": [1,2,1,0,2], "goalsConceded": [1,1,0,2,1], "xgAvg": 1.4, "xgaAvg": 1.3, "pace": 6, "leaguePosition": 7, "squadIntegrity": 88 },
+  "h2h": { "homeWins": 4, "awayWins": 3, "draws": 3, "avgGoals": 2.6, "bttsRate": 0.65 },
+  "odds": { "homeWin": 2.1, "draw": 3.4, "awayWin": 3.8, "over25": 1.9, "btts": 1.8 },
+  "context": { "neutralVenue": false, "earlyGoal": false, "redCard": false, "gameWeek": 35, "totalGameWeeks": 38, "homePoints": 55, "awayPoints": 42, "homeGoalDifferential": 20, "awayGoalDifferential": 5, "timezone": "Europe/London" }
+}`;
+}
+
 /**
- * Given a confirmed fixture list from API-Football, ask Gemini to add V8 analytics.
- * This avoids hallucinated team names — the fixture list is authoritative.
+ * Given a confirmed fixture list from ESPN/API-Football, use Gemini with Google Search
+ * grounding to fetch REAL current-season stats (positions, form, xG, H2H, injuries).
+ *
+ * - Processes in batches of 5 to avoid timeouts and stay within token limits
+ * - Caches results for 12 hours so Railway restarts don't re-burn quota
+ * - Each batch = 1 Gemini call. 88 fixtures = ~18 calls (vs 1500/day free tier)
+ *
  * @param {Array<{home,away,league,leagueId,country,kickoffUTC}>} fixtureList
  * @returns {Promise<Array|null>}
  */
@@ -383,51 +436,81 @@ export async function enrichFixturesWithV8(fixtureList) {
   if (!fixtureList || fixtureList.length === 0) return null;
 
   const today = new Date().toISOString().split('T')[0];
-  const prompt = `Today is ${today}. Below are today's CONFIRMED real football fixtures from the official API. DO NOT change the team names, league, leagueId, country, or kickoffUTC — they are authoritative.
+  const BATCH_SIZE = 5;
+  const results = [];
+  const uncached = [];
 
-For each fixture, add V8 analytics based on your knowledge of each team's current form, xG, squad depth, motivation, H2H record, and estimated odds. Set status to "NS" for all.
-
-Confirmed fixtures:
-${JSON.stringify(fixtureList, null, 2)}
-
-Return ONLY a valid JSON array — no markdown, no explanation. Each element MUST use EXACTLY this schema:
-{
-  "match": { "home": "<exact as provided>", "away": "<exact as provided>", "league": "<exact as provided>", "leagueId": <exact as provided>, "country": "<exact as provided>", "status": "NS", "minute": 0, "homeScore": 0, "awayScore": 0, "kickoffUTC": "<exact as provided>" },
-  "home": { "motivationScore": 7, "starPlayers": 3, "starPlayersMissing": 1, "recentForm": ["W","W","D","L","W"], "goalsScored": [2,1,2,1,3], "goalsConceded": [0,1,1,2,1], "xgAvg": 1.8, "xgaAvg": 1.1, "pace": 7, "leaguePosition": 3, "squadIntegrity": 90 },
-  "away": { "motivationScore": 6, "starPlayers": 2, "starPlayersMissing": 0, "recentForm": ["W","D","W","L","D"], "goalsScored": [1,2,1,0,2], "goalsConceded": [1,1,0,2,1], "xgAvg": 1.4, "xgaAvg": 1.3, "pace": 6, "leaguePosition": 7, "squadIntegrity": 88 },
-  "h2h": { "homeWins": 4, "awayWins": 3, "draws": 3, "avgGoals": 2.6, "bttsRate": 0.65 },
-  "odds": { "homeWin": 2.1, "draw": 3.4, "awayWin": 3.8, "over25": 1.9, "btts": 1.8 },
-  "context": { "neutralVenue": false, "earlyGoal": false, "redCard": false, "gameWeek": 35, "totalGameWeeks": 38, "homePoints": 55, "awayPoints": 42, "homeGoalDifferential": 20, "awayGoalDifferential": 5, "timezone": "Europe/London" }
-}`;
-
-  for (const model of GEMINI_SPORTS_MODELS) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-      const body = {
-        systemInstruction: { parts: [{ text: 'You are a football analytics AI. Return only valid JSON arrays with no markdown and no extra text.' }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 32000 },
-      };
-      const response = await axios.post(url, body, {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 120000,
-      });
-      const parts = response.data?.candidates?.[0]?.content?.parts || [];
-      const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
-      if (!text.trim()) { console.warn(`[Enrich] ${model} empty response`); continue; }
-      const start = text.indexOf('[');
-      const end = text.lastIndexOf(']');
-      if (start === -1 || end === -1 || end <= start) { console.warn(`[Enrich] ${model} no JSON array`); continue; }
-      const enriched = JSON.parse(text.slice(start, end + 1));
-      if (!Array.isArray(enriched) || enriched.length === 0) { console.warn(`[Enrich] ${model} empty array`); continue; }
-      console.log(`[Enrich] ${model}: enriched ${enriched.length} fixtures with V8 analytics`);
-      return enriched;
-    } catch (err) {
-      const msg = err.response?.data?.error?.message || err.message;
-      console.warn(`[Enrich] ${model} failed: ${msg.slice(0, 120)}`);
+  // Pull anything already in cache
+  for (const f of fixtureList) {
+    const cached = getCached(f.home, f.away);
+    if (cached) {
+      results.push(cached);
+    } else {
+      uncached.push(f);
     }
   }
-  return null;
+  if (uncached.length === 0) {
+    console.log(`[Enrich] All ${fixtureList.length} fixtures served from cache`);
+    return results;
+  }
+  console.log(`[Enrich] ${results.length} cached, ${uncached.length} need Gemini search enrichment (${Math.ceil(uncached.length / BATCH_SIZE)} batches)`);
+
+  // Process uncached fixtures in batches of 5
+  for (let i = 0; i < uncached.length; i += BATCH_SIZE) {
+    const batch = uncached.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(uncached.length / BATCH_SIZE);
+
+    let batchEnriched = null;
+
+    for (const model of GEMINI_SPORTS_MODELS) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const body = {
+          tools: [{ google_search: {} }],   // <-- Real-time search grounding
+          systemInstruction: {
+            parts: [{ text: 'You are a football analytics AI. Return only valid JSON arrays with no markdown and no extra text. Use Google Search to look up real current-season stats for each team.' }],
+          },
+          contents: [{ role: 'user', parts: [{ text: buildEnrichPrompt(batch, today) }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
+        };
+        const response = await axios.post(url, body, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 60000,
+        });
+        const parts = response.data?.candidates?.[0]?.content?.parts || [];
+        const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+        if (!text.trim()) { console.warn(`[Enrich] batch ${batchNum} ${model} empty`); continue; }
+        const start = text.indexOf('[');
+        const end   = text.lastIndexOf(']');
+        if (start === -1 || end === -1 || end <= start) { console.warn(`[Enrich] batch ${batchNum} ${model} no JSON array`); continue; }
+        const parsed = JSON.parse(text.slice(start, end + 1));
+        if (!Array.isArray(parsed) || parsed.length === 0) { console.warn(`[Enrich] batch ${batchNum} ${model} empty array`); continue; }
+        batchEnriched = parsed;
+        console.log(`[Enrich] batch ${batchNum}/${totalBatches} via ${model} (search): ${parsed.length} fixtures`);
+        break;
+      } catch (err) {
+        const msg = err.response?.data?.error?.message || err.message;
+        console.warn(`[Enrich] batch ${batchNum} ${model} failed: ${msg.slice(0, 120)}`);
+      }
+    }
+
+    if (batchEnriched) {
+      for (const enriched of batchEnriched) {
+        const home = enriched.match?.home || '';
+        const away = enriched.match?.away || '';
+        setCache(home, away, enriched);
+        results.push(enriched);
+      }
+    } else {
+      // All models failed for this batch — fall through to buildDefaultV8Fixture in caller
+      console.warn(`[Enrich] batch ${batchNum} all models failed — caller will use defaults for: ${batch.map(f => `${f.home} vs ${f.away}`).join(', ')}`);
+    }
+  }
+
+  if (results.length === 0) return null;
+  console.log(`[Enrich] Total enriched: ${results.length}/${fixtureList.length} (${results.length - (fixtureList.length - uncached.length)} newly fetched, ${fixtureList.length - uncached.length} from cache)`);
+  return results;
 }
 
 /**
