@@ -173,8 +173,9 @@ export default function App() {
  }
 
  // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
  const displayedMatches = allMatches.filter(m => {
- if (filter === 'live' && m.status !== 'LIVE') return false;
+ if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
  if (filter === 'high' && (m.confidence || 0) < 80) return false;
  if (selectedLeague != null && m.leagueId !== selectedLeague) return false;
  return true;
