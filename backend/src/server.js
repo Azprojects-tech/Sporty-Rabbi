@@ -14,10 +14,10 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
-import twilio from 'twilio';
 import { initFirebase, getDb } from './config/firebase.js';
 import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
 import { analyzeV6 } from './services/agent47Service.js';
+import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
 import {
   naturalLanguageToMatchData,
   fetchLiveMatchesViaGemini,
@@ -1218,6 +1218,13 @@ app.get('/api/health', (req, res) => {
       lastUpdatedAt: quotaState.lastUpdatedAt,
     },
   });
+});
+
+// ── WhatsApp test endpoint ─────────────────────────────────────────────────
+app.post('/api/test-whatsapp', async (req, res) => {
+  const msg = req.body?.message || `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
+  const result = await sendWhatsApp(msg);
+  res.json({ twilioEnabled, ...result });
 });
 
 app.get('/api/live', (req, res) => {
