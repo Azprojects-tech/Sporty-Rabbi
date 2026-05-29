@@ -65,9 +65,28 @@ function StatusCell({ status, minute, kickoffUTC }) {
   );
 }
 
+const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+
+function isWomens(league = '', home = '', away = '') {
+  const l = league.toLowerCase();
+  if (l.includes('women') || l.includes('femenin') || l.includes('feminine') ||
+      l.includes('ladies') || l.includes('damen') || l.includes('feminino') ||
+      l.includes('mujer') || l.includes('w league') || /\bw\b/.test(l)) return true;
+  if ((home || '').endsWith(' W') && (away || '').endsWith(' W')) return true;
+  return false;
+}
+
+function displayLeagueName(name = '', home = '', away = '') {
+  if (!isWomens(name, home, away)) return name;
+  const l = name.toLowerCase();
+  if (l.includes('women') || l.includes('femenin') || l.includes('ladies') ||
+      l.includes('feminine') || l.includes('w league') || l.includes('damen')) return name;
+  return `${name} (Women)`;
+}
+
 function MatchRow({ match, isSelected, onSelect }) {
   const [hScore, aScore] = (match.score || '0-0').split('-');
-  const isLive = match.status === 'LIVE' || match.status === '1H' || match.status === '2H';
+  const isLive = LIVE_STATUSES.has(match.status);
 
   return (
     <div
@@ -172,7 +191,7 @@ export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
           }}>
             <span style={{ fontSize: 14 }}>{LEAGUE_FLAGS[group.id] || '⚽'}</span>
             <span style={{ fontSize: 11, fontWeight: 700, color: '#8b9ab3', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-              {group.name}
+              {displayLeagueName(group.name, group.matches[0]?.home, group.matches[0]?.away)}
             </span>
             {group.country && (
               <span style={{ fontSize: 10, color: '#4a5568' }}>· {group.country}</span>
