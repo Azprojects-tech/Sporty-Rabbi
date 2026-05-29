@@ -606,28 +606,32 @@ async function fetchUpcomingMatches() {
 
   try {
     const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    
-    // Format dates as YYYY-MM-DD
-    const tomorrowDate = tomorrow.toISOString().split('T')[0];
-    
-    console.log(`📅 Fetching upcoming matches (NS) for ${tomorrowDate}...`);
-    
-    // API-Football prefers 'date' parameter over 'from/to' for fixture queries
-    const response = await axios.get(`${API_BASE}/fixtures`, {
-      params: {
-        status: 'NS', // Not Started
-        date: tomorrowDate,
-        timezone: 'UTC'
-      },
-      headers: { 'x-apisports-key': API_KEY },
-      timeout: 5000,
-    });
-    updateQuotaFromHeaders(response.headers);
+    const todayDate    = now.toISOString().split('T')[0];
+    const tomorrowDate = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    const fixtures = response.data.response || [];
-    console.log(`📊 API returned ${fixtures.length} upcoming fixtures`);
-    
+    console.log(`📅 Fetching upcoming matches (NS) for ${todayDate} + ${tomorrowDate}...`);
+
+    // Fetch today's remaining NS fixtures AND tomorrow's NS fixtures in parallel
+    const [todayRes, tomorrowRes] = await Promise.all([
+      axios.get(`${API_BASE}/fixtures`, {
+        params: { status: 'NS', date: todayDate, timezone: 'UTC' },
+        headers: { 'x-apisports-key': API_KEY },
+        timeout: 5000,
+      }),
+      axios.get(`${API_BASE}/fixtures`, {
+        params: { status: 'NS', date: tomorrowDate, timezone: 'UTC' },
+        headers: { 'x-apisports-key': API_KEY },
+        timeout: 5000,
+      }),
+    ]);
+    updateQuotaFromHeaders(todayRes.headers);
+    updateQuotaFromHeaders(tomorrowRes.headers);
+
+    const todayFixtures    = todayRes.data.response    || [];
+    const tomorrowFixtures = tomorrowRes.data.response || [];
+    const fixtures = [...todayFixtures, ...tomorrowFixtures];
+    console.log(`📊 API returned ${todayFixtures.length} today + ${tomorrowFixtures.length} tomorrow = ${fixtures.length} upcoming fixtures`);
+
     return fixtures;
   } catch (error) {
     console.error('❌ Upcoming matches error:', error.message);
