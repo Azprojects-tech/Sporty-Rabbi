@@ -16,7 +16,7 @@ const FILTERS = [
   { id: 'high', label: '80%+ Picks',   icon: '🔥' },
 ];
 
-export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, selectedCountry, setSelectedCountry, leagueCounts, open, onClose, isMobile }) {
+export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, selectedCountry, setSelectedCountry, selectedKeyword, setSelectedKeyword, leagueCounts, open, onClose, isMobile }) {
   const [compSearch, setCompSearch] = useState('');
   const searchTerm = compSearch.trim().toLowerCase();
 
@@ -27,7 +27,7 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
       )
     : leagueCounts;
 
-  // Countries whose name matches the search term (for "All [Country]" quick-filter buttons)
+  // Countries whose name matches the search term
   const matchedCountries = searchTerm
     ? [...new Set(
         filteredLeagues
@@ -35,6 +35,12 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
           .map(l => l.country)
       )].filter(Boolean)
     : [];
+
+  // League-name keyword button: show when 2+ leagues match by name (CAF, UEFA, World Cup, Copa…)
+  const leagueNameMatches = searchTerm
+    ? filteredLeagues.filter(l => l.name.toLowerCase().includes(searchTerm))
+    : [];
+  const showKeywordButton = leagueNameMatches.length > 1;
   // On desktop: always visible inline. On mobile: slide-in overlay.
   const sidebarStyle = isMobile ? {
     position: 'fixed', top: 56, left: 0, bottom: 0, zIndex: 200,
@@ -136,18 +142,39 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
             />
           </div>
           {!compSearch.trim() && (
-            <button onClick={() => pick(() => { setSelectedLeague(null); setSelectedCountry(null); })} style={leagueBtn(selectedLeague === null && !selectedCountry)}>
+            <button onClick={() => pick(() => { setSelectedLeague(null); setSelectedCountry(null); setSelectedKeyword(null); })} style={leagueBtn(selectedLeague === null && !selectedCountry && !selectedKeyword)}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 14 }}>🌐</span>
                 <span>All Leagues</span>
               </div>
             </button>
           )}
+          {/* Keyword quick-filter: "All UEFA matches", "All CAF matches", "All World Cup matches" etc. */}
+          {showKeywordButton && (
+            <button
+              onClick={() => pick(() => { setSelectedKeyword(compSearch.trim()); setSelectedCountry(null); setSelectedLeague(null); setCompSearch(''); })}
+              style={{
+                ...leagueBtn(selectedKeyword?.toLowerCase() === searchTerm),
+                background: '#1a0e00', borderLeft: '2px solid #f59e0b',
+                color: '#f59e0b',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{ fontSize: 13 }}>📌</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  All "{compSearch.trim()}" matches
+                </span>
+              </div>
+              <span style={{ fontSize: 10, background: '#1e2535', borderRadius: 10, padding: '1px 6px', color: '#4a5568', flexShrink: 0 }}>
+                {leagueNameMatches.reduce((s, l) => s + l.count, 0)}
+              </span>
+            </button>
+          )}
           {/* Country quick-filter buttons when search matches a country */}
           {matchedCountries.map(country => (
             <button
               key={country}
-              onClick={() => pick(() => { setSelectedCountry(country); setSelectedLeague(null); setCompSearch(''); })}
+              onClick={() => pick(() => { setSelectedCountry(country); setSelectedLeague(null); setSelectedKeyword(null); setCompSearch(''); })}
               style={{
                 ...leagueBtn(selectedCountry === country),
                 background: selectedCountry === country ? '#001f2e' : '#0d1420',
@@ -166,7 +193,7 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
               </span>
             </button>
           ))}
-          {/* Active country filter pill (when no search text) */}
+          {/* Active country filter pill */}
           {selectedCountry && !compSearch.trim() && (
             <div style={{ padding: '4px 8px' }}>
               <div style={{
@@ -174,10 +201,19 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
                 background: '#001f2e', border: '1px solid #1e4060', borderRadius: 6, padding: '5px 10px',
               }}>
                 <span style={{ fontSize: 12, color: '#60a5fa' }}>🌍 {selectedCountry}</span>
-                <button
-                  onClick={() => { setSelectedCountry(null); }}
-                  style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
-                >×</button>
+                <button onClick={() => { setSelectedCountry(null); }} style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+              </div>
+            </div>
+          )}
+          {/* Active keyword filter pill */}
+          {selectedKeyword && !compSearch.trim() && (
+            <div style={{ padding: '4px 8px' }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: '#1a0e00', border: '1px solid #78350f', borderRadius: 6, padding: '5px 10px',
+              }}>
+                <span style={{ fontSize: 12, color: '#f59e0b' }}>📌 {selectedKeyword}</span>
+                <button onClick={() => { setSelectedKeyword(null); }} style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
               </div>
             </div>
           )}
@@ -185,7 +221,7 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
             <div style={{ padding: '8px 14px', fontSize: 12, color: '#4a5568' }}>No competition found</div>
           )}
           {filteredLeagues.map(({ id, name, count }) => (
-            <button key={`${id}_${name}`} onClick={() => pick(() => { setSelectedLeague(id); setSelectedCountry(null); setCompSearch(''); })} style={leagueBtn(selectedLeague === id)}>
+            <button key={`${id}_${name}`} onClick={() => pick(() => { setSelectedLeague(id); setSelectedCountry(null); setSelectedKeyword(null); setCompSearch(''); })} style={leagueBtn(selectedLeague === id)}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span style={{ fontSize: 14, flexShrink: 0 }}>{LEAGUE_FLAGS[id] || '⚽'}</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>

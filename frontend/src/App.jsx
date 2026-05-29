@@ -26,6 +26,7 @@ export default function App() {
  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
  const [sidebarOpen, setSidebarOpen] = useState(false);
  const [selectedCountry, setSelectedCountry] = useState(null);
+ const [selectedKeyword, setSelectedKeyword] = useState(null);
 
  useEffect(() => {
    const check = () => setIsMobile(window.innerWidth < 768);
@@ -185,8 +186,9 @@ export default function App() {
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
  if (filter === 'high' && (m.confidence || 0) < 80) return false;
- if (selectedCountry && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
- if (selectedLeague != null && !selectedCountry && m.leagueId !== selectedLeague) return false;
+ if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
+ if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
+ if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
  return true;
  });
 
@@ -346,6 +348,8 @@ export default function App() {
  setSelectedLeague={setSelectedLeague}
  selectedCountry={selectedCountry}
  setSelectedCountry={setSelectedCountry}
+ selectedKeyword={selectedKeyword}
+ setSelectedKeyword={setSelectedKeyword}
  leagueCounts={leagueCounts}
  open={sidebarOpen}
  onClose={() => setSidebarOpen(false)}
