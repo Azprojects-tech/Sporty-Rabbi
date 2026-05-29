@@ -5,6 +5,7 @@ import MatchFeed from './components/MatchFeed';
 import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
+import AlertHistory from './components/AlertHistory';
 
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
@@ -19,6 +20,7 @@ export default function App() {
  const [searchQuery, setSearchQuery] = useState('');
  const [searching, setSearching] = useState(false);
  const [showBets, setShowBets] = useState(false);
+ const [showAlerts, setShowAlerts] = useState(false);
  const [betTab, setBetTab] = useState('slips'); // 'slips' | 'logger'
  const [bets, setBets] = useState([]);
  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
@@ -284,7 +286,7 @@ export default function App() {
  {/* Right side */}
  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
  <button
- onClick={() => { setShowBets(v => !v); setSelectedMatch(null); }}
+ onClick={() => { setShowBets(v => !v); setShowAlerts(false); setSelectedMatch(null); }}
  style={{
  background: showBets ? '#2d1b69' : 'transparent',
  border: '1px solid ' + (showBets ? '#7c3aed' : '#1e2535'),
@@ -293,6 +295,18 @@ export default function App() {
  }}
  >
  Bets
+ </button>
+
+ <button
+ onClick={() => { setShowAlerts(v => !v); setShowBets(false); setSelectedMatch(null); }}
+ style={{
+ background: showAlerts ? '#1a1200' : 'transparent',
+ border: '1px solid ' + (showAlerts ? '#f59e0b' : '#1e2535'),
+ borderRadius: 7, padding: '7px 13px', cursor: 'pointer',
+ color: showAlerts ? '#f59e0b' : '#8b9ab3', fontSize: 12, fontWeight: 700,
+ }}
+ >
+ Alerts
  </button>
 
  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -314,7 +328,7 @@ export default function App() {
  <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
  {/* LEFT SIDEBAR — always mounted, mobile turns it into a drawer overlay */}
- {!showBets && (
+ {!showBets && !showAlerts && (
  <Sidebar
  filter={filter}
  setFilter={setFilter}
@@ -327,8 +341,12 @@ export default function App() {
  />
  )}
 
- {/* CENTER FEED */}
- {showBets ? (
+ {/* ALERTS PANEL */}
+ {showAlerts ? (
+ <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+ <AlertHistory />
+ </div>
+ ) : showBets ? (
  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
  {/* Bet panel tab bar */}
  <div style={{
@@ -385,7 +403,7 @@ export default function App() {
  )}
 
  {/* RIGHT DETAIL PANEL */}
- {selectedMatch && !showBets && (
+ {selectedMatch && !showBets && !showAlerts && (
  <DetailPanel
  match={selectedMatch}
  analysis={selectedAnalysis}

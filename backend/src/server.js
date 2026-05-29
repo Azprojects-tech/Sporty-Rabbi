@@ -15,6 +15,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import twilio from 'twilio';
+import { initFirebase, getDb } from './config/firebase.js';
 import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
 import { analyzeV6 } from './services/agent47Service.js';
 import {
@@ -75,6 +76,14 @@ let upcomingMatches = [];
 let alerts = [];
 let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
+
+// ─── MOCK MODE (safe local testing) ─────────────────────────────────────────
+// When MOCK_MODE=true, all API-Football calls are skipped.
+// Data comes from Gemini / ESPN / TheSportsDB only — quota-safe for dev.
+const MOCK_MODE = process.env.MOCK_MODE === 'true';
+
+// ─── FIREBASE INIT ───────────────────────────────────────────────────────────
+initFirebase();
 
 // ─── WEBSOCKET SERVER ──────────────────────────────────────────────────────
 
@@ -284,13 +293,19 @@ console.log(`
   🐰 SportyRabbi Backend Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   📌 API Key:    ${API_KEY ? '✅ API-Football set (Gemini fallback ready)' : '🤖 Gemini-only mode (AI fixture data)'}
+  🧪 Mock Mode:  ${MOCK_MODE ? '✅ ON — API-Football calls skipped (safe testing)' : '❌ OFF — live API calls enabled'}
   🌐 API Base:   ${API_BASE}
-  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s + Gemini fallback` : 'Gemini every 5 min (preserves quota)'}
+  ⏱️  Poll Mode:  ${MOCK_MODE ? 'Mock (Gemini/ESPN only)' : API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s + Gemini fallback` : 'Gemini every 5 min (preserves quota)'}
   🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 
 async function fetchLiveMatches() {
+  if (MOCK_MODE) {
+    console.log('🧪 MOCK_MODE: skipping API-Football live call');
+    return [];
+  }
+
   if (!API_KEY) {
     console.warn('⚠️  API_FOOTBALL_KEY not set - skipping live data. Set it in .env');
     return [];
@@ -361,7 +376,7 @@ async function fetchLiveMatches() {
  * Returns raw API-Football fixture objects (not yet analyzed).
  */
 async function fetchTodayFixturesFromApi() {
-  if (!API_KEY || shouldSkipApiCalls()) return [];
+  if (MOCK_MODE || !API_KEY || shouldSkipApiCalls()) return [];
   try {
     const today = new Date().toISOString().split('T')[0];
     console.log(`[Calibrate] Fetching today's schedule from API-Football: ${today}`);
@@ -579,7 +594,7 @@ async function fetchTodayFixturesFromSportsDB() {
 }
 
 async function fetchUpcomingMatches() {
-  if (!API_KEY) {
+  if (MOCK_MODE || !API_KEY) {
     return [];
   }
 
@@ -932,6 +947,42 @@ cron.schedule('0 0,6,12,18 * * *', () => {
   runCalibration().catch(err => console.error('[AutoCal] Scheduled failed:', err.message));
 });
 
+// ─── ALERT PERSISTENCE ────────────────────────────────────────────────────
+
+async function saveAlert(alertData) {
+  // Always keep in memory (last 100)
+  alerts.unshift(alertData);
+  if (alerts.length > 100) alerts.pop();
+
+  // Persist to Firestore if available
+  const db = getDb();
+  if (db) {
+    try {
+      await db.collection('alerts').add(alertData);
+    } catch (err) {
+      console.error('⚠️  Firestore alert save failed:', err.message);
+    }
+  }
+
+  // Broadcast to portal
+  broadcast({ type: 'NEW_ALERT', payload: alertData });
+
+  // Send WhatsApp alert for high-confidence opportunities
+  const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
+  if ((alertData.confidence || 0) >= minConf) {
+    const confStr = alertData.confidence ? `${alertData.confidence}%` : '–';
+    const msg = [
+      `🐰 SportyRabbi Alert`,
+      `⚽ ${alertData.home} vs ${alertData.away}`,
+      `🏆 ${alertData.league || 'Match'}`,
+      `📊 Confidence: ${confStr}`,
+      `💡 ${alertData.message || alertData.type}`,
+      `🕐 ${new Date(alertData.sentAt).toLocaleTimeString('en-NG', { timeZone: 'Africa/Lagos' })}`,
+    ].join('\n');
+    sendWhatsAppAlert(msg).catch(() => {});
+  }
+}
+
 // ─── TWILIO WHATSAPP ALERTS ────────────────────────────────────────────────
 
 async function sendWhatsAppAlert(message) {
@@ -1226,11 +1277,39 @@ app.get('/api/matchTypes', (req, res) => {
   res.json(result);
 });
 
-app.get('/api/alerts', (req, res) => {
-  res.json({ count: alerts.length, alerts: alerts.slice(-20) });
+app.get('/api/alerts', async (req, res) => {
+  const db = getDb();
+  if (db) {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 50, 200);
+      const snapshot = await db.collection('alerts')
+        .orderBy('sentAt', 'desc')
+        .limit(limit)
+        .get();
+      const firestoreAlerts = snapshot.docs.map(d => ({ firestoreId: d.id, ...d.data() }));
+      return res.json({ count: firestoreAlerts.length, alerts: firestoreAlerts });
+    } catch (err) {
+      console.error('Firestore alerts read error:', err.message);
+      // Fall through to in-memory
+    }
+  }
+  res.json({ count: alerts.length, alerts: alerts.slice(0, 50) });
 });
 
-app.get('/api/bets', (req, res) => {
+app.get('/api/bets', async (req, res) => {
+  const db = getDb();
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets')
+        .orderBy('createdAt', 'desc')
+        .limit(200)
+        .get();
+      const firestoreBets = snapshot.docs.map(d => ({ firestoreId: d.id, ...d.data() }));
+      return res.json({ count: firestoreBets.length, bets: firestoreBets });
+    } catch (err) {
+      console.error('Firestore bets read error:', err.message);
+    }
+  }
   res.json({ count: bets.length, bets });
 });
 
@@ -1241,18 +1320,51 @@ app.get('/api/bets/slips', (req, res) => {
   res.json(slips);
 });
 
-app.post('/api/bets', (req, res) => {
+app.post('/api/bets', async (req, res) => {
   const bet = {
     id: Date.now(),
     ...req.body,
     createdAt: new Date().toISOString(),
   };
-  bets.push(bet);
+
+  // Persist to Firestore if available
+  const db = getDb();
+  if (db) {
+    try {
+      const docRef = await db.collection('bets').add(bet);
+      bet.firestoreId = docRef.id;
+    } catch (err) {
+      console.error('⚠️  Firestore bet save failed:', err.message);
+    }
+  }
+
+  // Keep in memory as fallback
+  bets.unshift(bet);
+  if (bets.length > 500) bets.pop();
+
   broadcast({ type: 'BET_LOGGED', payload: bet });
   res.json({ success: true, bet });
 });
 
-app.patch('/api/bets/:id', (req, res) => {
+app.patch('/api/bets/:id', async (req, res) => {
+  const db = getDb();
+
+  // Try Firestore first (using firestoreId passed from frontend, or id as string)
+  if (db && req.body.firestoreId) {
+    try {
+      const ref = db.collection('bets').doc(req.body.firestoreId);
+      const updates = { ...req.body, updatedAt: new Date().toISOString() };
+      delete updates.firestoreId;
+      await ref.update(updates);
+      const updated = { ...(await ref.get()).data(), firestoreId: req.body.firestoreId };
+      broadcast({ type: 'BET_UPDATED', payload: updated });
+      return res.json({ success: true, bet: updated });
+    } catch (err) {
+      console.error('⚠️  Firestore bet update failed:', err.message);
+    }
+  }
+
+  // Fallback to in-memory
   const idx = bets.findIndex((b) => b.id == req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Bet not found' });
 
@@ -1261,19 +1373,32 @@ app.patch('/api/bets/:id', (req, res) => {
   res.json({ success: true, bet: bets[idx] });
 });
 
-app.get('/api/stats', (req, res) => {
-  const wins = bets.filter((b) => b.result === 'won').length;
-  const losses = bets.filter((b) => b.result === 'lost').length;
-  const winRate = bets.length > 0 ? ((wins / bets.length) * 100).toFixed(1) : 0;
+app.get('/api/stats', async (req, res) => {
+  const db = getDb();
+  let allBets = bets;
+
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets').get();
+      allBets = snapshot.docs.map(d => d.data());
+    } catch (err) {
+      console.error('Firestore stats read error:', err.message);
+    }
+  }
+
+  const wins = allBets.filter((b) => b.result === 'won').length;
+  const losses = allBets.filter((b) => b.result === 'lost').length;
+  const winRate = allBets.length > 0 ? ((wins / allBets.length) * 100).toFixed(1) : 0;
 
   res.json({
-    totalBets: bets.length,
+    totalBets: allBets.length,
     wins,
     losses,
     winRate: `${winRate}%`,
     liveBetsAvailable: liveMatches.length,
   });
 });
+
 
 // ─── ANALYTICS ENDPOINTS ────────────────────────────────────────────────────
 
@@ -1323,7 +1448,7 @@ app.get('/api/fixture-preview/:fixtureId/:homeTeamId/:awayTeamId', async (req, r
 
 // ─── LIVE ANALYTICS ENDPOINTS ───────────────────────────────────────────────
 
-app.get('/api/live-analysis/:matchId', (req, res) => {
+app.get('/api/live-analysis/:matchId', async (req, res) => {
   try {
     const { matchId } = req.params;
     // Handle both string and numeric IDs
@@ -1335,7 +1460,26 @@ app.get('/api/live-analysis/:matchId', (req, res) => {
 
     const nextGoalProb = calculateNextGoalProbability(match);
     const momentum = calculateMomentum(match);
-    const alerts = generateBettingAlert(match, nextGoalProb, momentum);
+    const matchAlerts = generateBettingAlert(match, nextGoalProb, momentum);
+
+    // Persist high-confidence alerts
+    const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
+    if (matchAlerts && matchAlerts.length > 0) {
+      for (const alert of matchAlerts) {
+        if ((alert.confidence || match.confidence || 0) >= minConf) {
+          await saveAlert({
+            matchId: match.id,
+            home: match.home,
+            away: match.away,
+            league: match.league,
+            type: alert.type || 'in-play',
+            message: alert.message || alert,
+            confidence: alert.confidence || match.confidence,
+            sentAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
 
     res.json({
       matchId,
@@ -1344,7 +1488,7 @@ app.get('/api/live-analysis/:matchId', (req, res) => {
       nextGoal: nextGoalProb.nextGoal || null,
       goalPace: nextGoalProb.goalPace || null,
       momentum,
-      alerts,
+      alerts: matchAlerts,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -1877,7 +2021,7 @@ process.on('uncaughtException', (error) => {
   // Don't exit - keep server alive
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log('\n╔════════════════════════════════════════╗');
   console.log('║         🐰 SportyRabbi Backend         ║');
   console.log('╠════════════════════════════════════════╣');
@@ -1885,4 +2029,17 @@ server.listen(PORT, () => {
   console.log(`║  WebSocket    → ws://localhost:${PORT}         ║`);
   console.log(`║  Polling      → every ${process.env.LIVE_POLL_INTERVAL || 30}s          ║`);
   console.log('╚════════════════════════════════════════╝\n');
+
+  // Pre-load bets from Firestore into memory cache on startup
+  const db = getDb();
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets').orderBy('createdAt', 'desc').limit(200).get();
+      bets = snapshot.docs.map(d => ({ firestoreId: d.id, ...d.data() }));
+      console.log(`🔥 Loaded ${bets.length} bets from Firestore`);
+    } catch (err) {
+      console.warn('⚠️  Could not pre-load bets from Firestore:', err.message);
+    }
+  }
 });
+

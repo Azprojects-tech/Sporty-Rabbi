@@ -9,6 +9,15 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+.env.production
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Firebase service account (never commit)
+firebase-service-account.json
+**/firebase-service-account.json
 
 # Build outputs
 dist/

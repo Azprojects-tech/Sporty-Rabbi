@@ -10,12 +10,13 @@
     "build": "echo 'Backend ready'"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "ws": "^8.16.0",
-    "node-cron": "^3.0.3",
     "axios": "^1.6.7",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^13.10.0",
+    "node-cron": "^3.0.3",
     "twilio": "^4.22.0",
-    "cors": "^2.8.5"
+    "ws": "^8.16.0"
   }
 }
