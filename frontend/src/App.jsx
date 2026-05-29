@@ -25,6 +25,7 @@ export default function App() {
  const [bets, setBets] = useState([]);
  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
  const [sidebarOpen, setSidebarOpen] = useState(false);
+ const [selectedCountry, setSelectedCountry] = useState(null);
 
  useEffect(() => {
    const check = () => setIsMobile(window.innerWidth < 768);
@@ -58,7 +59,8 @@ export default function App() {
 
  on('UPCOMING_MATCHES', (p) => {
  setAllMatches(prev => {
- const liveOnly = prev.filter(m => m.status === 'LIVE' || m._calibrated);
+ const IN_PLAY = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+ const liveOnly = prev.filter(m => IN_PLAY.has(m.status) || m._calibrated);
  const liveIds = new Set(liveOnly.map(m => m.id));
  return [...liveOnly, ...(p || []).filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' }))];
  });
@@ -98,15 +100,21 @@ export default function App() {
 
  fetchInitial();
 
- // Refresh live matches every 30s
+ // Refresh live matches every 30s — preserve object identity to avoid flicker
  const t = setInterval(() => {
  apiService.getLiveMatches().then(r => {
  const live = r?.data?.matches || [];
  if (live.length > 0) {
  setAllMatches(prev => {
+ const prevById = new Map(prev.map(m => [m.id, m]));
+ const merged = live.map(incoming => {
+ const ex = prevById.get(incoming.id);
+ if (ex && ex.score === incoming.score && ex.status === incoming.status && ex.matchMinutes === incoming.matchMinutes) return ex;
+ return { ...incoming, _source: 'live' };
+ });
  const liveIds = new Set(live.map(m => m.id));
  const rest = prev.filter(m => !liveIds.has(m.id));
- return [...live, ...rest];
+ return [...merged, ...rest];
  });
  }
  }).catch(() => {});
@@ -177,14 +185,15 @@ export default function App() {
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
  if (filter === 'high' && (m.confidence || 0) < 80) return false;
- if (selectedLeague != null && m.leagueId !== selectedLeague) return false;
+ if (selectedCountry && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
+ if (selectedLeague != null && !selectedCountry && m.leagueId !== selectedLeague) return false;
  return true;
  });
 
  const leagueCounts = (() => {
  const counts = {};
  for (const m of allMatches) {
- if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0 };
+ if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
  counts[m.leagueId].count++;
  }
  return Object.values(counts).sort((a, b) => b.count - a.count);
@@ -335,6 +344,8 @@ export default function App() {
  setFilter={setFilter}
  selectedLeague={selectedLeague}
  setSelectedLeague={setSelectedLeague}
+ selectedCountry={selectedCountry}
+ setSelectedCountry={setSelectedCountry}
  leagueCounts={leagueCounts}
  open={sidebarOpen}
  onClose={() => setSidebarOpen(false)}

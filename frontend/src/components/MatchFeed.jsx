@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 
 const LEAGUE_FLAGS = {
   39: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 140: '🇪🇸', 78: '🇩🇪', 135: '🇮🇹', 61: '🇫🇷',
@@ -152,6 +152,10 @@ function MatchRow({ match, isSelected, onSelect }) {
   );
 }
 
+const MatchRowMemo = memo(MatchRow, (prev, next) =>
+  prev.match === next.match && prev.isSelected === next.isSelected
+);
+
 export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
   if (!matches || matches.length === 0) {
     return (
@@ -203,7 +207,7 @@ export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
 
           {/* Match rows */}
           {group.matches.map(m => (
-            <MatchRow
+            <MatchRowMemo
               key={m.id}
               match={m}
               isSelected={selectedMatch?.id === m.id}

@@ -16,11 +16,25 @@ const FILTERS = [
   { id: 'high', label: '80%+ Picks',   icon: '🔥' },
 ];
 
-export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, leagueCounts, open, onClose, isMobile }) {
+export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, selectedCountry, setSelectedCountry, leagueCounts, open, onClose, isMobile }) {
   const [compSearch, setCompSearch] = useState('');
-  const filteredLeagues = compSearch.trim()
-    ? leagueCounts.filter(l => l.name.toLowerCase().includes(compSearch.toLowerCase().trim()))
+  const searchTerm = compSearch.trim().toLowerCase();
+
+  const filteredLeagues = searchTerm
+    ? leagueCounts.filter(l =>
+        l.name.toLowerCase().includes(searchTerm) ||
+        (l.country || '').toLowerCase().includes(searchTerm)
+      )
     : leagueCounts;
+
+  // Countries whose name matches the search term (for "All [Country]" quick-filter buttons)
+  const matchedCountries = searchTerm
+    ? [...new Set(
+        filteredLeagues
+          .filter(l => (l.country || '').toLowerCase().includes(searchTerm))
+          .map(l => l.country)
+      )].filter(Boolean)
+    : [];
   // On desktop: always visible inline. On mobile: slide-in overlay.
   const sidebarStyle = isMobile ? {
     position: 'fixed', top: 56, left: 0, bottom: 0, zIndex: 200,
@@ -122,18 +136,56 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
             />
           </div>
           {!compSearch.trim() && (
-            <button onClick={() => pick(() => setSelectedLeague(null))} style={leagueBtn(selectedLeague === null)}>
+            <button onClick={() => pick(() => { setSelectedLeague(null); setSelectedCountry(null); })} style={leagueBtn(selectedLeague === null && !selectedCountry)}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 14 }}>🌐</span>
                 <span>All Leagues</span>
               </div>
             </button>
           )}
+          {/* Country quick-filter buttons when search matches a country */}
+          {matchedCountries.map(country => (
+            <button
+              key={country}
+              onClick={() => pick(() => { setSelectedCountry(country); setSelectedLeague(null); setCompSearch(''); })}
+              style={{
+                ...leagueBtn(selectedCountry === country),
+                background: selectedCountry === country ? '#001f2e' : '#0d1420',
+                borderLeft: selectedCountry === country ? '2px solid #3b82f6' : '2px solid transparent',
+                color: selectedCountry === country ? '#60a5fa' : '#8b9ab3',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{ fontSize: 13 }}>🌍</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  All {country} matches
+                </span>
+              </div>
+              <span style={{ fontSize: 10, background: '#1e2535', borderRadius: 10, padding: '1px 6px', color: '#4a5568', flexShrink: 0 }}>
+                {leagueCounts.filter(l => l.country === country).reduce((s, l) => s + l.count, 0)}
+              </span>
+            </button>
+          ))}
+          {/* Active country filter pill (when no search text) */}
+          {selectedCountry && !compSearch.trim() && (
+            <div style={{ padding: '4px 8px' }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: '#001f2e', border: '1px solid #1e4060', borderRadius: 6, padding: '5px 10px',
+              }}>
+                <span style={{ fontSize: 12, color: '#60a5fa' }}>🌍 {selectedCountry}</span>
+                <button
+                  onClick={() => { setSelectedCountry(null); }}
+                  style={{ background: 'none', border: 'none', color: '#4a5568', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
+                >×</button>
+              </div>
+            </div>
+          )}
           {filteredLeagues.length === 0 && compSearch.trim() && (
             <div style={{ padding: '8px 14px', fontSize: 12, color: '#4a5568' }}>No competition found</div>
           )}
           {filteredLeagues.map(({ id, name, count }) => (
-            <button key={`${id}_${name}`} onClick={() => pick(() => { setSelectedLeague(id); setCompSearch(''); })} style={leagueBtn(selectedLeague === id)}>
+            <button key={`${id}_${name}`} onClick={() => pick(() => { setSelectedLeague(id); setSelectedCountry(null); setCompSearch(''); })} style={leagueBtn(selectedLeague === id)}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span style={{ fontSize: 14, flexShrink: 0 }}>{LEAGUE_FLAGS[id] || '⚽'}</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
