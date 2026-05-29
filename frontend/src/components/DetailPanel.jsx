@@ -160,21 +160,29 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     setLoading(true);
     setError(null);
     try {
+      // Pick league-appropriate xG defaults for NS matches (live stats are 0 until kickoff)
+      const _lid = match.leagueId || 0;
+      const _isUEFA  = [2, 3, 848].includes(_lid);
+      const _isTop5  = [39, 140, 78, 61, 135].includes(_lid);
+      const _defHXg  = _isUEFA ? 1.70 : _isTop5 ? 1.55 : 1.25;
+      const _defAXg  = _isUEFA ? 1.45 : _isTop5 ? 1.15 : 1.05;
+      const _defShH  = _isUEFA ? 15   : _isTop5 ? 14   : 11;
+      const _defShA  = _isUEFA ? 13   : _isTop5 ? 10   : 9;
       const matchData = {
         home:             match.home,
         away:             match.away,
         league:           match.league || 'Unknown',
-        leagueId:         match.leagueId || 0,
+        leagueId:         _lid,
         status:           match.status   || 'NS',
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
         homePossession:   match.possession?.home || 50,
-        homeXgAvg:        match.xg?.home  || 1.3,
-        awayXgAvg:        match.xg?.away  || 1.1,
-        homeXgaAvg:       match.xg?.away  || 1.2,
-        awayXgaAvg:       match.xg?.home  || 1.2,
-        homeShotsPerGame: match.shots?.home || 12,
-        awayShotsPerGame: match.shots?.away || 10,
+        homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : _defHXg,
+        awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : _defAXg,
+        homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away  : _defAXg,
+        awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home  : _defHXg,
+        homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : _defShH,
+        awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : _defShA,
       };
       const res = await apiService.client.post('/analyze', matchData);
       setAnalysis(res.data);

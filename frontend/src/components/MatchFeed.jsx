@@ -141,10 +141,12 @@ function MatchRow({ match, isSelected, onSelect }) {
         {match.away}
       </div>
 
-      {/* Confidence badge */}
-      <div style={{ marginLeft: 12 }}>
-        <ConfBadge score={match.confidence || 0} />
-      </div>
+      {/* Confidence badge — only shown when real V8 analysis ran (hides the 50% NS placeholder) */}
+      {(isLive || match.status === 'FT' || (match.confidence || 0) >= 55) && (
+        <div style={{ marginLeft: 12 }}>
+          <ConfBadge score={match.confidence || 0} />
+        </div>
+      )}
 
       {/* Arrow */}
       <span style={{ marginLeft: 10, color: '#1e2535', fontSize: 11, flexShrink: 0 }}>▶</span>

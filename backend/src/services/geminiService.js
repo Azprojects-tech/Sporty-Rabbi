@@ -12,10 +12,37 @@ import axios from 'axios';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-const AVAILABLE = Boolean(GEMINI_API_KEY);
+// ─── GROQ (free alternative — 14,400 req/day, llama-3.3-70b-versatile) ───────
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = 'llama-3.3-70b-versatile';
+
+const AVAILABLE = Boolean(GEMINI_API_KEY || GROQ_API_KEY);
 
 if (!AVAILABLE) {
-  console.warn('[Gemini] GEMINI_API_KEY not set — natural language analysis disabled.');
+  console.warn('[LLM] Neither GEMINI_API_KEY nor GROQ_API_KEY set — natural language analysis disabled.');
+} else {
+  const providers = [GROQ_API_KEY && 'Groq', GEMINI_API_KEY && 'Gemini'].filter(Boolean);
+  console.log(`[LLM] Active providers: ${providers.join(', ')}`);
+}
+
+// ─── Groq helper ──────────────────────────────────────────────────────────────
+async function groqChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = true } = {}) {
+  if (!GROQ_API_KEY) return null;
+  const response = await axios.post(GROQ_URL, {
+    model: GROQ_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userText },
+    ],
+    ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+    temperature: 0.15,
+    max_tokens: maxTokens,
+  }, {
+    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+    timeout: 30000,
+  });
+  return response.data?.choices?.[0]?.message?.content || null;
 }
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
@@ -115,7 +142,38 @@ Rules:
  */
 export async function naturalLanguageToMatchData(userText) {
   if (!AVAILABLE) {
-    throw new Error('GEMINI_API_KEY not configured. Add it to backend/.env to enable natural language analysis.');
+    throw new Error('No LLM configured. Add GROQ_API_KEY or GEMINI_API_KEY to backend/.env.');
+  }
+
+  // Helper to parse and return the standard response shape
+  function parseLLMText(rawText) {
+    const cleaned = rawText.replace(/^```json?\s*/i, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (parsed.error) throw new Error(`LLM could not identify match: ${parsed.error}`);
+    const { geminiConfidence = 50, geminiNotes = '' } = parsed;
+    const matchData = { ...parsed };
+    delete matchData.geminiConfidence;
+    delete matchData.geminiNotes;
+    return { matchData, geminiConfidence, geminiNotes };
+  }
+
+  // ── Try Groq first (free tier, fast) ────────────────────────────────────────
+  if (GROQ_API_KEY) {
+    try {
+      const raw = await groqChat(SYSTEM_PROMPT, `Analyse this match: ${userText}`, { maxTokens: 1500 });
+      if (raw) {
+        const result = parseLLMText(raw);
+        console.log('[Groq] naturalLanguageToMatchData: success');
+        return result;
+      }
+    } catch (err) {
+      console.warn('[Groq] naturalLanguageToMatchData failed:', err.message.slice(0, 120));
+    }
+  }
+
+  // ── Fallback: Gemini ─────────────────────────────────────────────────────────
+  if (!GEMINI_API_KEY) {
+    throw new Error('GROQ_API_KEY failed and GEMINI_API_KEY not configured.');
   }
 
   const body = {
@@ -129,7 +187,7 @@ export async function naturalLanguageToMatchData(userText) {
       },
     ],
     generationConfig: {
-      temperature: 0.2,        // low temperature = more factual, less creative
+      temperature: 0.2,
       maxOutputTokens: 1500,
       responseMimeType: 'application/json',
     },
@@ -141,7 +199,6 @@ export async function naturalLanguageToMatchData(userText) {
       headers: { 'Content-Type': 'application/json' },
       timeout: 20000,
     });
-    // gemini-2.5-flash may return multiple parts (thinking + text); join them all
     const parts = response.data?.candidates?.[0]?.content?.parts || [];
     rawText = parts.map(p => p.text || '').join('');
   } catch (err) {
@@ -154,27 +211,11 @@ export async function naturalLanguageToMatchData(userText) {
     throw new Error('Gemini returned an empty response.');
   }
 
-  // Parse — Gemini should return clean JSON but strip fences just in case
-  const cleaned = rawText.replace(/^```json?\s*/i, '').replace(/\s*```$/, '').trim();
-  let parsed;
   try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Gemini response was not valid JSON: ${cleaned.slice(0, 200)}`);
+    return parseLLMText(rawText);
+  } catch (err) {
+    throw new Error(`Gemini response parse error: ${err.message}`);
   }
-
-  if (parsed.error) {
-    throw new Error(`Gemini could not identify match: ${parsed.error}`);
-  }
-
-  const { geminiConfidence = 50, geminiNotes = '' } = parsed;
-
-  // Return matchData without the Gemini-specific meta fields (V6 doesn't need them)
-  const matchData = { ...parsed };
-  delete matchData.geminiConfidence;
-  delete matchData.geminiNotes;
-
-  return { matchData, geminiConfidence, geminiNotes };
 }
 
 // ─── GEMINI SPORTS FEED (replaces API-Football when key is expired) ──────────
@@ -503,8 +544,38 @@ export async function enrichFixturesWithV8(fixtureList) {
         results.push(enriched);
       }
     } else {
-      // All models failed for this batch — fall through to buildDefaultV8Fixture in caller
-      console.warn(`[Enrich] batch ${batchNum} all models failed — caller will use defaults for: ${batch.map(f => `${f.home} vs ${f.away}`).join(', ')}`);
+      // ── Gemini failed — try Groq (no search grounding but strong football knowledge) ──
+      if (GROQ_API_KEY) {
+        try {
+          const enrichSysPrompt = 'You are a football analytics AI. Return only a valid JSON array with no markdown and no extra text. Use your training knowledge of football teams to provide realistic current-season stats for each fixture in the list.';
+          const raw = await groqChat(enrichSysPrompt, buildEnrichPrompt(batch, today), { maxTokens: 8000, jsonMode: false });
+          if (raw) {
+            const start = raw.indexOf('[');
+            const end   = raw.lastIndexOf(']');
+            if (start !== -1 && end > start) {
+              const parsed = JSON.parse(raw.slice(start, end + 1));
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                batchEnriched = parsed;
+                console.log(`[Enrich] batch ${batchNum}/${totalBatches} via Groq: ${parsed.length} fixtures`);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[Enrich] batch ${batchNum} Groq failed:`, (err.response?.data?.error?.message || err.message).slice(0, 120));
+        }
+      }
+
+      if (batchEnriched) {
+        for (const enriched of batchEnriched) {
+          const home = enriched.match?.home || '';
+          const away = enriched.match?.away || '';
+          setCache(home, away, enriched);
+          results.push(enriched);
+        }
+      } else {
+        // All providers failed for this batch — caller uses buildDefaultV8Fixture (hash-seeded)
+        console.warn(`[Enrich] batch ${batchNum} all providers failed — using hash defaults for: ${batch.map(f => `${f.home} vs ${f.away}`).join(', ')}`);
+      }
     }
   }
 

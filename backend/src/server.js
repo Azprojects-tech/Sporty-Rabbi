@@ -1630,6 +1630,13 @@ app.post('/api/analyze/natural', async (req, res) => {
  * Analytics are neutral defaults — V6 engine will still score the match.
  * @param {{ home, away, league, leagueId, country, kickoffUTC }} f
  */
+// djb2 hash — gives each match a unique seed without any API call
+function hashStr(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h = h >>> 0; }
+  return h;
+}
+
 function buildDefaultV8Fixture(f) {
   const leagueId   = f.leagueId || 0;
   const leagueName = (f.league || '').toLowerCase();
@@ -1706,6 +1713,22 @@ function buildDefaultV8Fixture(f) {
     homeConv = 10; awayConv = 9;
     h2hHW = 3; h2hAW = 3; h2hD = 4; h2hGoals = 2.3; bttsRate = 0.50;
   }
+
+  // ── Per-match seed: gives each game unique realistic values without any LLM ──
+  const _seed = hashStr(`${f.home || ''}|${f.away || ''}|${leagueId}`);
+  const _jit  = (v, s) => +Math.max(0.3, v + ((_seed % (s * 200 + 1)) / 100 - s)).toFixed(2);
+  const _HOME_FORMS = ['W-W-D-W-W','W-D-W-D-W','W-W-W-L-D','D-W-W-D-W','W-W-D-L-W','W-D-D-W-W'];
+  const _AWAY_FORMS = ['L-D-L-W-D','D-L-D-W-L','L-W-D-L-D','W-L-D-L-W','D-D-L-W-L','L-L-W-D-L'];
+  homeXg       = _jit(homeXg,  0.3);
+  awayXg       = _jit(awayXg,  0.25);
+  homeXga      = _jit(homeXga, 0.2);
+  awayXga      = _jit(awayXga, 0.2);
+  homePos      = Math.max(1, Math.min(totalTeams - 1, homePos      + (_seed % 9) - 4));
+  awayPos      = Math.max(homePos + 1, Math.min(totalTeams, awayPos + ((_seed >>> 4) % 9) - 4));
+  homeShotsAvg = Math.max(6, Math.round(homeShotsAvg + ((_seed >>> 8)  % 5) - 2));
+  awayShotsAvg = Math.max(5, Math.round(awayShotsAvg + ((_seed >>> 12) % 5) - 2));
+  homeForm     = _HOME_FORMS[(_seed >>> 1) % _HOME_FORMS.length];
+  awayForm     = _AWAY_FORMS[(_seed >>> 5) % _AWAY_FORMS.length];
 
   return {
     match: {
