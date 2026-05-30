@@ -645,3 +645,53 @@ Return a JSON array where each object has EXACTLY these fields:
   console.log(`[Gemini Sports] Generated ${matches.length} upcoming matches (AI-estimated)`);
   return matches;
 }
+
+/**
+ * generateMatchNarrative(analysis, matchInfo)
+ * Calls Groq to produce a 2-3 sentence analyst note explaining the top V9 recommendation.
+ * Returns { text, confidence } or null if Groq unavailable.
+ *
+ * This is the LLM layer that sits on top of V9's pure-math output.
+ */
+export async function generateMatchNarrative(analysis, matchInfo) {
+  const { home = '?', away = '?', league = '', status = 'NS', matchMinutes = 0, score = '0-0' } = matchInfo || {};
+  const { overallScore = 0, recommendations = [], parameters = {}, poisson } = analysis || {};
+
+  const topRec = recommendations[0];
+  if (!topRec) return null;
+
+  // Pull the 3 parameters with the highest individual scores to explain the decision
+  const topParams = Object.entries(parameters)
+    .map(([k, v]) => ({ name: k.replace('p\d+_', '').replace(/_/g, ' '), score: v?.score ?? 0, assessment: v?.assessment ?? '' }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+
+  const isLive = status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(status);
+  const context = isLive
+    ? `LIVE match — ${matchMinutes}' played, current score ${score}.`
+    : 'Pre-match analysis.';
+
+  const systemPrompt = `You are Agent 47, an elite football betting analyst. 
+Your job is to write a sharp, confident 2-3 sentence analyst note for a bet recommendation.
+Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
+Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
+
+  const userText = `Match: ${home} vs ${away} (${league}). ${context}
+Overall V9 Score: ${overallScore}/100
+Top recommendation: ${topRec.selection} — ${topRec.confidence}% confidence (${topRec.tierName || 'Tier ?'})
+Key driver 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
+Key driver 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
+Key driver 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
+Poisson: ${poisson?.assessment || 'N/A'}
+Reasoning: ${topRec.logic || ''}
+Write 2-3 sentences explaining WHY this bet and what the data says. End with the assurance level as a %.`;
+
+  const raw = await groqChat(systemPrompt, userText, { maxTokens: 220, jsonMode: true });
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return { text: parsed.text || raw, confidence: parsed.confidence || topRec.confidence };
+  } catch {
+    return { text: raw, confidence: topRec.confidence };
+  }
+}

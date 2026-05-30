@@ -1,15 +1,14 @@
 /**
  * ╔══════════════════════════════════════════════════════════╗
- * ║           AGENT 47 — V6 FRONTIER ANALYSIS ENGINE        ║
- * ║      14-Parameter Football Betting Intelligence          ║
- * ╠══════════════════════════════════════════════════════════╣
- * ║  Fuses V4 logic + V5 structural checks + V6 analytics   ║
- * ║  Works entirely offline — zero API calls required.       ║
- * ║  Feed it match data manually or from live API.          ║
- * ╚══════════════════════════════════════════════════════════╝
+ * ║           AGENT 47 — V9 CALIBRATED ANALYSIS ENGINE        ║
+ * ║      15-Parameter Football Betting Intelligence          ║
+ * ╠════════════════════════════════════════════════════════════╣
+ * ║  Pure math engine — zero API calls. Feed it match data   ║
+ * ║  from live API or calibration. Designed for V9 inputs.   ║
+ * ╚════════════════════════════════════════════════════════════╝
  *
- * INPUT:  structured matchData object (see analyzeV6 JSDoc)
- * OUTPUT: tiered recommendations + full 14-parameter audit
+ * INPUT:  structured matchData object (see analyzeV9 JSDoc)
+ * OUTPUT: tiered recommendations + full 15-parameter audit
  */
 
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
@@ -806,7 +805,7 @@ function scoreMarketSignal(odds = null) {
  * @param {string}   matchData.venue
  * @returns {Object} Full V6 analysis
  */
-export function analyzeV6(matchData = {}) {
+export function analyzeV9(matchData = {}) {
   const {
     home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0,
     gameWeek = 30, totalGW = 38, totalTeams = 20,
@@ -904,4 +903,4 @@ export function analyzeV6(matchData = {}) {
   };
 }
 
-export default analyzeV6;
+export default analyzeV9;

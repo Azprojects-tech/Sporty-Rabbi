@@ -190,6 +190,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         away:             match.away,
         league:           match.league || 'Unknown',
         leagueId:         _lid,
+        homeTeamId:       match.homeTeamId || null,
+        awayTeamId:       match.awayTeamId || null,
         status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
@@ -334,6 +336,29 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Groq narrative — LLM analyst note layered on top of V9 output */}
+      {analysis?.narrative?.text && (
+        <div style={{
+          padding: '11px 14px',
+          borderBottom: '1px solid #1e2535',
+          flexShrink: 0,
+          background: '#05101f',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7 }}>
+            <span style={{ fontSize: 9, fontWeight: 800, color: '#3b82f6', letterSpacing: '1px' }}>ANALYST NOTE</span>
+            <span style={{ fontSize: 9, color: '#4a5568' }}>· AI</span>
+            {analysis.narrative.confidence && (
+              <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: scoreColor(analysis.narrative.confidence) }}>
+                {analysis.narrative.confidence}% assurance
+              </span>
+            )}
+          </div>
+          <p style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.65, margin: 0 }}>
+            {analysis.narrative.text}
+          </p>
         </div>
       )}
 

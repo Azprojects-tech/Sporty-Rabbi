@@ -16,7 +16,7 @@ import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
 import { getTeamForm, getH2H, getFixturePreview, getStandings } from './services/analyticsService.js';
-import { analyzeV6 } from './services/agent47Service.js';
+import { analyzeV9 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
 import {
   naturalLanguageToMatchData,
@@ -24,6 +24,7 @@ import {
   fetchUpcomingMatchesViaGemini,
   calibrateDay,
   enrichFixturesWithV8,
+  generateMatchNarrative,
 } from './services/geminiService.js';
 import {
   calculateNextGoalProbability,
@@ -717,16 +718,13 @@ async function analyzeMatch(match) {
         awaySquadIntegrity: 85,
       };
       try {
-        analysisObj      = analyzeV6(matchData);
+        analysisObj      = analyzeV9(matchData);
         confidence       = analysisObj.overallScore || 50;
         opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
-      } catch (v8Err) {
-        console.warn(`[analyzeMatch] V8 fallback: ${teams.home?.name} vs ${teams.away?.name}: ${v8Err.message}`);
+      } catch (v9Err) {
+        console.warn(`[analyzeMatch] V9 error for ${teams.home?.name} vs ${teams.away?.name}: ${v9Err.message}`);
         confidence = 50;
-        if (possession.home > 60) confidence += 10;
-        if (shots.home > shots.away) confidence += 15;
-        if (xg.home > xg.away + 0.5) confidence += 10;
-        opportunitiesArr = confidence > 65 ? ['Strong signal detected'] : [];
+        opportunitiesArr = [];
         analysisObj = null;
       }
       kickoffUTC = fixture.date || null;
@@ -1518,21 +1516,97 @@ app.post('/api/bet-value', (req, res) => {
 
 /**
  * POST /api/analyze
- * Accepts a matchData object and returns full V6 Frontier analysis.
- * Works offline — no live API required.
+ * Full V9 analysis for a match card click.
+ * Fetches real form, H2H, standings from API-Football (1h cache),
+ * applies live xG projection when in-play, runs V9, then layers
+ * a Groq narrative summary on top.
  *
- * Body: see analyzeV6() JSDoc in agent47Service.js
+ * Required body fields: home, away, leagueId, status
+ * Optional enrichment:  homeTeamId, awayTeamId (enables real form/standings)
  */
-app.post('/api/analyze', (req, res) => {
+app.post('/api/analyze', async (req, res) => {
   try {
-    const matchData = req.body;
-    if (!matchData || typeof matchData !== 'object') {
+    const body = req.body;
+    if (!body || typeof body !== 'object') {
       return res.status(400).json({ error: 'Request body must be a matchData object' });
     }
-    const analysis = analyzeV6(matchData);
+
+    const homeTeamId = body.homeTeamId;
+    const awayTeamId = body.awayTeamId;
+    const leagueId   = body.leagueId || 0;
+    const isLive     = body.status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(body.status);
+    const matchMins  = body.matchMinutes || 0;
+
+    // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
+    let enriched = { ...body };
+    if (homeTeamId && awayTeamId) {
+      const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
+        getTeamForm(homeTeamId, leagueId),
+        getTeamForm(awayTeamId, leagueId),
+        getH2H(homeTeamId, awayTeamId),
+        getStandings(leagueId),
+      ]);
+      if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats?.form) {
+        enriched.homeForm = hRes.value.stats.form.split('').join('-');
+      }
+      if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats?.form) {
+        enriched.awayForm = aRes.value.stats.form.split('').join('-');
+      }
+      if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
+        const s = h2hRes.value.stats;
+        const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
+        const gpg = n > 0 ? (s.totalGoals || n * 2.5) / n : 2.5;
+        const gH = Math.round(gpg * 0.55), gA = Math.round(gpg * 0.45);
+        enriched.h2hHistory = [];
+        for (let i = 0; i < (s.teamAWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gH+1, awayGoals: gA,   winner: 'home' });
+        for (let i = 0; i < (s.teamBWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gH+1, winner: 'away' });
+        for (let i = 0; i < (s.draws    || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gA,   winner: 'draw' });
+      }
+      if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+        const tms = standingsRes.value.teams;
+        enriched.totalTeams = standingsRes.value.totalTeams || 20;
+        if (tms[homeTeamId]) { enriched.homePosition = tms[homeTeamId].position; enriched.homePoints = tms[homeTeamId].points; }
+        if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position; enriched.awayPoints = tms[awayTeamId].points; }
+      }
+    }
+
+    // ── Step 2: Live xG projection ───────────────────────────────────────────
+    // At 30 min with 0.4 accumulated xG, V9 Poisson would see 0.4 avg — too low.
+    // Blend literal value with (rate × 90) projected full-match value,
+    // weighted by match progress. Starts at 0% blend, reaches 70% by ~52 min.
+    if (isLive && matchMins >= 15) {
+      const progress    = Math.min(matchMins / 90, 1.0);
+      const projFactor  = Math.min(90 / matchMins, 3.5);    // cap: avoid 15-min × 6 inflation
+      const blendWeight = Math.min(progress * 1.2, 0.7);    // 0 → 0.70 over first ~52 min
+      const project = (v) => v > 0
+        ? Math.min(v * (1 - blendWeight) + v * projFactor * blendWeight, 3.5)
+        : v;
+      enriched.homeXgAvg  = project(enriched.homeXgAvg  || 0);
+      enriched.homeXgaAvg = project(enriched.homeXgaAvg || 0);
+      enriched.awayXgAvg  = project(enriched.awayXgAvg  || 0);
+      enriched.awayXgaAvg = project(enriched.awayXgaAvg || 0);
+      // Detect early goal for V9 chaos variable
+      const [hG, aG] = (enriched.score || '0-0').split('-').map(n => parseInt(n) || 0);
+      if (hG + aG > 0 && matchMins <= 20) {
+        enriched.earlyGoalScored = true;
+        enriched.earlyGoalMinute = matchMins;
+      }
+    }
+
+    // ── Step 3: Run V9 engine ────────────────────────────────────────────────
+    const analysis = analyzeV9(enriched);
+
+    // ── Step 4: Groq narrative — analyst note layered on top of V9 output ───
+    try {
+      const narrative = await generateMatchNarrative(analysis, enriched);
+      if (narrative) analysis.narrative = narrative;
+    } catch (narErr) {
+      console.warn('[Narrative] Groq narrative skipped:', narErr.message);
+    }
+
     res.json(analysis);
   } catch (error) {
-    console.error('V6 analysis error:', error.message);
+    console.error('V9 analysis error:', error.message);
     res.status(500).json({ error: 'Analysis failed', detail: error.message });
   }
 });
@@ -1584,17 +1658,17 @@ app.get('/api/analyze/live/:matchId', (req, res) => {
       venue:                q.venue   || null,
     };
 
-    const analysis = analyzeV6(matchData);
+    const analysis = analyzeV9(matchData);
     res.json(analysis);
   } catch (error) {
-    console.error('V6 live analysis error:', error.message);
+    console.error('V9 live analysis error:', error.message);
     res.status(500).json({ error: 'Live analysis failed', detail: error.message });
   }
 });
 
 /**
  * POST /api/analyze/natural
- * Natural language → Gemini → matchData → V6 analysis.
+ * Natural language → Gemini → matchData → V9 analysis + Groq narrative.
  * Body: { query: "Persija is playing now" }
  */
 app.post('/api/analyze/natural', async (req, res) => {
@@ -1607,10 +1681,14 @@ app.post('/api/analyze/natural', async (req, res) => {
     console.log(`[Gemini] Natural language query: "${query.trim()}"`);
     const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(query.trim());
 
-    const analysis = analyzeV6(matchData);
-
-    // Attach Gemini metadata to the response so the UI can show a confidence caveat
+    const analysis = analyzeV9(matchData);
     analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: query.trim() };
+
+    // Add Groq narrative
+    try {
+      const narrative = await generateMatchNarrative(analysis, matchData);
+      if (narrative) analysis.narrative = narrative;
+    } catch (_) {}
 
     res.json(analysis);
   } catch (error) {
@@ -1925,7 +2003,7 @@ async function runCalibration() {
         context: f.context,
       };
 
-      const analysis = analyzeV6(matchData);
+      const analysis = analyzeV9(matchData);
       const matchObj = sanitizeMatch({
         id: `cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50),
         home: matchMeta.home || 'Unknown',
@@ -2072,7 +2150,7 @@ app.get('/api/search', async (req, res) => {
   if (!q) return res.status(400).json({ error: 'Provide ?q=team+name or match description' });
   try {
     const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(q);
-    const analysis = analyzeV6(matchData);
+    const analysis = analyzeV9(matchData);
     analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: q };
     res.json(analysis);
   } catch (err) {
