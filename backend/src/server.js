@@ -15,7 +15,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
-import { getTeamForm, getH2H, getFixturePreview } from './services/analyticsService.js';
+import { getTeamForm, getH2H, getFixturePreview, getStandings } from './services/analyticsService.js';
 import { analyzeV6 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
 import {
@@ -647,17 +647,19 @@ async function analyzeMatch(match) {
       };
       const [defHomeXg, defAwayXg] = LEAGUE_XG[league.id] || [1.35, 1.35];
 
-      // ── Fetch real team form + H2H from API-Football (1h cache in analyticsService) ──
+      // ── Fetch real team form, H2H + league standings from API-Football (cached) ──
       let homeFormStr = 'W-L-D-W-L';
       let awayFormStr = 'W-L-D-W-L';
       let h2hHistory = [];
+      let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20;
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
-        const [hRes, aRes, h2hRes] = await Promise.allSettled([
+        const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
           getTeamForm(homeTeamId, league.id),
           getTeamForm(awayTeamId, league.id),
           getH2H(homeTeamId, awayTeamId),
+          getStandings(league.id),
         ]);
         // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats?.form) {
@@ -675,6 +677,13 @@ async function analyzeMatch(match) {
           for (let i = 0; i < (s.teamAWins || 0); i++) h2hHistory.push({ homeGoals: gH + 1, awayGoals: gA, winner: 'home' });
           for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
           for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
+        }
+        // Real league standings — position and points for motivation scoring
+        if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+          const tms = standingsRes.value.teams;
+          totalTeams = standingsRes.value.totalTeams || 20;
+          if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position; homePoints = tms[homeTeamId].points; }
+          if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position; awayPoints = tms[awayTeamId].points; }
         }
       }
 
@@ -697,11 +706,11 @@ async function analyzeMatch(match) {
         homeForm:  homeFormStr,
         awayForm:  awayFormStr,
         h2hHistory,
-        homePosition: 10,
-        awayPosition: 10,
-        homePoints: 40,
-        awayPoints: 40,
-        totalTeams: 20,
+        homePosition,
+        awayPosition,
+        homePoints,
+        awayPoints,
+        totalTeams,
         gameWeek: 30,
         totalGW: 38,
         homeSquadIntegrity: 85,
@@ -1957,6 +1966,23 @@ async function runCalibration() {
     totalScanned: raw.length,
   };
 
+  // Persist to Firestore so calibration survives server restarts
+  const _calDb = getDb();
+  if (_calDb) {
+    try {
+      await _calDb.collection('calibration').doc('latest').set({
+        matches: analyzed,
+        highConfidence,
+        calibratedAt: calibrationStore.calibratedAt,
+        totalScanned: raw.length,
+        savedAt: new Date().toISOString(),
+      });
+      console.log(`🔥 Calibration persisted to Firestore (${analyzed.length} matches)`);
+    } catch (err) {
+      console.warn('⚠️  Calibration Firestore save failed:', err.message);
+    }
+  }
+
   // ── Send WhatsApp alerts for high-confidence calibration matches ─────────
   try {
     const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
@@ -2087,6 +2113,26 @@ server.listen(PORT, async () => {
       console.log(`🔥 Loaded ${bets.length} bets from Firestore`);
     } catch (err) {
       console.warn('⚠️  Could not pre-load bets from Firestore:', err.message);
+    }
+
+    // Restore calibration store from Firestore (avoids cold-start delay; skip if >12h old)
+    try {
+      const calDoc = await db.collection('calibration').doc('latest').get();
+      if (calDoc.exists) {
+        const data = calDoc.data();
+        const ageMs = Date.now() - new Date(data.calibratedAt || data.savedAt).getTime();
+        if (ageMs < 12 * 60 * 60 * 1000) {
+          calibrationStore = {
+            matches:        data.matches        || [],
+            highConfidence: data.highConfidence || [],
+            calibratedAt:   data.calibratedAt   || null,
+            totalScanned:   data.totalScanned   || 0,
+          };
+          console.log(`🔥 Restored calibration: ${calibrationStore.matches.length} matches (${Math.round(ageMs / 60000)}m old)`);
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️  Could not restore calibration from Firestore:', err.message);
     }
   }
 });

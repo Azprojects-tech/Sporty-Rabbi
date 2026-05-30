@@ -233,6 +233,46 @@ export async function getH2H(teamA, teamB) {
 }
 
 /**
+ * Get league standings — extracts each team’s position, points, and games played.
+ * Cached for 6 hours (standings change at most once per matchday).
+ */
+export async function getStandings(leagueId, season = null) {
+  if (!API_AVAILABLE) return offlineFallback('standings', leagueId);
+  try {
+    // Football seasons run Aug–May; before August use the previous calendar year.
+    const year = season || (new Date().getMonth() < 7
+      ? new Date().getFullYear() - 1
+      : new Date().getFullYear());
+    const key = cacheKey('standings', leagueId, year);
+    const cached = getCache(key);
+    if (cached) return cached;
+
+    const response = await axiosInstance.get('/standings', {
+      params: { league: leagueId, season: year },
+    });
+    const standings = response.data.response?.[0]?.league?.standings?.[0] || [];
+    if (standings.length === 0) return offlineFallback('standings', leagueId);
+
+    const teamMap = {};
+    standings.forEach((entry) => {
+      teamMap[entry.team.id] = {
+        position:   entry.rank   || 0,
+        points:     entry.points || 0,
+        played:     entry.all?.played || 0,
+      };
+    });
+
+    const result = { leagueId, season: year, totalTeams: standings.length, teams: teamMap };
+    // Override cache TTL to 6 hours for standings
+    statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 6 * 3600000) });
+    return result;
+  } catch (error) {
+    console.error('❌ Error fetching standings:', error.message);
+    return offlineFallback('standings', leagueId);
+  }
+}
+
+/**
  * Get combined fixture preview with both teams' stats
  */
 export async function getFixturePreview(fixtureId, homeTeamId, awayTeamId, leagueId) {
