@@ -20,37 +20,54 @@ export const TIERS = {
   4: { name: 'Calculated Chaos',  minConfidence: 55, description: 'Sniper alerts. Instant goal monitoring. ≤1% purse.' },
 };
 
-// ─── PARAMETER WEIGHTS (sum = 1.00) — V8 Master ──────────────────────────────
-// P15 (Crisis/Drought) added at 10%. Other weights redistributed accordingly.
+// ─── PARAMETER WEIGHTS (sum = 1.00) — V9 Calibrated ────────────────────────
+// Evidence-based: H2H cut (literature: 2-4% contribution only, squad turnover
+// kills old data), Form raised (strongest non-market signal ~15-18%),
+// Poisson raised (removing 0.80 cap restores full signal), P11/P12 repurposed
+// from dead placeholders to real Home Advantage + Market signals.
 const W = {
-  p1_motivation:     0.16,  // ▲ central late-season driver
-  p2_starPower:      0.07,
-  p3_h2h:           0.08,
-  p4_form:          0.12,  // ▲ + last-5 recency overweight (60% heavier)
-  p5_scoringTiming: 0.07,
-  p6_defensiveGap:  0.07,
-  p7_poisson:       0.09,
-  p8_xg:            0.06,  // ▼ tighter — no coiled spring if xG also declining
-  p9_xga:           0.05,
-  p10_pace:         0.04,
-  p11_timezone:     0.02,  // referee / structural
-  p12_fixture:      0.01,
-  p13_squad:        0.05,
-  p14_lifecycle:    0.01,
-  p15_crisis:       0.10,  // ★ NEW — Crisis/Drought Mode (V8)
-};
+  p1_motivation:      0.13,  // reduced: real but was overweighted at 16%
+  p2_starPower:       0.07,  // unchanged
+  p3_h2h:            0.03,  // ▼ cut from 0.08 — decays fast; 3+ yr data unreliable
+  p4_form:           0.14,  // ▲ raised: strongest reliable non-market signal
+  p5_scoringTiming:  0.05,  // reduced: minor signal
+  p6_defensiveGap:   0.07,  // unchanged
+  p7_poisson:        0.11,  // ▲ raised: full unpenalized Poisson signal
+  p8_xg:             0.06,  // unchanged
+  p9_xga:            0.05,  // unchanged
+  p10_pace:          0.04,  // unchanged
+  p11_homeAdvantage: 0.03,  // REPURPOSED: real home advantage signal
+  p12_market:        0.03,  // REPURPOSED: market odds / overround signal
+  p13_squad:         0.05,  // unchanged
+  p14_lifecycle:     0.02,  // ▲ raised: season phase pressure is real
+  p15_crisis:        0.12,  // ▲ raised: crisis/drought is strong signal
+}; // Sum: 0.13+0.07+0.03+0.14+0.05+0.07+0.11+0.06+0.05+0.04+0.03+0.03+0.05+0.02+0.12 = 1.00 ✓
 
-// ─── LEAGUE VARIANCE SCALARS ───────────────────────────────────────────────────
-// Applied to the composite score to account for league predictability variance.
-// Top-5 Europe = 1.0 (baseline). Higher-variance leagues = 1.15.
+// ─── LEAGUE RELIABILITY SCALARS (V9 CORRECTED) ─────────────────────────────
+// High-variance leagues REDUCE confidence (penalty, not inflation).
+// EPL = 1.00 baseline. Less predictable = < 1.00.
+// Unknown leagues default to 0.93 (unknown = some uncertainty penalty).
 const LEAGUE_SCALARS = {
-  39:  1.00,  // Premier League
-  140: 1.00,  // La Liga
-  78:  1.00,  // Bundesliga
-  61:  1.00,  // Ligue 1
-  135: 1.00,  // Serie A
-  71:  1.15,  // Brasileirão Serie A
-  313: 1.15,  // Indonesian Liga 1
+  39:  1.00,  // Premier League (baseline — most data, most efficient)
+  140: 0.97,  // La Liga
+  78:  0.97,  // Bundesliga
+  61:  0.90,  // Ligue 1 (PSG dominance, chaotic mid-table)
+  135: 0.93,  // Serie A (tactical, mid-table chaos)
+  88:  0.92,  // Eredivisie
+  179: 0.92,  // Scottish Premiership
+  40:  0.93,  // Championship (England)
+  94:  0.92,  // Primeira Liga (Portugal)
+  144: 0.85,  // Belgian Pro League
+  119: 0.88,  // J1 League (Japan)
+  98:  0.88,  // J1 League (alt ID)
+  292: 0.87,  // K League 1 (South Korea)
+  169: 0.78,  // Chinese Super League
+  203: 0.75,  // Saudi Pro League
+  333: 0.82,  // Ukrainian Premier League
+  71:  0.70,  // Brasileirão Serie A (extreme variance)
+  313: 0.82,  // Indonesian Liga 1
+  262: 0.87,  // Liga MX
+  253: 0.85,  // MLS
 };
 
 // ─── RESEARCH CONSTANTS (April 2026 end-of-season findings) ───────────────────
@@ -624,6 +641,49 @@ function detectBookieEdges(p1, p2, p4, chaos) {
   return edges;
 }
 
+// ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
+function scoreHomeAdvantage(homePossession = 50, homeShotsPerGame = 11, awayShotsPerGame = 11, venue = null, status = 'NS') {
+  let score = 55; // Baseline: ~5% home win rate boost (literature consensus)
+  if (status !== 'NS' && homePossession > 0) {
+    // Live match: possession dominance is a real pressure signal
+    const possDiff = homePossession - 50;
+    score += Math.round(possDiff * 0.6);
+  }
+  if (homeShotsPerGame > 0 && awayShotsPerGame > 0) {
+    const shotRatio = homeShotsPerGame / (homeShotsPerGame + awayShotsPerGame);
+    if (shotRatio > 0.58) score += 8;
+    else if (shotRatio < 0.40) score -= 10;
+  }
+  return {
+    score: Math.min(Math.max(Math.round(score), 20), 90),
+    assessment: status !== 'NS'
+      ? `Live home advantage. Possession: ${homePossession}%. SoT ratio: ${homeShotsPerGame}v${awayShotsPerGame}.`
+      : venue ? `Home venue: ${venue}. Standard home advantage applied.` : 'Standard home advantage applied.',
+  };
+}
+
+// ─── P12 — MARKET SIGNAL (replaces dead fixture confirm placeholder) ──────────────
+function scoreMarketSignal(odds = null) {
+  if (!odds || (!odds.home && !odds.homeWin)) {
+    return { score: 50, assessment: 'No market odds — neutral market signal applied.' };
+  }
+  const homeOdds = parseFloat(odds.home || odds.homeWin || 2.0);
+  const drawOdds = parseFloat(odds.draw || 3.5);
+  const awayOdds = parseFloat(odds.away || odds.awayWin || 3.5);
+  if (!homeOdds || !drawOdds || !awayOdds) return { score: 50, assessment: 'Incomplete odds — neutral signal.' };
+  const overround = (1 / homeOdds) + (1 / drawOdds) + (1 / awayOdds);
+  const margin = Math.round((overround - 1) * 100);
+  // Lower margin = better pricing = more reliable market signal
+  const score = Math.max(Math.round(70 - margin * 2), 25);
+  return {
+    score,
+    homeOdds, drawOdds, awayOdds,
+    overround: +overround.toFixed(3),
+    margin,
+    assessment: `Market: ${homeOdds}/${drawOdds}/${awayOdds}. Overround: ${margin}% margin. ${margin <= 8 ? '✓ Competitive' : '⚠️ High margin'}.`,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  MASTER ANALYSIS FUNCTION — analyzeV6()
 // ─────────────────────────────────────────────────────────────────────────────
@@ -684,11 +744,11 @@ export function analyzeV6(matchData = {}) {
     status = 'NS', matchMinutes = 0, score = '0-0',
     homeSquadIntegrity = 90, awaySquadIntegrity = 90,
     homeKeyAbsences = [], awayKeyAbsences = [],
-    homeForm = 'W-D-L-W-D', awayForm = 'D-L-W-D-L',
-    homeGoalsAvgFor = 1.4, awayGoalsAvgFor = 1.1,
-    homeGoalsAvgAgainst = 1.2, awayGoalsAvgAgainst = 1.3,
-    homeXgAvg = 1.3, awayXgAvg = 1.1,
-    homeXgaAvg = 1.2, awayXgaAvg = 1.2,
+    homeForm = 'W-L-D-W-L', awayForm = 'W-L-D-W-L',  // genuinely neutral: 2W 1D 2L each
+    homeGoalsAvgFor = 1.35, awayGoalsAvgFor = 1.35,
+    homeGoalsAvgAgainst = 1.35, awayGoalsAvgAgainst = 1.35,
+    homeXgAvg = 1.35, awayXgAvg = 1.35,
+    homeXgaAvg = 1.35, awayXgaAvg = 1.35,
     h2hHistory = [],
     homeLateGoalPct = 0.20, awayLateGoalPct = 0.20,
     homeConversionPct = 10, awayConversionPct = 10,
@@ -716,18 +776,18 @@ export function analyzeV6(matchData = {}) {
   const p5  = scoreTiming(homeLateGoalPct, awayLateGoalPct);
   const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, 1.35, homeCBInjured, awayGKError);
   const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg);
-  const p7  = { score: Math.round(poi.probabilities.over25 * 0.80), assessment: poi.assessment };
+  const p7  = { score: poi.probabilities.over25, assessment: poi.assessment }; // full signal, no suppression
   const p8  = scoreXG(homeXgAvg, awayXgAvg);
   const p9  = scoreXGA(homeXgaAvg, awayXgaAvg);
   const p10 = scorePace(homeConversionPct, awayConversionPct, homeShotsPerGame, awayShotsPerGame);
-  const p11 = { score: 100, assessment: referee ? `Referee: ${referee}. Timezone lock: BST.` : 'Timezone lock: BST.' };
-  const p12 = { score: 100, assessment: `Fixture confirmed: ${home} vs ${away} | ${league} GW${gameWeek}` };
+  const p11 = scoreHomeAdvantage(homePossession, homeShotsPerGame, awayShotsPerGame, venue, status);
+  const p12 = scoreMarketSignal(matchData.odds || null);
   const p13 = scoreSquadIntegrity(homeSquadIntegrity, awaySquadIntegrity);
   const p14 = scoreLifecycle(gameWeek, totalGW);
   const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
 
   // ── Weighted composite score (V8: 15 parameters + league scalar) ──────────
-  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 1.0;
+  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 0.93; // unknown = slight uncertainty penalty
   const rawScore =
     p1.score  * W.p1_motivation  +
     p2.score  * W.p2_starPower   +
@@ -739,8 +799,8 @@ export function analyzeV6(matchData = {}) {
     p8.score  * W.p8_xg          +
     p9.score  * W.p9_xga         +
     p10.score * W.p10_pace       +
-    p11.score * W.p11_timezone   +
-    p12.score * W.p12_fixture    +
+    p11.score * W.p11_homeAdvantage +
+    p12.score * W.p12_market       +
     p13.score * W.p13_squad      +
     p14.score * W.p14_lifecycle  +
     p15.score * W.p15_crisis;
@@ -762,14 +822,14 @@ export function analyzeV6(matchData = {}) {
     parameters: { p1_motivation: p1, p2_starPower: p2, p3_h2h: p3, p4_form: p4,
                   p5_scoringTiming: p5, p6_defensiveGap: p6, p7_poisson: p7,
                   p8_xg: p8, p9_xga: p9, p10_pace: p10,
-                  p11_timezone: p11, p12_fixture: p12, p13_squad: p13, p14_lifecycle: p14,
+                  p11_homeAdvantage: p11, p12_market: p12, p13_squad: p13, p14_lifecycle: p14,
                   p15_crisis: p15 },
     poisson: poi,
     chaosVariables: chaos,
     overallScore: overall,
     leagueScalarApplied: scalar,
     bookieEdges,
-    analysisVersion: 'V8-Master',
+    analysisVersion: 'V9-Calibrated',
     analysisTimestamp: new Date().toISOString(),
   };
 }

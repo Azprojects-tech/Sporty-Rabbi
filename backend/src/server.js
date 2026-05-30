@@ -761,8 +761,8 @@ function analyzeMatch(match) {
       kickoffUTC       = calMatch.kickoffUTC || fixture.date || null;
     } else {
       // No calibration entry — run V8 with available live data + neutral defaults
-      const homeXgAvg = xg.home > 0 ? xg.home : 1.2;
-      const awayXgAvg = xg.away > 0 ? xg.away : 1.0;
+      const homeXgAvg = xg.home > 0 ? xg.home : 1.35;
+      const awayXgAvg = xg.away > 0 ? xg.away : 1.35;
       const matchData = {
         home: teams.home?.name || 'Unknown',
         away: teams.away?.name || 'Unknown',
@@ -772,22 +772,22 @@ function analyzeMatch(match) {
         matchMinutes: matchMinutesElapsed || 0,
         homeXgAvg,
         awayXgAvg,
-        homeXgaAvg: 1.2,
-        awayXgaAvg: 1.2,
+        homeXgaAvg: 1.35,
+        awayXgaAvg: 1.35,
         homePossession: possession.home || 50,
         homeShotsPerGame: shots.home || 10,
         awayShotsPerGame: shots.away || 10,
-        homeForm:  'W-D-L-W-D',
-        awayForm:  'D-L-W-D-L',
+        homeForm:  'W-L-D-W-L',
+        awayForm:  'W-L-D-W-L',
         homePosition: 10,
         awayPosition: 10,
         homePoints: 40,
-        awayPoints: 38,
+        awayPoints: 40,
         totalTeams: 20,
         gameWeek: 30,
         totalGW: 38,
         homeSquadIntegrity: 85,
-        awaySquadIntegrity: 83,
+        awaySquadIntegrity: 85,
       };
       try {
         analysisObj      = analyzeV6(matchData);
@@ -1773,8 +1773,8 @@ function buildDefaultV8Fixture(f) {
   // ── Per-match seed: gives each game unique realistic values without any LLM ──
   const _seed = hashStr(`${f.home || ''}|${f.away || ''}|${leagueId}`);
   const _jit  = (v, s) => +Math.max(0.3, v + ((_seed % (s * 200 + 1)) / 100 - s)).toFixed(2);
-  const _HOME_FORMS = ['W-W-D-W-W','W-D-W-D-W','W-W-W-L-D','D-W-W-D-W','W-W-D-L-W','W-D-D-W-W'];
-  const _AWAY_FORMS = ['L-D-L-W-D','D-L-D-W-L','L-W-D-L-D','W-L-D-L-W','D-D-L-W-L','L-L-W-D-L'];
+  const _HOME_FORMS = ['W-D-L-W-D','W-W-D-L-W','D-W-D-W-L','W-L-W-D-W','D-W-W-D-L','W-D-W-L-D'];
+  const _AWAY_FORMS = ['L-D-W-L-D','D-L-L-W-D','L-W-D-L-D','D-L-W-D-L','L-D-D-W-L','W-D-L-D-L'];
   homeXg       = _jit(homeXg,  0.3);
   awayXg       = _jit(awayXg,  0.25);
   homeXga      = _jit(homeXga, 0.2);
@@ -1827,7 +1827,7 @@ function buildDefaultV8Fixture(f) {
       xgAvg: awayXg, xgaAvg: awayXga,
       pace: isUEFAKnockout ? 7 : 5,
       leaguePosition: awayPos,
-      squadIntegrity: squadInt - 2,
+      squadIntegrity: squadInt,
       conversionPct: awayConv,
       shotsPerGame: awayShotsAvg,
     },
@@ -1953,25 +1953,25 @@ async function runCalibration() {
         homePosition:      f.home?.leaguePosition  || f.context?.homePosition  || matchMeta.homePosition  || 10,
         awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
         homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
-        awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 38,
+        awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 40,
         totalTeams:        f.context?.totalTeams   || matchMeta.totalTeams   || 20,
         gameWeek:          f.context?.gameWeek     || matchMeta.gameWeek     || 30,
         totalGW:           f.context?.totalGameWeeks || matchMeta.totalGW   || 38,
         // ── Team form strings ──────────────────────────────────────────────────
         homeForm: Array.isArray(f.home?.recentForm)
           ? f.home.recentForm.join('-')
-          : (matchMeta.homeForm || 'W-D-L-W-D'),
+          : (matchMeta.homeForm || 'W-L-D-W-L'),
         awayForm: Array.isArray(f.away?.recentForm)
           ? f.away.recentForm.join('-')
-          : (matchMeta.awayForm || 'D-L-W-D-L'),
+          : (matchMeta.awayForm || 'W-L-D-W-L'),
         // ── Squad quality ──────────────────────────────────────────────────────
         homeSquadIntegrity: f.home?.squadIntegrity || 85,
-        awaySquadIntegrity: f.away?.squadIntegrity || 83,
+        awaySquadIntegrity: f.away?.squadIntegrity || 85,
         // ── Goal expectation ──────────────────────────────────────────────────
-        homeXgAvg:  f.home?.xgAvg  || 1.3,
-        awayXgAvg:  f.away?.xgAvg  || 1.1,
-        homeXgaAvg: f.home?.xgaAvg || 1.2,
-        awayXgaAvg: f.away?.xgaAvg || 1.3,
+        homeXgAvg:  f.home?.xgAvg  || 1.35,
+        awayXgAvg:  f.away?.xgAvg  || 1.35,
+        homeXgaAvg: f.home?.xgaAvg || 1.35,
+        awayXgaAvg: f.away?.xgaAvg || 1.35,
         // ── Conversion / shots ────────────────────────────────────────────────
         homeConversionPct: f.home?.conversionPct || 11,
         awayConversionPct: f.away?.conversionPct || 10,
@@ -2025,6 +2025,40 @@ async function runCalibration() {
     calibratedAt: new Date().toISOString(),
     totalScanned: raw.length,
   };
+
+  // ── Send WhatsApp alerts for high-confidence calibration matches ─────────
+  try {
+    const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
+    const today = new Date().toDateString();
+    const alreadySentToday = new Set(
+      alerts.filter(a => a.type === 'calibration' && new Date(a.sentAt).toDateString() === today)
+            .map(a => `${a.home}|${a.away}`)
+    );
+    for (const m of analyzed) {
+      if ((m.confidence || 0) >= minConf) {
+        const matchKey = `${m.home}|${m.away}`;
+        if (!alreadySentToday.has(matchKey)) {
+          alreadySentToday.add(matchKey); // prevent duplicates within same run
+          const topRec = m.analysis?.recommendations?.[0];
+          await saveAlert({
+            matchId: m.id,
+            home: m.home,
+            away: m.away,
+            league: m.league,
+            type: 'calibration',
+            message: topRec
+              ? `${topRec.selection} — Tier ${topRec.tier}, ${topRec.confidence}% confidence`
+              : 'High-confidence pre-match opportunity detected',
+            confidence: m.confidence,
+            kickoffUTC: m.kickoffUTC || null,
+            sentAt: new Date().toISOString(),
+          }).catch(e => console.warn(`[Calibrate] Alert save failed: ${e.message}`));
+        }
+      }
+    }
+  } catch (alertErr) {
+    console.warn(`[Calibrate] Alert loop error: ${alertErr.message}`);
+  }
 
   // ── Immediately populate upcomingMatches so WebSocket / polling serves real data ──
   if (analyzed.length > 0) {

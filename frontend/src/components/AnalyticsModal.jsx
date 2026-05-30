@@ -7,21 +7,21 @@ const TIER_BG     = { 1: '#1c1200', 2: '#001a0d', 3: '#1c1200', 4: '#1a0c00' };
 const TIER_BORDER = { 1: '#78350f', 2: '#065f46', 3: '#78350f', 4: '#7c2d12' };
 
 const PARAMS = [
-  { key: 'p1_motivation',  label: 'Motivation Gap',    weight: '16%', icon: '🔥' },
-  { key: 'p4_form',        label: 'Team Form (L10)',   weight: '12%', icon: '📈' },
-  { key: 'p7_poisson',     label: 'Poisson Model',     weight: '9%',  icon: '🧮' },
-  { key: 'p3_h2h',         label: 'H2H History',       weight: '8%',  icon: '⚔️'  },
-  { key: 'p2_starPower',   label: 'Star Power',        weight: '7%',  icon: '⭐' },
-  { key: 'p5_timing',      label: 'Scoring Timing',    weight: '7%',  icon: '⏱️'  },
-  { key: 'p6_defensive',   label: 'Defensive Gap',     weight: '7%',  icon: '🛡️'  },
-  { key: 'p8_xg',          label: 'xG Attack',         weight: '6%',  icon: '🎯' },
-  { key: 'p15_crisis',     label: 'Crisis/Drought',    weight: '10%', icon: '🚨' },
-  { key: 'p9_xga',         label: 'xGA Defence',       weight: '5%',  icon: '🧱' },
-  { key: 'p13_squad',      label: 'Squad Integrity',   weight: '5%',  icon: '💪' },
-  { key: 'p10_pace',       label: 'Pace & Conversion', weight: '4%',  icon: '⚡' },
-  { key: 'p11_timezone',   label: 'Timezone/Referee',  weight: '2%',  icon: '🏁' },
-  { key: 'p14_lifecycle',  label: 'League Lifecycle',  weight: '1%',  icon: '📅' },
-  { key: 'p12_fixture',    label: 'Fixture Lock',       weight: '1%',  icon: '📌' },
+  { key: 'p4_form',           label: 'Team Form (L10)',   weight: '14%', icon: '📈' },
+  { key: 'p1_motivation',     label: 'Motivation Gap',    weight: '13%', icon: '🔥' },
+  { key: 'p15_crisis',        label: 'Crisis/Drought',    weight: '12%', icon: '🚨' },
+  { key: 'p7_poisson',        label: 'Poisson Model',     weight: '11%', icon: '🧮' },
+  { key: 'p2_starPower',      label: 'Star Power',        weight: '7%',  icon: '⭐' },
+  { key: 'p6_defensiveGap',   label: 'Defensive Gap',     weight: '7%',  icon: '🛡️'  },
+  { key: 'p8_xg',             label: 'xG Attack',         weight: '6%',  icon: '🎯' },
+  { key: 'p5_scoringTiming',  label: 'Scoring Timing',    weight: '5%',  icon: '⏱️'  },
+  { key: 'p9_xga',            label: 'xGA Defence',       weight: '5%',  icon: '🧱' },
+  { key: 'p13_squad',         label: 'Squad Integrity',   weight: '5%',  icon: '💪' },
+  { key: 'p10_pace',          label: 'Pace & Conversion', weight: '4%',  icon: '⚡' },
+  { key: 'p3_h2h',            label: 'H2H History',       weight: '3%',  icon: '⚔️'  },
+  { key: 'p11_homeAdvantage', label: 'Home Advantage',    weight: '3%',  icon: '🏠' },
+  { key: 'p12_market',        label: 'Market Signal',     weight: '3%',  icon: '📊' },
+  { key: 'p14_lifecycle',     label: 'League Lifecycle',  weight: '2%',  icon: '📅' },
 ];
 
 function scoreColor(s) {

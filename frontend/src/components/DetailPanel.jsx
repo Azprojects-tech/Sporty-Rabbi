@@ -6,21 +6,21 @@ const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
 const TIER_BORDER = { 1: '#78350f55', 2: '#00683355', 3: '#78350f55', 4: '#7c2d1255' };
 
 const PARAMS = [
-  { key: 'p1_motivation',  label: 'Motivation',  weight: '16%', icon: 'MOT' },
-  { key: 'p4_form',        label: 'Form (L10)',   weight: '12%', icon: 'FRM' },
-  { key: 'p7_poisson',     label: 'Poisson',      weight: '9%',  icon: 'PSN' },
-  { key: 'p3_h2h',         label: 'H2H',          weight: '8%',  icon: 'H2H' },
-  { key: 'p2_starPower',   label: 'Star Power',   weight: '7%',  icon: 'STR' },
-  { key: 'p5_timing',      label: 'Timing',       weight: '7%',  icon: 'TIM' },
-  { key: 'p6_defensive',   label: 'Defensive',    weight: '7%',  icon: 'DEF' },
-  { key: 'p8_xg',          label: 'xG Attack',    weight: '6%',  icon: 'XGA' },
-  { key: 'p15_crisis',     label: 'Crisis',       weight: '10%', icon: 'CRS' },
-  { key: 'p9_xga',         label: 'xGA Defence',  weight: '5%',  icon: 'XGD' },
-  { key: 'p13_squad',      label: 'Squad',        weight: '5%',  icon: 'SQD' },
-  { key: 'p10_pace',       label: 'Pace',         weight: '4%',  icon: 'PAC' },
-  { key: 'p11_timezone',   label: 'Timezone',     weight: '2%',  icon: 'TZ'  },
-  { key: 'p14_lifecycle',  label: 'Lifecycle',    weight: '1%',  icon: 'LFC' },
-  { key: 'p12_fixture',    label: 'Fixture',      weight: '1%',  icon: 'FIX' },
+  { key: 'p4_form',           label: 'Form (L10)',   weight: '14%', icon: 'FRM' },
+  { key: 'p1_motivation',     label: 'Motivation',   weight: '13%', icon: 'MOT' },
+  { key: 'p15_crisis',        label: 'Crisis',       weight: '12%', icon: 'CRS' },
+  { key: 'p7_poisson',        label: 'Poisson',      weight: '11%', icon: 'PSN' },
+  { key: 'p2_starPower',      label: 'Star Power',   weight: '7%',  icon: 'STR' },
+  { key: 'p6_defensiveGap',   label: 'Defensive',    weight: '7%',  icon: 'DEF' },
+  { key: 'p8_xg',             label: 'xG Attack',    weight: '6%',  icon: 'XGA' },
+  { key: 'p5_scoringTiming',  label: 'Timing',       weight: '5%',  icon: 'TIM' },
+  { key: 'p9_xga',            label: 'xGA Defence',  weight: '5%',  icon: 'XGD' },
+  { key: 'p13_squad',         label: 'Squad',        weight: '5%',  icon: 'SQD' },
+  { key: 'p10_pace',          label: 'Pace',         weight: '4%',  icon: 'PAC' },
+  { key: 'p3_h2h',            label: 'H2H',          weight: '3%',  icon: 'H2H' },
+  { key: 'p11_homeAdvantage', label: 'Home Adv.',    weight: '3%',  icon: 'HOM' },
+  { key: 'p12_market',        label: 'Market',       weight: '3%',  icon: 'MKT' },
+  { key: 'p14_lifecycle',     label: 'Lifecycle',    weight: '2%',  icon: 'LFC' },
 ];
 
 function scoreColor(s) {
