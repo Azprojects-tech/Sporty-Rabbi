@@ -88,7 +88,7 @@ export function MatchCard({ match, onSelectMatch }) {
         const recs = match.analysis?.recommendations || [];
         const winRec = recs.find(r => r.type === 'WINS_ONLY' && (r.confidence || 0) >= 55);
         const predictedWinner = winRec ? winRec.selection : 'UNDECIDED';
-        const predictedScore  = match.analysis?.poisson?.likelyScore?.score || '?-?';
+        const predictedScore  = match.analysis?.poisson?.likelyScore?.score || '\u2013';
         const isHome   = winRec && winRec.selection === `${match.home} Win`;
         const winColor = !winRec ? '#334155' : isHome ? '#60a5fa' : '#c084fc';
         return (

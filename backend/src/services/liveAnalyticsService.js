@@ -30,8 +30,11 @@ export function calculateNextGoalProbability(match) {
     const awayShotXg = awayShots * 0.08;
 
     // Blended lambda for remaining minutes: 70% xG rate + 30% shots proxy
-    const homeLambda = ((homeXgRate * 0.7) + ((homeShotXg / minsElapsed) * 0.3)) * minutesRemaining;
-    const awayLambda = ((awayXgRate * 0.7) + ((awayShotXg / minsElapsed) * 0.3)) * minutesRemaining;
+    // Cap at 4.0 (realistic max goals in remaining time) to prevent early-game inflation
+    const rawHomeLambda = ((homeXgRate * 0.7) + ((homeShotXg / minsElapsed) * 0.3)) * minutesRemaining;
+    const rawAwayLambda = ((awayXgRate * 0.7) + ((awayShotXg / minsElapsed) * 0.3)) * minutesRemaining;
+    const homeLambda = Math.min(rawHomeLambda, 4.0);
+    const awayLambda = Math.min(rawAwayLambda, 4.0);
 
     // P(at least 1 goal in remaining time) via Poisson: 1 - e^(-λ)
     const homeNextGoalProb = Math.min(+((1 - Math.exp(-homeLambda)) * 100).toFixed(1), 95);

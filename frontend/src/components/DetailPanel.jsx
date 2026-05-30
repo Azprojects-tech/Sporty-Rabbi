@@ -158,19 +158,33 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id]);
 
+  // Auto-refresh every 30s when the match is live
+  useEffect(() => {
+    const isLive = match?.isLive || ['1H','2H','HT','ET','BT','P'].includes(match?.status);
+    if (!isLive) return;
+    const iv = setInterval(loadAnalysis, 30000);
+    return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [match?.id, match?.status, match?.isLive]);
+
   async function loadAnalysis() {
     // Show spinner only when there is no existing analysis to display
     if (!analysis && !preloadedAnalysis) setLoading(true);
     setError(null);
     try {
-      // Pick league-appropriate xG defaults for NS matches (live stats are 0 until kickoff)
+      // Per-league xG defaults (mirrors server.js LEAGUE_XG table — must stay in sync)
       const _lid = match.leagueId || 0;
-      const _isUEFA  = [2, 3, 848].includes(_lid);
-      const _isTop5  = [39, 140, 78, 61, 135].includes(_lid);
-      const _defHXg  = _isUEFA ? 1.70 : _isTop5 ? 1.55 : 1.25;
-      const _defAXg  = _isUEFA ? 1.45 : _isTop5 ? 1.15 : 1.05;
-      const _defShH  = _isUEFA ? 15   : _isTop5 ? 14   : 11;
-      const _defShA  = _isUEFA ? 13   : _isTop5 ? 10   : 9;
+      const LEAGUE_XG_MAP = {
+        39:[1.55,1.35], 40:[1.45,1.35], 78:[1.70,1.50], 79:[1.55,1.40],
+        135:[1.15,1.05], 61:[1.15,1.05], 140:[1.30,1.20], 88:[1.65,1.45],
+        71:[1.45,1.30], 94:[1.30,1.20], 144:[1.40,1.30], 235:[1.25,1.15],
+        307:[1.20,1.10], 2:[1.35,1.25], 3:[1.30,1.25], 179:[1.40,1.30],
+        848:[1.25,1.15], 203:[1.20,1.10], 253:[1.30,1.20], 98:[1.25,1.15],
+        292:[1.20,1.10], 169:[1.30,1.20], 313:[1.25,1.15], 128:[1.40,1.30],
+      };
+      const [_defHXg, _defAXg] = LEAGUE_XG_MAP[_lid] || [1.30, 1.15];
+      const _defShH = [2,3,848,39,78,88].includes(_lid) ? 15 : [140,135,61,94].includes(_lid) ? 13 : 11;
+      const _defShA = [2,3,848,39,78,88].includes(_lid) ? 13 : [140,135,61,94].includes(_lid) ? 11 : 9;
       const matchData = {
         home:             match.home,
         away:             match.away,

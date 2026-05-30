@@ -134,7 +134,7 @@ export async function getTeamForm(teamId, league = null) {
         goalsAgainst,
         avgGoalsFor: (goalsFor / matches.length).toFixed(2),
         avgGoalsAgainst: (goalsAgainst / matches.length).toFixed(2),
-        form: formStr.slice(0, 5).join(''), // Last 5 matches
+        form: formStr.join(''), // Last 10 matches (full L10 for V9 engine)
         winRate: ((wins / matches.length) * 100).toFixed(1),
       },
     };

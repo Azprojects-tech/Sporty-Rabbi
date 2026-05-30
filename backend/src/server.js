@@ -367,55 +367,7 @@ async function fetchTodayFixturesFromApi() {
   }
 }
 
-// ESPN league ID → { name, leagueId } map
-// leagueId values mirror API-Football IDs where known for frontend filter compatibility
-const ESPN_LEAGUE_MAP = {
-  '776':   { name: 'UEFA Europa League',          leagueId: 3 },
-  '20296': { name: 'UEFA Conference League',      leagueId: 848 },
-  '600':   { name: 'UEFA Champions League',       leagueId: 2 },
-  '700':   { name: 'English Premier League',      leagueId: 39 },
-  '701':   { name: 'English Championship',        leagueId: 40 },
-  '710':   { name: 'French Ligue 1',              leagueId: 61 },
-  '711':   { name: 'French Ligue 2',              leagueId: 62 },
-  '720':   { name: 'German Bundesliga',           leagueId: 78 },
-  '721':   { name: 'German 2. Bundesliga',        leagueId: 79 },
-  '730':   { name: 'Italian Serie A',             leagueId: 135 },
-  '731':   { name: 'Italian Serie B',             leagueId: 136 },
-  '740':   { name: 'Spanish La Liga',             leagueId: 140 },
-  '741':   { name: 'Spanish Segunda',             leagueId: 141 },
-  '750':   { name: 'Portuguese Primeira Liga',    leagueId: 94 },
-  '760':   { name: 'Scottish Premiership',        leagueId: 179 },
-  '770':   { name: 'Dutch Eredivisie',            leagueId: 88 },
-  '780':   { name: 'Belgian Pro League',          leagueId: 144 },
-  '3939':  { name: 'Russian Premier League',      leagueId: 235 },
-  '3946':  { name: 'Turkish Super Lig',           leagueId: 203 },
-  '3947':  { name: 'Turkish Cup',                 leagueId: 204 },
-  '3940':  { name: 'Russian Cup',                 leagueId: 236 },
-  '4002':  { name: 'Saudi Pro League',            leagueId: 307 },
-  '21231': { name: 'Saudi Pro League',            leagueId: 307 },
-  '1':     { name: 'FIFA World Cup',              leagueId: 1 },
-  '2':     { name: 'UEFA European Championship',  leagueId: 4 },
-  '5':     { name: 'Copa America',                leagueId: 9 },
-  '253':   { name: 'MLS',                         leagueId: 253 },
-  '783':   { name: 'Brazilian Serie A',           leagueId: 71 },
-  // ── Asia / Pacific ──────────────────────────────────────────────────────
-  '2094':  { name: 'Chinese Super League',        leagueId: 169 },
-  '2149':  { name: 'K League 1',                  leagueId: 292 },
-  '2098':  { name: 'J1 League',                   leagueId: 98 },
-  '188':   { name: 'A-League',                    leagueId: 188 },
-  '2076':  { name: 'AFC Champions League',        leagueId: 17 },
-  '7593':  { name: 'Indonesian Liga 1',           leagueId: 313 },
-  // ── International ───────────────────────────────────────────────────────
-  '15':    { name: 'International Friendlies',    leagueId: 1 },
-  '10':    { name: 'International Friendlies',    leagueId: 1 },
-  '32':    { name: 'UEFA Nations League',         leagueId: 16 },
-  '4328':  { name: 'AFCON',                       leagueId: 6 },
-  '3669':  { name: 'CONCACAF Nations League',     leagueId: 30 },
-  // ── South America ────────────────────────────────────────────────────────
-  '1903':  { name: 'Argentine Primera Division',  leagueId: 128 },
-  '975':   { name: 'Copa Libertadores',           leagueId: 13 },
-  '984':   { name: 'Copa Sudamericana',           leagueId: 11 },
-};
+
 
 // TheSportsDB league name → leagueId fallback
 const SPORTSDB_LEAGUE_MAP = {
@@ -469,91 +421,9 @@ function sportsDbLeagueToId(leagueName) {
 }
 
 /**
- * Fetch TODAY-ONLY fixtures from ESPN's unofficial scoreboard API.
- * Covers UEFA Europa League, Conference League, Turkish Cup, Russian Cup, all top leagues.
- * Returns fixtures with enriched context (round, notes) for the V8 engine.
- */
-async function fetchFixturesFromESPN() {
-  try {
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    console.log(`[Calibrate] ESPN: fetching today's fixtures (${today})`);
-
-    const r = await axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', {
-      params: { dates: today },
-      timeout: 10000,
-    });
-
-    const allEvents = r.data?.events || [];
-    if (!allEvents.length) {
-      console.log('[Calibrate] ESPN: no events returned for today');
-      return [];
-    }
-
-    const fixtures = allEvents
-      .filter(e => {
-        const status = e.competitions?.[0]?.status?.type?.name || '';
-        return status !== 'STATUS_FINAL' && status !== 'STATUS_FULL_TIME' && status !== 'STATUS_FT';
-      })
-      .map(e => {
-        const comp     = e.competitions?.[0];
-        const home     = comp?.competitors?.find(c => c.homeAway === 'home');
-        const away     = comp?.competitors?.find(c => c.homeAway === 'away');
-        const homeName = home?.team?.displayName || home?.team?.name;
-        const awayName = away?.team?.displayName || away?.team?.name;
-        if (!homeName || !awayName) return null;
-
-        // ESPN league ID from uid: s:600~l:776~e:... → leagueId 776
-        const espnLeagueId = (e.uid || '').match(/l:(\d+)/)?.[1] || '0';
-        // For unmapped leagues: use ESPN's own competition name + ESPN ID as unique leagueId
-        // This ensures Chinese Super League, K-League etc. get their real names rather than 'International'
-        const espnCompName = comp?.league?.name || comp?.league?.abbreviation || null;
-        const leagueInfo   = ESPN_LEAGUE_MAP[espnLeagueId]
-          || (espnCompName ? { name: espnCompName, leagueId: Number(espnLeagueId) || 0 }
-          : { name: 'International', leagueId: 0 });
-
-        // Enrich with knockout/round context from ESPN metadata
-        const seriesTitle  = comp?.series?.title || null;         // "Semifinals", "Final", etc.
-        const notesLine    = comp?.notes?.[0]?.headline || null;  // "2nd Leg — Nottingham lead 1-0"
-        const isKnockout   = !!(seriesTitle || notesLine?.toLowerCase().includes('leg'));
-
-        return {
-          fixture:    { id: e.id, date: e.date },
-          teams: {
-            home: { name: homeName, id: home?.team?.id || null },
-            away: { name: awayName, id: away?.team?.id || null },
-          },
-          league: {
-            id:          leagueInfo.leagueId,
-            name:        leagueInfo.name,
-            country:     '',
-            isKnockout,
-            round:       seriesTitle,
-            notes:       notesLine,
-          },
-        };
-      })
-      .filter(Boolean);
-
-    console.log(`[Calibrate] ESPN: ${fixtures.length} today's fixtures (from ${allEvents.length} total events)`);
-    return fixtures;
-  } catch (err) {
-    console.warn(`[Calibrate] ESPN fetch failed: ${err.message}`);
-    return [];
-  }
-}
-
-/**
- * Fetch today + tomorrow fixtures.
- * Primary: ESPN unofficial API (~88 events, covers UEL/UECL/Turkish Cup/Russian Cup).
- * Fallback: TheSportsDB (free, but only ~6 fixtures on quiet days).
+ * Fetch today + tomorrow fixtures from TheSportsDB (free fallback when API-Football unavailable).
  */
 async function fetchTodayFixturesFromSportsDB() {
-  // Try ESPN first
-  const espnFixtures = await fetchFixturesFromESPN();
-  if (espnFixtures.length > 0) return espnFixtures;
-
-  // ESPN failed — fall back to TheSportsDB
-  console.log('[Calibrate] ESPN returned 0 fixtures, trying TheSportsDB fallback...');
   try {
     const today    = new Date().toISOString().split('T')[0];
     const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
@@ -683,7 +553,7 @@ function sanitizeMatch(match) {
 }
 
 // Analyze match for betting opportunities
-function analyzeMatch(match) {
+async function analyzeMatch(match) {
   try {
     const fixture = match.fixture || {};
     const goals = match.goals || {};
@@ -766,9 +636,9 @@ function analyzeMatch(match) {
       analysisObj      = calMatch.analysis || null;
       kickoffUTC       = calMatch.kickoffUTC || fixture.date || null;
     } else {
-      // Live match (always fresh) or no calibration — run V8 with actual live data
+      // Live match (always fresh) or no calibration — run V9 with actual live data
       const liveMin = liveElapsed || matchMinutesElapsed || 0;
-      // Per-league xG baselines: different leagues have different expected goal rates
+      // Per-league xG baselines
       const LEAGUE_XG = {
         39:  [1.55, 1.35], 40:  [1.45, 1.35], 78:  [1.70, 1.50], 79:  [1.55, 1.40],
         135: [1.15, 1.05], 61:  [1.15, 1.05], 140: [1.30, 1.20], 88:  [1.65, 1.45],
@@ -776,6 +646,38 @@ function analyzeMatch(match) {
         307: [1.20, 1.10], 2:   [1.35, 1.25], 3:   [1.30, 1.25], 179: [1.40, 1.30],
       };
       const [defHomeXg, defAwayXg] = LEAGUE_XG[league.id] || [1.35, 1.35];
+
+      // ── Fetch real team form + H2H from API-Football (1h cache in analyticsService) ──
+      let homeFormStr = 'W-L-D-W-L';
+      let awayFormStr = 'W-L-D-W-L';
+      let h2hHistory = [];
+      const homeTeamId = teams.home?.id;
+      const awayTeamId = teams.away?.id;
+      if (homeTeamId && awayTeamId) {
+        const [hRes, aRes, h2hRes] = await Promise.allSettled([
+          getTeamForm(homeTeamId, league.id),
+          getTeamForm(awayTeamId, league.id),
+          getH2H(homeTeamId, awayTeamId),
+        ]);
+        // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
+        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats?.form) {
+          homeFormStr = hRes.value.stats.form.split('').join('-');
+        }
+        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats?.form) {
+          awayFormStr = aRes.value.stats.form.split('').join('-');
+        }
+        // Build h2h history from aggregate stats for scoreH2H()
+        if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
+          const s = h2hRes.value.stats;
+          const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
+          const gpg = n > 0 ? (s.totalGoals || n * 2.5) / n : 2.5;
+          const gH = Math.round(gpg * 0.55), gA = Math.round(gpg * 0.45);
+          for (let i = 0; i < (s.teamAWins || 0); i++) h2hHistory.push({ homeGoals: gH + 1, awayGoals: gA, winner: 'home' });
+          for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
+          for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
+        }
+      }
+
       const matchData = {
         home: teams.home?.name || 'Unknown',
         away: teams.away?.name || 'Unknown',
@@ -792,8 +694,9 @@ function analyzeMatch(match) {
         homePossession: possession.home || 50,
         homeShotsPerGame: shots.home || 10,
         awayShotsPerGame: shots.away || 10,
-        homeForm:  'W-L-D-W-L',
-        awayForm:  'W-L-D-W-L',
+        homeForm:  homeFormStr,
+        awayForm:  awayFormStr,
+        h2hHistory,
         homePosition: 10,
         awayPosition: 10,
         homePoints: 40,
@@ -895,7 +798,7 @@ async function pollLiveMatches() {
       // ── API-Football mode only — no Gemini fallback for live scores ──────
       // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
-      processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
+      processedMatches = matches ? (await Promise.all(matches.map(analyzeMatch))).filter(m => m !== null) : [];
     }
     // If API-Football quota is exhausted or unavailable, live tab stays empty.
     // Real-time scores require a real-time source.
@@ -952,7 +855,7 @@ async function pollUpcomingMatches() {
       console.log('🔄 Polling upcoming matches...');
       const matches = await fetchUpcomingMatches();
       console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
-      processedMatches = matches ? matches.map(analyzeMatch).filter(m => m !== null) : [];
+      processedMatches = matches ? (await Promise.all(matches.map(analyzeMatch))).filter(m => m !== null) : [];
     }
     // No Gemini fallback — it hallucinates wrong fixtures.
     // If API-Football is unavailable, calibration data (above) is the source of truth.
@@ -1037,7 +940,20 @@ cron.schedule('0 0,6,12,18 * * *', () => {
 
 // ─── ALERT PERSISTENCE ────────────────────────────────────────────────────
 
+// ── Alert dedup: prevent same match+type firing more than once per 30 minutes ──────────────
+const recentAlertKeys = new Map(); // key → timestamp
+const ALERT_DEDUP_MS = 30 * 60 * 1000; // 30 minutes
+
 async function saveAlert(alertData) {
+  // Dedup: skip if same match+type was sent within the last 30 minutes
+  const key = `${alertData.home}|${alertData.away}|${alertData.type || 'alert'}`;
+  const lastSent = recentAlertKeys.get(key);
+  if (lastSent && Date.now() - lastSent < ALERT_DEDUP_MS) return;
+  recentAlertKeys.set(key, Date.now());
+  // Purge stale entries
+  for (const [k, ts] of recentAlertKeys) {
+    if (Date.now() - ts > ALERT_DEDUP_MS) recentAlertKeys.delete(k);
+  }
   // Always keep in memory (last 100)
   alerts.unshift(alertData);
   if (alerts.length > 100) alerts.pop();
@@ -1815,7 +1731,6 @@ function buildDefaultV8Fixture(f) {
       homePoints,             awayPoints,
       totalTeams,             gameWeek,     totalGW,
       homeForm,               awayForm,
-      // ESPN enrichment notes (e.g. "2nd Leg — Forest lead 1-0")
       round: f.round || null,
       notes: f.notes || null,
     },
