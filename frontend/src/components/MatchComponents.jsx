@@ -81,6 +81,33 @@ export function MatchCard({ match, onSelectMatch }) {
         </div>
       )}
 
+      {/* Prediction strip — always visible on every card */}
+      {(() => {
+        const recs = match.analysis?.recommendations || [];
+        const winRec = recs.find(r => r.type === 'WINS_ONLY' && (r.confidence || 0) >= 55);
+        const predictedWinner = winRec ? winRec.selection : 'UNDECIDED';
+        const predictedScore  = match.analysis?.poisson?.likelyScore?.score || '?-?';
+        const isHome   = winRec && winRec.selection === `${match.home} Win`;
+        const winColor = !winRec ? '#334155' : isHome ? '#60a5fa' : '#c084fc';
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            margin: '6px 0 8px', background: '#080c14', border: '1px solid #1a2540',
+            borderRadius: 6, padding: '5px 10px', gap: 6 }}>
+            <span style={{ fontSize: 9, color: '#334155', fontWeight: 700,
+              letterSpacing: '0.5px', textTransform: 'uppercase', flexShrink: 0 }}>Predicted</span>
+            <span style={{ fontSize: 11, fontWeight: 800, color: winColor, flex: 1,
+              textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', padding: '0 4px' }}>
+              {predictedWinner}
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#475569',
+              flexShrink: 0, letterSpacing: '1px' }}>
+              {predictedScore}
+            </span>
+          </div>
+        );
+      })()}
+
       {/* Row 3: stats pills + confidence bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <StatPill label="Poss"  value={`${match.possession?.home || 0}–${match.possession?.away || 0}%`} />

@@ -531,17 +531,61 @@ function evaluateChaos({ motivation, form, matchMinutes = 0, earlyGoalScored = f
 
 // ─── TIER RECOMMENDATIONS ─────────────────────────────────────────────────────
 function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData) {
-  const { home, away, status, matchMinutes = 0 } = matchData;
+  const { home, away, status, matchMinutes = 0, score = '0-0' } = matchData;
   const isLive = status === 'LIVE';
+
+  // ── LIVE: Late-game decisive score lock ─────────────────────────────────────
+  if (isLive && matchMinutes > 0) {
+    const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
+    const diff = Math.abs(hG - aG);
+    const locked =
+      (matchMinutes >= 75 && diff >= 2) ||
+      (matchMinutes >= 85 && diff >= 1) ||
+      (matchMinutes >= 60 && diff >= 3);
+    if (locked && diff > 0) {
+      const leader = hG > aG ? home : away;
+      let conf;
+      if      (matchMinutes >= 85 && diff >= 2) conf = Math.min(90 + Math.round((matchMinutes - 85) * 1.2) + diff * 2, 97);
+      else if (matchMinutes >= 75 && diff >= 2) conf = Math.min(84 + Math.round((matchMinutes - 75) * 0.8) + diff * 2, 96);
+      else if (matchMinutes >= 85 && diff === 1) conf = Math.min(76 + Math.round((matchMinutes - 85) * 1.5), 88);
+      else                                       conf = Math.min(80 + Math.round((matchMinutes - 60) * 0.4) + diff, 92);
+      return [{
+        type: 'WINS_ONLY',
+        selection: `${leader} Win`,
+        confidence: conf,
+        tier: conf >= 85 ? 1 : conf >= 72 ? 2 : 3,
+        tierName: conf >= 85 ? TIERS[1].name : conf >= 72 ? TIERS[2].name : TIERS[3].name,
+        logic: `${matchMinutes}' played, ${hG}-${aG}. ${diff}-goal lead. Comeback probability < ${100 - conf}%.`,
+      }];
+    }
+  }
+
   const recs = [];
 
-  // Adjust Over 2.5 probability for chaos
-  let o25 = poisson.probabilities.over25;
-  if (chaos.earlyGoalActive)    o25 = Math.min(o25 + Math.round(chaos.earlyGoalBoost * 100), 97);
-  if (chaos.bivariateDependency) o25 = Math.min(o25 + 8, 97);
+  // ── Live Poisson correction: actual goals already in play ──────────────────
+  let liveO25 = null;
+  if (isLive && matchMinutes >= 10) {
+    const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
+    const totalNow  = hG + aG;
+    const minsLeft  = Math.max(92 - matchMinutes, 0);
+    const pace      = totalNow / matchMinutes;
+    const projTotal = totalNow + pace * minsLeft;
+    if (totalNow >= 3) {
+      liveO25 = 99;
+    } else if (totalNow >= 2 && minsLeft > 5) {
+      liveO25 = Math.max(poisson.probabilities.over25, Math.min(Math.round(62 + projTotal * 9), 88));
+    } else if (totalNow === 0 && matchMinutes >= 35) {
+      liveO25 = Math.min(poisson.probabilities.over25, 38);
+    }
+  }
+
+  // Adjust Over 2.5 probability for chaos + live override
+  let o25 = liveO25 !== null ? liveO25 : poisson.probabilities.over25;
+  if (liveO25 === null && chaos.earlyGoalActive)    o25 = Math.min(o25 + Math.round(chaos.earlyGoalBoost * 100), 97);
+  if (liveO25 === null && chaos.bivariateDependency) o25 = Math.min(o25 + 8, 97);
 
   const o15  = poisson.probabilities.over15;
-  const u25  = poisson.probabilities.under25;
+  const u25  = liveO25 !== null ? Math.max(100 - liveO25, 1) : poisson.probabilities.under25;
   const btts = poisson.probabilities.btts;
 
   // ── Win recommendation ──

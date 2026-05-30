@@ -252,7 +252,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
-                V8-MASTER
+                V9
               </span>
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>
                 T{tier} &middot; {tierName}

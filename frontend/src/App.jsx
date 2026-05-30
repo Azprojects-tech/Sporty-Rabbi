@@ -270,7 +270,7 @@ export default function App() {
  <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.5px' }}>
  <span style={{ color: '#e2e8f0' }}>Sporty</span><span style={{ color: '#00b859' }}>Rabbi</span>
  </span>
- <span style={{ fontSize: 9, fontWeight: 700, color: '#4a5568', letterSpacing: 1, background: '#1e2535', borderRadius: 3, padding: '1px 4px' }}>V8</span>
+ <span style={{ fontSize: 9, fontWeight: 700, color: '#4a5568', letterSpacing: 1, background: '#1e2535', borderRadius: 3, padding: '1px 4px' }}>V9</span>
  </div>
 
  {/* Recalibrate */}

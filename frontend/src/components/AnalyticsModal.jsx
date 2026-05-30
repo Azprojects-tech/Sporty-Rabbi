@@ -136,7 +136,7 @@ export default function AnalyticsModal({ match, onClose }) {
             <div style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{match.home} <span style={{ color: '#1e293b' }}>vs</span> {match.away}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
               <span style={{ fontSize: 10, color: '#334155' }}>{match.league}</span>
-              <span style={{ background: '#001a0d', border: '1px solid #065f46', borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 800, color: '#00e676', letterSpacing: '0.5px' }}>V8-MASTER</span>
+              <span style={{ background: '#001a0d', border: '1px solid #065f46', borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 800, color: '#00e676', letterSpacing: '0.5px' }}>V9</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>T{tier} · {tierName}</span>
               <span style={{ fontSize: 13, fontWeight: 800, color: scoreColor(overallScore) }}>{overallScore}%</span>
             </div>

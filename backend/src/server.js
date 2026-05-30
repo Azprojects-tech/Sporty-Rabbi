@@ -753,23 +753,25 @@ function analyzeMatch(match) {
 
     let confidence, opportunitiesArr, analysisObj, kickoffUTC;
 
-    if (calMatch) {
-      // Calibration store hit — V8 analysis already computed; update with live state
+    if (calMatch && statusStr !== 'LIVE') {
+      // Pre-match: reuse calibration analysis (enriched by Gemini, no live score needed)
       confidence       = calMatch.confidence;
       opportunitiesArr = calMatch.opportunities || [];
       analysisObj      = calMatch.analysis || null;
       kickoffUTC       = calMatch.kickoffUTC || fixture.date || null;
     } else {
-      // No calibration entry — run V8 with available live data + neutral defaults
+      // Live match or no calibration — run V8 fresh with live stats + score
       const homeXgAvg = xg.home > 0 ? xg.home : 1.35;
       const awayXgAvg = xg.away > 0 ? xg.away : 1.35;
+      const liveMin   = (typeof fixture.status === 'object' ? (fixture.status?.elapsed || null) : null) || matchMinutesElapsed || 0;
       const matchData = {
         home: teams.home?.name || 'Unknown',
         away: teams.away?.name || 'Unknown',
         league: league.name || 'Unknown',
         leagueId: league.id || 0,
         status: statusStr,
-        matchMinutes: matchMinutesElapsed || 0,
+        matchMinutes: liveMin,
+        score: `${goals.home || 0}-${goals.away || 0}`,
         homeXgAvg,
         awayXgAvg,
         homeXgaAvg: 1.35,
