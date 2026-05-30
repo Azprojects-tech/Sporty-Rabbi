@@ -6,8 +6,10 @@ export default function LiveAnalysisPanel({ match }) {
   const [loading, setLoading] = useState(true);
   const [showOddsInput, setShowOddsInput] = useState(false);
 
+  const _isLive = match?.isLive || ['1H','2H','HT','ET','BT','P','LIVE'].includes(match?.status);
+
   useEffect(() => {
-    if (!match || match.status !== 'LIVE') {
+    if (!match || !_isLive) {
       setLoading(false);
       return;
     }
@@ -29,7 +31,7 @@ export default function LiveAnalysisPanel({ match }) {
     return () => clearInterval(interval);
   }, [match]);
 
-  if (!match || match.status !== 'LIVE') {
+  if (!match || !_isLive) {
     return null;
   }
 

@@ -831,6 +831,7 @@ function analyzeMatch(match) {
       shots,
       xg,
       status: statusStr,
+      isLive: normalizedStatus === 'LIVE',
       matchMinutes: liveElapsed || matchMinutesElapsed || 0,
       confidence: Math.min(Math.max(Math.round(confidence), 10), 98),
       opportunities: opportunitiesArr.filter(Boolean),

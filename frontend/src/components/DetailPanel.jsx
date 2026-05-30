@@ -176,7 +176,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         away:             match.away,
         league:           match.league || 'Unknown',
         leagueId:         _lid,
-        status:           match.status   || 'NS',
+        status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
         homePossession:   match.possession?.home || 50,
