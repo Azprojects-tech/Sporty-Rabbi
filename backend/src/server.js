@@ -696,7 +696,8 @@ function analyzeMatch(match) {
 
     const getStat = (stats, key) => {
       const s = stats.find((s) => s.type === key);
-      return s ? (typeof s.value === 'number' ? s.value : parseInt(s.value)) : 0;
+      if (!s || s.value === null || s.value === undefined) return 0;
+      return typeof s.value === 'number' ? s.value : parseFloat(s.value) || 0;
     };
 
     const possession = {
@@ -735,10 +736,15 @@ function analyzeMatch(match) {
     // Get status - handle both string and object format
     let statusStr = 'NS';
     if (typeof fixture.status === 'object' && fixture.status?.short) {
-      statusStr = fixture.status.short; // 'NS', 'LV', 'FT', etc.
+      statusStr = fixture.status.short; // '1H', 'HT', '2H', 'NS', 'FT', etc.
     } else if (typeof fixture.status === 'string') {
       statusStr = fixture.status;
     }
+    // API-Football NEVER sends 'LIVE' — in-play codes are '1H', 'HT', '2H', 'ET', etc.
+    const LIVE_CODES = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'LIVE']);
+    const normalizedStatus = LIVE_CODES.has(statusStr) ? 'LIVE' : statusStr;
+    // Use API-provided elapsed minute (accurate) over kickoff-time calculation (can drift)
+    const liveElapsed = typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0;
 
     // ── V8-powered confidence scoring ──────────────────────────────────────────
     // Priority 1: calibration store lookup (home+away name match) — reuses pre-computed V8.
@@ -753,27 +759,33 @@ function analyzeMatch(match) {
 
     let confidence, opportunitiesArr, analysisObj, kickoffUTC;
 
-    if (calMatch && statusStr !== 'LIVE') {
-      // Pre-match: reuse calibration analysis (enriched by Gemini, no live score needed)
+    if (calMatch && normalizedStatus !== 'LIVE') {
+      // Pre-match only: reuse Gemini-enriched calibration analysis
       confidence       = calMatch.confidence;
       opportunitiesArr = calMatch.opportunities || [];
       analysisObj      = calMatch.analysis || null;
       kickoffUTC       = calMatch.kickoffUTC || fixture.date || null;
     } else {
-      // Live match or no calibration — run V8 fresh with live stats + score
-      const homeXgAvg = xg.home > 0 ? xg.home : 1.35;
-      const awayXgAvg = xg.away > 0 ? xg.away : 1.35;
-      const liveMin   = (typeof fixture.status === 'object' ? (fixture.status?.elapsed || null) : null) || matchMinutesElapsed || 0;
+      // Live match (always fresh) or no calibration — run V8 with actual live data
+      const liveMin = liveElapsed || matchMinutesElapsed || 0;
+      // Per-league xG baselines: different leagues have different expected goal rates
+      const LEAGUE_XG = {
+        39:  [1.55, 1.35], 40:  [1.45, 1.35], 78:  [1.70, 1.50], 79:  [1.55, 1.40],
+        135: [1.15, 1.05], 61:  [1.15, 1.05], 140: [1.30, 1.20], 88:  [1.65, 1.45],
+        71:  [1.45, 1.30], 94:  [1.30, 1.20], 144: [1.40, 1.30], 235: [1.25, 1.15],
+        307: [1.20, 1.10], 2:   [1.35, 1.25], 3:   [1.30, 1.25], 179: [1.40, 1.30],
+      };
+      const [defHomeXg, defAwayXg] = LEAGUE_XG[league.id] || [1.35, 1.35];
       const matchData = {
         home: teams.home?.name || 'Unknown',
         away: teams.away?.name || 'Unknown',
         league: league.name || 'Unknown',
         leagueId: league.id || 0,
-        status: statusStr,
+        status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
-        homeXgAvg,
-        awayXgAvg,
+        homeXgAvg: xg.home > 0 ? xg.home : defHomeXg,
+        awayXgAvg: xg.away > 0 ? xg.away : defAwayXg,
         homeXgaAvg: 1.35,
         awayXgaAvg: 1.35,
         homePossession: possession.home || 50,
@@ -818,7 +830,7 @@ function analyzeMatch(match) {
       shots,
       xg,
       status: statusStr,
-      matchMinutes: matchMinutesElapsed || 1,
+      matchMinutes: liveElapsed || matchMinutesElapsed || 0,
       confidence: Math.min(Math.max(Math.round(confidence), 10), 98),
       opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',

@@ -2,8 +2,10 @@ import React, { memo } from 'react';
 
 const CONF_COLOR = s => s >= 70 ? '#00e676' : s >= 60 ? '#fbbf24' : '#ef4444';
 
+const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P']);
+
 export function MatchCard({ match, onSelectMatch }) {
-  const isLive = match.status === 'LIVE';
+  const isLive = LIVE_STATUSES.has(match.status);
   const conf   = match.confidence || 0;
   const [hs, as_] = (match.score || '0-0').split('-').map(Number);
 

@@ -541,7 +541,8 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     const locked =
       (matchMinutes >= 75 && diff >= 2) ||
       (matchMinutes >= 85 && diff >= 1) ||
-      (matchMinutes >= 60 && diff >= 3);
+      (matchMinutes >= 60 && diff >= 3) ||
+      (matchMinutes >= 45 && diff >= 3);  // 3-goal lead at halftime+
     if (locked && diff > 0) {
       const leader = hG > aG ? home : away;
       let conf;
@@ -605,6 +606,31 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
         tierName: TIERS[tier].name,
         logic: `Motivation (${p1.edge}) + form (${p4.edge}) both point ${winEdge}. ${p1.assessment.slice(0, 120)}`,
       });
+    }
+  }
+
+  // ── Score-based win rec for live leads (fires when form data is unavailable) ──
+  if (isLive && !recs.some(r => r.type === 'WINS_ONLY')) {
+    const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
+    const scoreDiff = hG - aG;
+    if (scoreDiff !== 0) {
+      const leader     = scoreDiff > 0 ? home : away;
+      const absDiff    = Math.abs(scoreDiff);
+      const timePlayed = Math.min(matchMinutes / 90, 1.0);
+      // 1-goal lead: ~50% base; 2-goal: ~65%; 3-goal: ~80% — scales up with time played
+      const baseConf  = 35 + absDiff * 15;
+      const scoreConf = Math.round(Math.min(baseConf + timePlayed * 22, 92));
+      if (scoreConf >= 52) {
+        const tier = scoreConf >= 82 ? 1 : scoreConf >= 72 ? 2 : scoreConf >= 62 ? 3 : 4;
+        recs.push({
+          type: 'WINS_ONLY',
+          selection: `${leader} Win`,
+          confidence: scoreConf,
+          tier,
+          tierName: TIERS[tier].name,
+          logic: `${matchMinutes}' played, ${hG}-${aG}. ${absDiff}-goal live lead.`,
+        });
+      }
     }
   }
 
