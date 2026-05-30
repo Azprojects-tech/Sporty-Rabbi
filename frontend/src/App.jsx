@@ -192,13 +192,33 @@ export default function App() {
  return true;
  });
 
+ // Tier hierarchy: lower number = higher up in sidebar
+ const LEAGUE_TIER = {
+   // Tier 1 — International tournaments
+   1: 1, 4: 1, 9: 1, 16: 1,
+   // Tier 2 — UEFA club competitions
+   2: 2, 3: 2, 848: 2,
+   // Tier 3 — Top 5 European leagues
+   39: 3, 140: 3, 78: 3, 135: 3, 61: 3,
+   // Tier 4 — Strong European + major cups
+   40: 4, 141: 4, 79: 4, 136: 4, 62: 4,
+   88: 4, 94: 4, 203: 4, 235: 4, 179: 4, 144: 4, 307: 4,
+   13: 4, 11: 4,
+   // Tier 5 — Americas / Asia / Middle East
+   253: 5, 71: 5, 128: 5, 98: 5, 292: 5, 169: 5, 313: 5, 188: 5, 17: 5,
+ };
  const leagueCounts = (() => {
- const counts = {};
- for (const m of allMatches) {
- if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
- counts[m.leagueId].count++;
- }
- return Object.values(counts).sort((a, b) => b.count - a.count);
+   const counts = {};
+   for (const m of allMatches) {
+     if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
+     counts[m.leagueId].count++;
+   }
+   return Object.values(counts).sort((a, b) => {
+     const ta = LEAGUE_TIER[a.id] ?? 6;
+     const tb = LEAGUE_TIER[b.id] ?? 6;
+     if (ta !== tb) return ta - tb;
+     return b.count - a.count; // within same tier: most matches first
+   });
  })();
 
  function handleSelectMatch(m) {
@@ -235,7 +255,7 @@ export default function App() {
 
  {/* Logo */}
  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, cursor: 'pointer' }}
- onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); }}>
+ onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); setShowAlerts(false); setSidebarOpen(false); setFilter('all'); setSelectedLeague(null); setSelectedCountry(null); setSelectedKeyword(null); setSearchQuery(''); }}>
  <span style={{ fontSize: 20 }}>&#9889;</span>
  <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.5px' }}>
  <span style={{ color: '#e2e8f0' }}>Sporty</span><span style={{ color: '#00b859' }}>Rabbi</span>

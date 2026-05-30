@@ -391,34 +391,51 @@ async function fetchTodayFixturesFromApi() {
 // ESPN league ID → { name, leagueId } map
 // leagueId values mirror API-Football IDs where known for frontend filter compatibility
 const ESPN_LEAGUE_MAP = {
-  '776':   { name: 'UEFA Europa League',       leagueId: 3 },
-  '20296': { name: 'UEFA Conference League',   leagueId: 848 },
-  '600':   { name: 'UEFA Champions League',    leagueId: 2 },
-  '700':   { name: 'English Premier League',   leagueId: 39 },
-  '701':   { name: 'English Championship',     leagueId: 40 },
-  '710':   { name: 'French Ligue 1',           leagueId: 61 },
-  '711':   { name: 'French Ligue 2',           leagueId: 62 },
-  '720':   { name: 'German Bundesliga',        leagueId: 78 },
-  '721':   { name: 'German 2. Bundesliga',     leagueId: 79 },
-  '730':   { name: 'Italian Serie A',          leagueId: 135 },
-  '731':   { name: 'Italian Serie B',          leagueId: 136 },
-  '740':   { name: 'Spanish La Liga',          leagueId: 140 },
-  '741':   { name: 'Spanish Segunda',          leagueId: 141 },
-  '750':   { name: 'Portuguese Primeira Liga', leagueId: 94 },
-  '760':   { name: 'Scottish Premiership',     leagueId: 179 },
-  '770':   { name: 'Dutch Eredivisie',         leagueId: 88 },
-  '780':   { name: 'Belgian Pro League',       leagueId: 144 },
-  '3939':  { name: 'Russian Premier League',   leagueId: 235 },
-  '3946':  { name: 'Turkish Super Lig',        leagueId: 203 },
-  '3947':  { name: 'Turkish Cup',              leagueId: 204 },
-  '3940':  { name: 'Russian Cup',              leagueId: 236 },
-  '4002':  { name: 'Saudi Pro League',         leagueId: 307 },
-  '21231': { name: 'Saudi Pro League',         leagueId: 307 },
-  '1':     { name: 'FIFA World Cup',           leagueId: 1 },
-  '2':     { name: 'UEFA European Championship', leagueId: 4 },
-  '5':     { name: 'Copa America',             leagueId: 9 },
-  '253':   { name: 'MLS',                      leagueId: 253 },
-  '783':   { name: 'Brazilian Serie A',        leagueId: 71 },
+  '776':   { name: 'UEFA Europa League',          leagueId: 3 },
+  '20296': { name: 'UEFA Conference League',      leagueId: 848 },
+  '600':   { name: 'UEFA Champions League',       leagueId: 2 },
+  '700':   { name: 'English Premier League',      leagueId: 39 },
+  '701':   { name: 'English Championship',        leagueId: 40 },
+  '710':   { name: 'French Ligue 1',              leagueId: 61 },
+  '711':   { name: 'French Ligue 2',              leagueId: 62 },
+  '720':   { name: 'German Bundesliga',           leagueId: 78 },
+  '721':   { name: 'German 2. Bundesliga',        leagueId: 79 },
+  '730':   { name: 'Italian Serie A',             leagueId: 135 },
+  '731':   { name: 'Italian Serie B',             leagueId: 136 },
+  '740':   { name: 'Spanish La Liga',             leagueId: 140 },
+  '741':   { name: 'Spanish Segunda',             leagueId: 141 },
+  '750':   { name: 'Portuguese Primeira Liga',    leagueId: 94 },
+  '760':   { name: 'Scottish Premiership',        leagueId: 179 },
+  '770':   { name: 'Dutch Eredivisie',            leagueId: 88 },
+  '780':   { name: 'Belgian Pro League',          leagueId: 144 },
+  '3939':  { name: 'Russian Premier League',      leagueId: 235 },
+  '3946':  { name: 'Turkish Super Lig',           leagueId: 203 },
+  '3947':  { name: 'Turkish Cup',                 leagueId: 204 },
+  '3940':  { name: 'Russian Cup',                 leagueId: 236 },
+  '4002':  { name: 'Saudi Pro League',            leagueId: 307 },
+  '21231': { name: 'Saudi Pro League',            leagueId: 307 },
+  '1':     { name: 'FIFA World Cup',              leagueId: 1 },
+  '2':     { name: 'UEFA European Championship',  leagueId: 4 },
+  '5':     { name: 'Copa America',                leagueId: 9 },
+  '253':   { name: 'MLS',                         leagueId: 253 },
+  '783':   { name: 'Brazilian Serie A',           leagueId: 71 },
+  // ── Asia / Pacific ──────────────────────────────────────────────────────
+  '2094':  { name: 'Chinese Super League',        leagueId: 169 },
+  '2149':  { name: 'K League 1',                  leagueId: 292 },
+  '2098':  { name: 'J1 League',                   leagueId: 98 },
+  '188':   { name: 'A-League',                    leagueId: 188 },
+  '2076':  { name: 'AFC Champions League',        leagueId: 17 },
+  '7593':  { name: 'Indonesian Liga 1',           leagueId: 313 },
+  // ── International ───────────────────────────────────────────────────────
+  '15':    { name: 'International Friendlies',    leagueId: 1 },
+  '10':    { name: 'International Friendlies',    leagueId: 1 },
+  '32':    { name: 'UEFA Nations League',         leagueId: 16 },
+  '4328':  { name: 'AFCON',                       leagueId: 6 },
+  '3669':  { name: 'CONCACAF Nations League',     leagueId: 30 },
+  // ── South America ────────────────────────────────────────────────────────
+  '1903':  { name: 'Argentine Primera Division',  leagueId: 128 },
+  '975':   { name: 'Copa Libertadores',           leagueId: 13 },
+  '984':   { name: 'Copa Sudamericana',           leagueId: 11 },
 };
 
 // TheSportsDB league name → leagueId fallback
@@ -445,6 +462,23 @@ const SPORTSDB_LEAGUE_MAP = {
   'eredivisie': 88,
   'belgian pro league': 144,
   'brasileirao': 71,              'serie a (brazil)': 71,
+  // ── Asia / Pacific ────────────────────────────────────────
+  'chinese super league': 169,    'china super league': 169,
+  'chinese football association super league': 169,
+  'k league 1': 292,              'k-league 1': 292,
+  'korean k league': 292,
+  'j1 league': 98,                'j league': 98,
+  'meiji yasuda j1 league': 98,
+  'a-league': 188,                'a league': 188,
+  'indonesian liga 1': 313,       'liga 1': 313,
+  'afc champions league': 17,
+  // ── International ─────────────────────────────────────────
+  'international friendlies': 1,  'friendlies': 1,
+  'international friendly': 1,
+  // ── South America ─────────────────────────────────────────
+  'argentine primera division': 128, 'superliga argentina': 128,
+  'copa libertadores': 13,
+  'copa sudamericana': 11,
 };
 
 function sportsDbLeagueToId(leagueName) {
@@ -491,7 +525,12 @@ async function fetchFixturesFromESPN() {
 
         // ESPN league ID from uid: s:600~l:776~e:... → leagueId 776
         const espnLeagueId = (e.uid || '').match(/l:(\d+)/)?.[1] || '0';
-        const leagueInfo   = ESPN_LEAGUE_MAP[espnLeagueId] || { name: 'International', leagueId: 0 };
+        // For unmapped leagues: use ESPN's own competition name + ESPN ID as unique leagueId
+        // This ensures Chinese Super League, K-League etc. get their real names rather than 'International'
+        const espnCompName = comp?.league?.name || comp?.league?.abbreviation || null;
+        const leagueInfo   = ESPN_LEAGUE_MAP[espnLeagueId]
+          || (espnCompName ? { name: espnCompName, leagueId: Number(espnLeagueId) || 0 }
+          : { name: 'International', leagueId: 0 });
 
         // Enrich with knockout/round context from ESPN metadata
         const seriesTitle  = comp?.series?.title || null;         // "Semifinals", "Final", etc.
