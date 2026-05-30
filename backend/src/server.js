@@ -309,10 +309,11 @@ async function fetchLiveMatches() {
   try {
     console.log('🔄 Fetching LIVE matches from API-Football...');
     
-    // First try to get LIVE matches
+    // API-Football v3: use `live=all` to get every currently in-play fixture globally.
+    // Do NOT use `status=LIVE` — that is a status code filter, not the live-feed param.
     const response = await axios.get(`${API_BASE}/fixtures`, {
       params: { 
-        status: 'LIVE',
+        live: 'all',
         timezone: 'UTC'
       },
       headers: { 'x-apisports-key': API_KEY },
@@ -320,30 +321,8 @@ async function fetchLiveMatches() {
     });
     updateQuotaFromHeaders(response.headers);
 
-    let fixtures = response.data.response || [];
+    const fixtures = response.data.response || [];
     console.log(`  ℹ️  Got ${fixtures.length} LIVE fixtures`);
-    
-    // If no LIVE matches, try getting ANY recent matches (all statuses)
-    if (fixtures.length === 0) {
-      console.log('  📊 No LIVE or FT matches, trying to fetch any recent fixtures...');
-      try {
-        const allResponse = await axios.get(`${API_BASE}/fixtures`, {
-          params: { 
-            timezone: 'UTC',
-            last: 5  // Get last 5 fixtures
-          },
-          headers: { 'x-apisports-key': API_KEY },
-          timeout: 5000,
-        });
-        updateQuotaFromHeaders(allResponse.headers);
-        
-        const allFixtures = allResponse.data.response || [];
-        console.log(`  📋 Got ${allFixtures.length} recent fixtures`);
-        fixtures = allFixtures;
-      } catch (innerErr) {
-        console.error('  ❌ Failed to fetch recent fixtures:', innerErr.message);
-      }
-    }
     
     return fixtures;
   } catch (error) {
