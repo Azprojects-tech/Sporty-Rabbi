@@ -25,22 +25,22 @@ export const TIERS = {
 // Poisson raised (removing 0.80 cap restores full signal), P11/P12 repurposed
 // from dead placeholders to real Home Advantage + Market signals.
 const W = {
-  p1_motivation:      0.13,  // reduced: real but was overweighted at 16%
-  p2_starPower:       0.07,  // unchanged
-  p3_h2h:            0.03,  // ▼ cut from 0.08 — decays fast; 3+ yr data unreliable
-  p4_form:           0.14,  // ▲ raised: strongest reliable non-market signal
-  p5_scoringTiming:  0.05,  // reduced: minor signal
-  p6_defensiveGap:   0.07,  // unchanged
-  p7_poisson:        0.11,  // ▲ raised: full unpenalized Poisson signal
-  p8_xg:             0.06,  // unchanged
-  p9_xga:            0.05,  // unchanged
-  p10_pace:          0.04,  // unchanged
-  p11_homeAdvantage: 0.03,  // REPURPOSED: real home advantage signal
-  p12_market:        0.03,  // REPURPOSED: market odds / overround signal
-  p13_squad:         0.05,  // unchanged
-  p14_lifecycle:     0.02,  // ▲ raised: season phase pressure is real
-  p15_crisis:        0.12,  // ▲ raised: crisis/drought is strong signal
-}; // Sum: 0.13+0.07+0.03+0.14+0.05+0.07+0.11+0.06+0.05+0.04+0.03+0.03+0.05+0.02+0.12 = 1.00 ✓
+  p1_motivation:      0.13,  // unchanged: real tactical pressure signal
+  p2_starPower:       0.07,  // unchanged: squad quality differential
+  p3_h2h:            0.03,  // unchanged: decays fast; 3+ yr data unreliable
+  p4_form:           0.15,  // ▲ +0.01: strongest reliable non-market signal
+  p5_scoringTiming:  0.05,  // unchanged: minor but real late-goal signal
+  p6_defensiveGap:   0.07,  // unchanged: gap between the two defences
+  p7_poisson:        0.11,  // Dixon-Coles corrected Poisson (DC removes under-prediction of 0-0/1-0)
+  p8_xg:             0.06,  // REFACTORED: directional xG differential (not raw combined sum)
+  p9_xga:            0.05,  // REFACTORED: defensive solidity vs league avg (not raw combined sum)
+  p10_pace:          0.04,  // unchanged: conversion + shots signal
+  p11_homeAdvantage: 0.03,  // unchanged: real home advantage signal
+  p12_market:        0.04,  // ▲ +0.01: now Poisson model vs market divergence (genuine edge signal)
+  p13_squad:         0.05,  // REFACTORED: competitive context / league tier (replaces duplicate squad integrity)
+  p14_lifecycle:     0.02,  // unchanged: season phase pressure
+  p15_crisis:        0.10,  // ▼ -0.02: reduce overweighting of unmeasured crisis signals
+}; // Sum: 0.13+0.07+0.03+0.15+0.05+0.07+0.11+0.06+0.05+0.04+0.03+0.04+0.05+0.02+0.10 = 1.00 ✓
 
 // ─── LEAGUE RELIABILITY SCALARS (V9 CORRECTED) ─────────────────────────────
 // High-variance leagues REDUCE confidence (penalty, not inflation).
@@ -91,22 +91,40 @@ function poissonProb(lambda, k) {
   return (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
 }
 
-/** P(total goals > threshold) given two independent Poisson lambdas */
+// Dixon-Coles ρ correction for low-scoring cells (Dixon & Coles, 1997)
+// Corrects Poisson's systematic under-prediction of 0-0, 1-0, 0-1, 1-1 outcomes.
+// ρ = -0.1 is empirically fitted to European football leagues.
+const DC_RHO = -0.1;
+function dcTau(h, a, lH, lA) {
+  if (h === 0 && a === 0) return 1 - lH * lA * DC_RHO;
+  if (h === 1 && a === 0) return 1 + lA * DC_RHO;
+  if (h === 0 && a === 1) return 1 + lH * DC_RHO;
+  if (h === 1 && a === 1) return 1 - DC_RHO;
+  return 1.0;
+}
+
+/** P(total goals > threshold) with Dixon-Coles low-score correction */
 function probOver(lH, lA, threshold) {
   let pUnder = 0;
   for (let h = 0; h <= 9; h++) {
     for (let a = 0; a <= 9; a++) {
       if (h + a <= threshold) {
-        pUnder += poissonProb(lH, h) * poissonProb(lA, a);
+        pUnder += poissonProb(lH, h) * poissonProb(lA, a) * dcTau(h, a, lH, lA);
       }
     }
   }
   return Math.min(Math.max(1 - pUnder, 0), 1);
 }
 
-/** P(both teams score at least 1 goal) */
+/** P(both teams score at least 1 goal) with Dixon-Coles correction */
 function probBTTS(lH, lA) {
-  return (1 - poissonProb(lH, 0)) * (1 - poissonProb(lA, 0));
+  let p = 0;
+  for (let h = 1; h <= 9; h++) {
+    for (let a = 1; a <= 9; a++) {
+      p += poissonProb(lH, h) * poissonProb(lA, a) * dcTau(h, a, lH, lA);
+    }
+  }
+  return Math.min(Math.max(p, 0), 1);
 }
 
 /** Most statistically likely scoreline */
@@ -326,25 +344,47 @@ function scoreDefensiveGap(homeGAAvg = 1.2, awayGAAvg = 1.2, leagueAvgGA = 1.35,
 
 // P7 — handled via Poisson (see runPoisson, score injected below)
 
-// P8 — xG (EXPECTED GOALS)
-function scoreXG(homeXgAvg = 1.2, awayXgAvg = 1.0) {
-  const combined = homeXgAvg + awayXgAvg;
-  const edge = homeXgAvg > awayXgAvg * 1.3 ? 'HOME' : awayXgAvg > homeXgAvg * 1.3 ? 'AWAY' : 'NEUTRAL';
+// P8 — xG QUALITY DIFFERENTIAL (directional attacking edge)
+// Scores WHO has the xG advantage, not HOW MUCH xG both teams produce.
+// Avoids double-counting with P7 which already incorporates absolute xG magnitudes in Poisson lambdas.
+function scoreXGDifferential(homeXgAvg = 1.35, awayXgAvg = 1.35) {
+  const diff  = (homeXgAvg || 1.35) - (awayXgAvg || 1.35);
+  const ratio = (awayXgAvg || 1.35) > 0 ? (homeXgAvg || 1.35) / (awayXgAvg || 1.35) : 1.0;
+  const edge  = ratio > 1.25 ? 'HOME' : ratio < 0.80 ? 'AWAY' : 'NEUTRAL';
+  const score = Math.min(Math.max(Math.round(50 + diff * 15), 20), 80);
   return {
-    score: Math.round(Math.min(combined * 24, 100)),
-    homeXgAvg, awayXgAvg, combined: +combined.toFixed(2), edge,
-    assessment: `Home xG avg: ${homeXgAvg.toFixed(2)}. Away xG avg: ${awayXgAvg.toFixed(2)}. Combined: ${combined.toFixed(2)}.`,
+    score,
+    homeXgAvg: +(homeXgAvg || 1.35).toFixed(2),
+    awayXgAvg: +(awayXgAvg || 1.35).toFixed(2),
+    differential: +diff.toFixed(2),
+    ratio: +ratio.toFixed(2),
+    edge,
+    assessment: `xG edge: ${diff > 0 ? '+' : ''}${diff.toFixed(2)}/game. ${edge === 'HOME' ? 'Home generating meaningfully higher xG.' : edge === 'AWAY' ? 'Away generating meaningfully higher xG.' : 'Balanced chance creation — no clear xG edge.'}`,
   };
 }
 
-// P9 — xGA (EXPECTED GOALS AGAINST)
-function scoreXGA(homeXgaAvg = 1.2, awayXgaAvg = 1.0) {
-  const combined = homeXgaAvg + awayXgaAvg;
-  const edge = awayXgaAvg > homeXgaAvg * 1.3 ? 'HOME' : homeXgaAvg > awayXgaAvg * 1.3 ? 'AWAY' : 'NEUTRAL';
+// P9 — DEFENSIVE SOLIDITY
+// Measures how each team's defence compares to the league average xGA baseline.
+// High score = both defences conceding below average = tighter game likely.
+// Distinct from P6 (gap between the two teams' defences) and P7 (absolute xGA in Poisson lambdas).
+function scoreDefensiveSolidity(homeXgaAvg = 1.35, awayXgaAvg = 1.35) {
+  const L      = RESEARCH.LEAGUE_AVG_GOALS_PER_GAME;
+  const hBonus = L - (homeXgaAvg || L);  // positive = conceding LESS than league average
+  const aBonus = L - (awayXgaAvg || L);
+  const avgBonus = (hBonus + aBonus) / 2;
+  const score  = Math.min(Math.max(Math.round(50 + avgBonus * 22), 15), 85);
+  const hLabel = hBonus > 0.2 ? 'solid' : hBonus < -0.2 ? 'leaky' : 'average';
+  const aLabel = aBonus > 0.2 ? 'solid' : aBonus < -0.2 ? 'leaky' : 'average';
+  let profile;
+  if (score >= 65)      profile = 'Both defences sound — Under market and tight scorelines favoured.';
+  else if (score <= 35) profile = 'Both defences exposed — Over and BTTS markets supported.';
+  else                  profile = 'Average defensive profiles — neutral goals market signal.';
   return {
-    score: Math.round(Math.min(combined * 24, 100)),
-    homeXgaAvg, awayXgaAvg, combined: +combined.toFixed(2), edge,
-    assessment: `Home xGA (chances conceded): ${homeXgaAvg.toFixed(2)}/game. Away xGA: ${awayXgaAvg.toFixed(2)}/game.`,
+    score,
+    homeXgaAvg: +(homeXgaAvg || L).toFixed(2),
+    awayXgaAvg: +(awayXgaAvg || L).toFixed(2),
+    edge: hBonus > aBonus + 0.25 ? 'HOME' : aBonus > hBonus + 0.25 ? 'AWAY' : 'NEUTRAL',
+    assessment: `Home defence ${hLabel} (${(homeXgaAvg||L).toFixed(2)} xGA/game). Away defence ${aLabel} (${(awayXgaAvg||L).toFixed(2)} xGA/game). ${profile}`,
   };
 }
 
@@ -362,17 +402,28 @@ function scorePace(homeConv = 10, awayConv = 10, homeShotsPerGame = 12, awayShot
   };
 }
 
-// P13 — SQUAD INTEGRITY
-function scoreSquadIntegrity(homeIntegrity = 90, awayIntegrity = 90) {
-  const avg  = (homeIntegrity + awayIntegrity) / 2;
-  const edge = homeIntegrity > awayIntegrity + 15 ? 'HOME' : awayIntegrity > homeIntegrity + 15 ? 'AWAY' : 'NEUTRAL';
-  return {
-    score: Math.round(avg), homeIntegrity, awayIntegrity, edge,
-    assessment:
-      avg > 85 ? 'Both squads near full strength' :
-      avg > 70 ? 'Some notable absences affecting depth' :
-      '⚠️ Significant injury/suspension crisis — major uncertainty',
-  };
+// P13 — COMPETITIVE CONTEXT (replaces duplicate squad integrity — P2 Star Power already covers squad quality)
+// Scores the match's predictability premium by league tier and competition type.
+// Top-5 European leagues = stronger favourite bias, better historical data.
+// Lower-tier and cup formats = higher variance = appropriately reduces model confidence.
+function scoreCompetitiveContext(leagueId = 0, matchType = 'League') {
+  const TIER1 = new Set([39, 140, 78, 135, 61]);      // Top 5 European leagues
+  const TIER2 = new Set([88, 94, 64, 40, 179, 203]);  // Strong secondary leagues
+  const UEFA  = new Set([2, 3, 849, 848]);             // UCL/UEL/UECL
+  const isCup = matchType === 'Cup' || matchType === 'Knockout';
+  let score, context;
+  if (TIER1.has(leagueId)) {
+    score = 76; context = 'Top-5 European league — high data quality, outcomes more predictable.';
+  } else if (UEFA.has(leagueId)) {
+    score = 72; context = 'UEFA competition — elite clubs, rich historical dataset.';
+  } else if (TIER2.has(leagueId)) {
+    score = 62; context = 'Quality mid-tier league — reasonable depth of data.';
+  } else if (isCup) {
+    score = 45; context = 'Cup or knockout format — elevated variance and giant-killing risk.';
+  } else {
+    score = 44; context = 'Lower-tier or unknown league — limited historical data, higher prediction variance.';
+  }
+  return { score, leagueId, matchType, edge: 'NEUTRAL', assessment: context };
 }
 
 // P14 — LEAGUE LIFECYCLE
@@ -731,25 +782,39 @@ function scoreHomeAdvantage(homePossession = 50, homeShotsPerGame = 11, awayShot
   };
 }
 
-// ─── P12 — MARKET SIGNAL (replaces dead fixture confirm placeholder) ──────────────
-function scoreMarketSignal(odds = null) {
-  if (!odds || (!odds.home && !odds.homeWin)) {
-    return { score: 50, assessment: 'No market odds — neutral market signal applied.' };
+// ─── P12 — MARKET DIVERGENCE (replaces raw overround scoring) ──────────────
+// Compares V9 Poisson-derived Over 2.5 probability vs bookmaker's implied probability.
+// Positive divergence = model sees more goals than market prices = Over 2.5 value.
+// Negative divergence = market prices more goals = Under 2.5 value.
+function scoreMarketSignal(odds = null, poissonProbs = null) {
+  if (!odds || (!odds.over25 && !odds.home && !odds.homeWin)) {
+    return { score: 50, assessment: 'No market odds — cannot compute divergence. Neutral signal applied.' };
   }
+  // Primary: Over 2.5 model vs market divergence
+  if (odds.over25 && poissonProbs) {
+    const rawImplied = 1 / parseFloat(odds.over25);
+    const modelProb  = (poissonProbs.over25 || 50) / 100;
+    const divergence = modelProb - rawImplied;
+    const score = Math.min(Math.max(Math.round(50 + divergence * 80), 20), 80);
+    return {
+      score, divergence: +divergence.toFixed(3),
+      mktImplied: +rawImplied.toFixed(3), modelProb: +modelProb.toFixed(3),
+      assessment: Math.abs(divergence) < 0.06
+        ? `Model and market closely agree on Over 2.5 (${Math.round(modelProb*100)}% model, ${Math.round(rawImplied*100)}% market).`
+        : divergence > 0
+          ? `Model sees +${Math.round(divergence*100)}pp more goals than market — Over 2.5 may offer value.`
+          : `Market prices ${Math.round(-divergence*100)}pp more goals than model — Under 2.5 may offer value.`,
+    };
+  }
+  // Fallback: overround as market-quality signal when O2.5 odds absent
   const homeOdds = parseFloat(odds.home || odds.homeWin || 2.0);
   const drawOdds = parseFloat(odds.draw || 3.5);
   const awayOdds = parseFloat(odds.away || odds.awayWin || 3.5);
-  if (!homeOdds || !drawOdds || !awayOdds) return { score: 50, assessment: 'Incomplete odds — neutral signal.' };
   const overround = (1 / homeOdds) + (1 / drawOdds) + (1 / awayOdds);
   const margin = Math.round((overround - 1) * 100);
-  // Lower margin = better pricing = more reliable market signal
-  const score = Math.max(Math.round(70 - margin * 2), 25);
   return {
-    score,
-    homeOdds, drawOdds, awayOdds,
-    overround: +overround.toFixed(3),
-    margin,
-    assessment: `Market: ${homeOdds}/${drawOdds}/${awayOdds}. Overround: ${margin}% margin. ${margin <= 8 ? '✓ Competitive' : '⚠️ High margin'}.`,
+    score: Math.max(Math.round(70 - margin * 2), 25), margin,
+    assessment: `No O2.5 odds. Win market overround: ${margin}%. ${margin <= 8 ? 'Competitive pricing.' : 'High margin — market less efficient.'}`,
   };
 }
 
@@ -807,7 +872,7 @@ function scoreMarketSignal(odds = null) {
  */
 export function analyzeV9(matchData = {}) {
   const {
-    home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0,
+    home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0, matchType = 'League',
     gameWeek = 30, totalGW = 38, totalTeams = 20,
     homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40,
     status = 'NS', matchMinutes = 0, score = '0-0',
@@ -846,12 +911,12 @@ export function analyzeV9(matchData = {}) {
   const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, 1.35, homeCBInjured, awayGKError);
   const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg);
   const p7  = { score: poi.probabilities.over25, assessment: poi.assessment }; // full signal, no suppression
-  const p8  = scoreXG(homeXgAvg, awayXgAvg);
-  const p9  = scoreXGA(homeXgaAvg, awayXgaAvg);
+  const p8  = scoreXGDifferential(homeXgAvg, awayXgAvg);
+  const p9  = scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg);
   const p10 = scorePace(homeConversionPct, awayConversionPct, homeShotsPerGame, awayShotsPerGame);
   const p11 = scoreHomeAdvantage(homePossession, homeShotsPerGame, awayShotsPerGame, venue, status);
-  const p12 = scoreMarketSignal(matchData.odds || null);
-  const p13 = scoreSquadIntegrity(homeSquadIntegrity, awaySquadIntegrity);
+  const p12 = scoreMarketSignal(matchData.odds || null, poi.probabilities);
+  const p13 = scoreCompetitiveContext(leagueId, matchType);
   const p14 = scoreLifecycle(gameWeek, totalGW);
   const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
 

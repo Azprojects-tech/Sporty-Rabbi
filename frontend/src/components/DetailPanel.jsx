@@ -6,20 +6,20 @@ const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
 const TIER_BORDER = { 1: '#78350f55', 2: '#00683355', 3: '#78350f55', 4: '#7c2d1255' };
 
 const PARAMS = [
-  { key: 'p4_form',           label: 'Form (L10)',   weight: '14%', icon: 'FRM' },
+  { key: 'p4_form',           label: 'Form (L10)',   weight: '15%', icon: 'FRM' },
   { key: 'p1_motivation',     label: 'Motivation',   weight: '13%', icon: 'MOT' },
-  { key: 'p15_crisis',        label: 'Crisis',       weight: '12%', icon: 'CRS' },
   { key: 'p7_poisson',        label: 'Poisson',      weight: '11%', icon: 'PSN' },
+  { key: 'p15_crisis',        label: 'Crisis',       weight: '10%', icon: 'CRS' },
   { key: 'p2_starPower',      label: 'Star Power',   weight: '7%',  icon: 'STR' },
   { key: 'p6_defensiveGap',   label: 'Defensive',    weight: '7%',  icon: 'DEF' },
-  { key: 'p8_xg',             label: 'xG Attack',    weight: '6%',  icon: 'XGA' },
+  { key: 'p8_xg',             label: 'xG Edge',      weight: '6%',  icon: 'XGA' },
   { key: 'p5_scoringTiming',  label: 'Timing',       weight: '5%',  icon: 'TIM' },
-  { key: 'p9_xga',            label: 'xGA Defence',  weight: '5%',  icon: 'XGD' },
-  { key: 'p13_squad',         label: 'Squad',        weight: '5%',  icon: 'SQD' },
+  { key: 'p9_xga',            label: 'Def. Solidity',weight: '5%',  icon: 'XGD' },
+  { key: 'p13_squad',         label: 'Comp. Context',weight: '5%',  icon: 'CTX' },
   { key: 'p10_pace',          label: 'Pace',         weight: '4%',  icon: 'PAC' },
-  { key: 'p3_h2h',            label: 'H2H',          weight: '3%',  icon: 'H2H' },
+  { key: 'p12_market',        label: 'Mkt. Diverge.',weight: '4%',  icon: 'MKT' },
   { key: 'p11_homeAdvantage', label: 'Home Adv.',    weight: '3%',  icon: 'HOM' },
-  { key: 'p12_market',        label: 'Market',       weight: '3%',  icon: 'MKT' },
+  { key: 'p3_h2h',            label: 'H2H',          weight: '3%',  icon: 'H2H' },
   { key: 'p14_lifecycle',     label: 'Lifecycle',    weight: '2%',  icon: 'LFC' },
 ];
 
@@ -202,6 +202,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home  : _defHXg,
         homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : _defShH,
         awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : _defShA,
+        matchType:        match.matchType || 'League',
       };
       const res = await apiService.client.post('/analyze', matchData);
       setAnalysis(res.data);

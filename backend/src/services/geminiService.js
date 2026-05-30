@@ -658,11 +658,10 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const { overallScore = 0, recommendations = [], parameters = {}, poisson } = analysis || {};
 
   const topRec = recommendations[0];
-  if (!topRec) return null;
 
   // Pull the 3 parameters with the highest individual scores to explain the decision
   const topParams = Object.entries(parameters)
-    .map(([k, v]) => ({ name: k.replace('p\d+_', '').replace(/_/g, ' '), score: v?.score ?? 0, assessment: v?.assessment ?? '' }))
+    .map(([k, v]) => ({ name: k.replace(/p\d+_/, '').replace(/_/g, ' '), score: v?.score ?? 0, assessment: v?.assessment ?? '' }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
@@ -671,12 +670,13 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     ? `LIVE match — ${matchMinutes}' played, current score ${score}.`
     : 'Pre-match analysis.';
 
-  const systemPrompt = `You are Agent 47, an elite football betting analyst. 
-Your job is to write a sharp, confident 2-3 sentence analyst note for a bet recommendation.
+  const systemPrompt = `You are Agent 47, an elite football betting analyst.
+Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
 Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
 
-  const userText = `Match: ${home} vs ${away} (${league}). ${context}
+  const userText = topRec
+    ? `Match: ${home} vs ${away} (${league}). ${context}
 Overall V9 Score: ${overallScore}/100
 Top recommendation: ${topRec.selection} — ${topRec.confidence}% confidence (${topRec.tierName || 'Tier ?'})
 Key driver 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
@@ -684,14 +684,27 @@ Key driver 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topPar
 Key driver 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
 Poisson: ${poisson?.assessment || 'N/A'}
 Reasoning: ${topRec.logic || ''}
-Write 2-3 sentences explaining WHY this bet and what the data says. End with the assurance level as a %.`;
+Write 2-3 sentences explaining WHY this bet and what the data says.`
+    : `Match: ${home} vs ${away} (${league}). ${context}
+Overall V9 Score: ${overallScore}/100 — no strong directional edge detected.
+Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
+Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
+Poisson: ${poisson?.assessment || 'N/A'}
+Write 2-3 sentences describing what the data shows about this match. No specific bet — just the analytical picture.`;
 
   const raw = await groqChat(systemPrompt, userText, { maxTokens: 220, jsonMode: true });
-  if (!raw) return null;
+
+  // Deterministic fallback when Groq is unavailable — build from V9 data directly
+  if (!raw) {
+    const fallback = topRec
+      ? `${topRec.selection} carries ${topRec.confidence}% confidence. ${topRec.logic || ''} ${poisson?.assessment || ''}`.slice(0, 300).trim()
+      : `${home} vs ${away} shows a balanced match profile (V9 score: ${overallScore}/100). ${poisson?.assessment || 'No strong directional edge detected in the data.'}`;
+    return { text: fallback, confidence: topRec?.confidence || overallScore };
+  }
   try {
     const parsed = JSON.parse(raw);
-    return { text: parsed.text || raw, confidence: parsed.confidence || topRec.confidence };
+    return { text: parsed.text || raw, confidence: parsed.confidence || topRec?.confidence || overallScore };
   } catch {
-    return { text: raw, confidence: topRec.confidence };
+    return { text: raw, confidence: topRec?.confidence || overallScore };
   }
 }

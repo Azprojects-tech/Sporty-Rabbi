@@ -550,6 +550,8 @@ function sanitizeMatch(match) {
     leagueId: Number(match.leagueId || 0),
     matchType: String(match.matchType || 'League'),
     leagueCountry: String(match.leagueCountry || ''),
+    homeTeamId: match.homeTeamId || null,
+    awayTeamId: match.awayTeamId || null,
   };
 }
 
