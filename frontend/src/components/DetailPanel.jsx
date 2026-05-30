@@ -145,19 +145,22 @@ function ParamDetail({ paramKey, p, match }) {
 
 export default function DetailPanel({ match, analysis: preloadedAnalysis, onClose }) {
   const [analysis, setAnalysis]     = useState(preloadedAnalysis || null);
+  // Only show full-screen spinner if there is nothing to display yet
   const [loading, setLoading]       = useState(!preloadedAnalysis);
   const [error, setError]           = useState(null);
   const [section, setSection]       = useState('params');
   const [expandedParam, setExpandedParam] = useState(null);
 
   useEffect(() => {
-    if (preloadedAnalysis) { setAnalysis(preloadedAnalysis); setLoading(false); return; }
+    // Always run fresh analysis on click — calibrated or not
+    // If we already have preloaded data it stays visible while the refresh runs in background
     loadAnalysis();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id]);
 
   async function loadAnalysis() {
-    setLoading(true);
+    // Show spinner only when there is no existing analysis to display
+    if (!analysis && !preloadedAnalysis) setLoading(true);
     setError(null);
     try {
       // Pick league-appropriate xG defaults for NS matches (live stats are 0 until kickoff)
@@ -206,7 +209,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     <div style={panelStyle}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <div style={{ width: 28, height: 28, border: '2px solid #1e2535', borderTopColor: '#00b859', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V8 analysis...</p>
+        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V9 analysis...</p>
       </div>
     </div>
   );

@@ -786,8 +786,9 @@ function analyzeMatch(match) {
         score: `${goals.home || 0}-${goals.away || 0}`,
         homeXgAvg: xg.home > 0 ? xg.home : defHomeXg,
         awayXgAvg: xg.away > 0 ? xg.away : defAwayXg,
-        homeXgaAvg: 1.35,
-        awayXgaAvg: 1.35,
+        // xGa = how many goals the team concedes; best proxy = opponent's attack output
+        homeXgaAvg: xg.away > 0 ? xg.away : defAwayXg,
+        awayXgaAvg: xg.home > 0 ? xg.home : defHomeXg,
         homePossession: possession.home || 50,
         homeShotsPerGame: shots.home || 10,
         awayShotsPerGame: shots.away || 10,
@@ -1642,11 +1643,11 @@ app.get('/api/analyze/live/:matchId', (req, res) => {
       awayPosition:         parseInt(q.awayPos)      || 10,
       homePoints:           parseInt(q.homePts)      || 40,
       awayPoints:           parseInt(q.awayPts)      || 40,
-      // Live stats from in-memory match
-      homeXgAvg:            match.xg?.home  || 1.2,
-      awayXgAvg:            match.xg?.away  || 1.0,
-      homeXgaAvg:           match.xg?.away  || 1.2,
-      awayXgaAvg:           match.xg?.home  || 1.0,
+      // Live stats — use actual xG when available, else league-appropriate defaults
+      homeXgAvg:            match.xg?.home  || ([2,3,848].includes(match.leagueId) ? 1.55 : [39,140,78,61,135].includes(match.leagueId) ? 1.45 : 1.30),
+      awayXgAvg:            match.xg?.away  || ([2,3,848].includes(match.leagueId) ? 1.35 : [39,140,78,61,135].includes(match.leagueId) ? 1.25 : 1.15),
+      homeXgaAvg:           match.xg?.away  || ([2,3,848].includes(match.leagueId) ? 1.35 : [39,140,78,61,135].includes(match.leagueId) ? 1.25 : 1.15),
+      awayXgaAvg:           match.xg?.home  || ([2,3,848].includes(match.leagueId) ? 1.55 : [39,140,78,61,135].includes(match.leagueId) ? 1.45 : 1.30),
       homePossession:       match.possession?.home || 50,
       homeShotsPerGame:     match.shots?.home || 5,
       awayShotsPerGame:     match.shots?.away || 4,
