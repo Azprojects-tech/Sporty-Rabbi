@@ -613,30 +613,124 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
 
   const recs = [];
 
-  // ── Live Poisson correction: actual goals already in play ──────────────────
-  let liveO25 = null;
-  if (isLive && matchMinutes >= 10) {
+  // ── LIVE PATH — remaining-time Poisson, score-state motivation, card-aware ─
+  if (isLive) {
     const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
-    const totalNow  = hG + aG;
-    const minsLeft  = Math.max(92 - matchMinutes, 0);
-    const pace      = totalNow / matchMinutes;
-    const projTotal = totalNow + pace * minsLeft;
-    if (totalNow >= 3) {
-      liveO25 = 99;
-    } else if (totalNow >= 2 && minsLeft > 5) {
-      liveO25 = Math.max(poisson.probabilities.over25, Math.min(Math.round(62 + projTotal * 9), 88));
-    } else if (totalNow === 0 && matchMinutes >= 35) {
-      liveO25 = Math.min(poisson.probabilities.over25, 38);
+    const totalGoals = hG + aG;
+    const scoreDiff  = hG - aG;   // positive = home leading
+    const absDiff    = Math.abs(scoreDiff);
+    const minsLeft   = Math.max(90 - matchMinutes, 2); // floor at 2 to avoid div-by-zero
+    const remainFrac = minsLeft / 90;
+
+    // Discipline: red card → 10-man team → ~38% fewer expected goals for that side
+    const homeRed    = matchData.homeCards?.red    || 0;
+    const awayRed    = matchData.awayCards?.red    || 0;
+    const homeYellow = matchData.homeCards?.yellow || 0;
+    const awayYellow = matchData.awayCards?.yellow || 0;
+    const homeCardMult = homeRed > 0 ? 0.62 : 1.0;
+    const awayCardMult = awayRed  > 0 ? 0.62 : 1.0;
+
+    // Score-state motivation: losing team pushes (more remaining goals expected);
+    // winning by 2+ may sit back and time-waste (fewer remaining goals expected).
+    const hMotiveMult = scoreDiff < -1 ? 1.18 : scoreDiff === -1 ? 1.12 : scoreDiff > 1 ? 0.80 : 1.0;
+    const aMotiveMult = scoreDiff >  1 ? 1.18 : scoreDiff ===  1 ? 1.12 : scoreDiff < -1 ? 0.80 : 1.0;
+
+    // Remaining expected goals per team (season lambda × time fraction × adjustments)
+    const lH_rem = Math.max(poisson.homeLambda * remainFrac * hMotiveMult * homeCardMult, 0.01);
+    const lA_rem = Math.max(poisson.awayLambda * remainFrac * aMotiveMult * awayCardMult, 0.01);
+    const expRem = lH_rem + lA_rem;
+
+    // P(at least 1 more goal) = 1 − e^(−λ_rem)
+    const probAny1  = Math.round((1 - Math.exp(-expRem)) * 100);
+    // P(at least 2 more goals) = 1 − P(0) − P(1)
+    const p0r       = Math.exp(-expRem);
+    const prob2more = Math.round((1 - p0r - expRem * p0r) * 100);
+
+    // ── Win recommendation (time-scaled, card-boosted) ──
+    if (scoreDiff !== 0) {
+      const leader     = scoreDiff > 0 ? home : away;
+      const loser      = scoreDiff > 0 ? away : home;
+      const timeFactor = Math.min(matchMinutes / 90, 1.0);
+      // Extra confidence when the losing team also has a red card
+      const cardBonus  = (scoreDiff > 0 && awayRed > 0) ? 8 : (scoreDiff < 0 && homeRed > 0) ? 8 : 0;
+      const winConf    = Math.round(Math.min(28 + absDiff * 18 + timeFactor * 38 + absDiff * 4 + cardBonus, 97));
+      if (winConf >= 52) {
+        const tier     = winConf >= 85 ? 1 : winConf >= 72 ? 2 : winConf >= 62 ? 3 : 4;
+        const cardNote = homeRed > 0 ? ` ⚠️ ${home} 10 men.` : awayRed > 0 ? ` ⚠️ ${away} 10 men.` : '';
+        recs.push({
+          type: 'WINS_ONLY', selection: `${leader} Win`,
+          confidence: winConf, tier, tierName: TIERS[tier].name,
+          logic: `${matchMinutes}' played, ${hG}-${aG}. ${minsLeft}' remaining.${cardNote}`,
+        });
+      }
+
+      // ── Desperation sniper — trailing team likely to push for equalizer ──
+      if (absDiff === 1 && minsLeft <= 25) {
+        const loserHasRed = (loser === home && homeRed > 0) || (loser === away && awayRed > 0);
+        const yellNote    = (homeYellow >= 4 || awayYellow >= 4)
+          ? 'Heavy bookings — physical, desperate play.' : chaos.mwvIndex > 0.6
+          ? 'MWV elevated.' : 'Late push expected.';
+        const despConf    = Math.round(Math.min(38 + (25 - minsLeft) * 2.0, 68) - (loserHasRed ? 15 : 0));
+        if (despConf >= 42) {
+          recs.push({
+            type: 'SNIPER_WATCH', selection: `${loser} Next Goal`,
+            confidence: despConf, tier: 4, tierName: TIERS[4].name,
+            logic: `${loser} 1 goal behind with ${minsLeft}' left. ${yellNote}`,
+          });
+        }
+      }
     }
+
+    // ── Over {totalGoals}.5 — "will there be any more goals?" ──
+    // This threshold is ALWAYS unsettled (requires ≥1 goal from now).
+    // For 0-0 → "Over 0.5 Goals". For 3-2 → "Over 5.5 Goals".
+    if (probAny1 >= 45) {
+      const tier     = probAny1 >= 82 ? 1 : probAny1 >= 72 ? 2 : probAny1 >= 62 ? 3 : 4;
+      const cardNote = homeRed > 0 || awayRed > 0 ? ' Red card reduces scoring rate.' : '';
+      recs.push({
+        type: 'GOALS_ONLY', selection: `Over ${totalGoals}.5 Goals`,
+        confidence: Math.min(probAny1, 96), tier, tierName: TIERS[tier].name,
+        logic: `${expRem.toFixed(1)} expected remaining goals in ${minsLeft}'. P(another goal): ${probAny1}%.${cardNote}`,
+      });
+    }
+
+    // ── Over {totalGoals+1}.5 — 2 more goals (only for already open games) ──
+    if (prob2more >= 45 && totalGoals >= 2) {
+      const tier2 = prob2more >= 72 ? 2 : 3;
+      recs.push({
+        type: 'GOALS_ONLY', selection: `Over ${totalGoals + 1}.5 Goals`,
+        confidence: Math.min(prob2more, 82), tier: tier2, tierName: TIERS[tier2].name,
+        logic: `${prob2more}% P(2+ more goals in ${minsLeft}'). ${expRem.toFixed(1)} remaining.`,
+      });
+    }
+
+    // ── BTTS — only meaningful if one team hasn't scored yet ──
+    const bttsSettled = hG > 0 && aG > 0;
+    if (!bttsSettled) {
+      const scorelessLambda = hG === 0 ? lH_rem : lA_rem;
+      const scorelessTeam   = hG === 0 ? home : away;
+      const probBttsNow     = Math.round((1 - Math.exp(-scorelessLambda)) * 100);
+      if (probBttsNow >= 52) {
+        recs.push({
+          type: 'GOALS_ONLY', selection: 'Both Teams to Score',
+          confidence: Math.min(probBttsNow, 88),
+          tier: probBttsNow >= 72 ? 2 : 3,
+          tierName: probBttsNow >= 72 ? TIERS[2].name : TIERS[3].name,
+          logic: `${scorelessTeam} yet to score. ${probBttsNow}% P(they score in remaining ${minsLeft}').`,
+        });
+      }
+    }
+
+    return recs.sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
   }
 
-  // Adjust Over 2.5 probability for chaos + live override
-  let o25 = liveO25 !== null ? liveO25 : poisson.probabilities.over25;
-  if (liveO25 === null && chaos.earlyGoalActive)    o25 = Math.min(o25 + Math.round(chaos.earlyGoalBoost * 100), 97);
-  if (liveO25 === null && chaos.bivariateDependency) o25 = Math.min(o25 + 8, 97);
+  // ── PRE-MATCH PATH ────────────────────────────────────────────────────────────
+  let o25 = poisson.probabilities.over25;
+  if (chaos.earlyGoalActive)    o25 = Math.min(o25 + Math.round(chaos.earlyGoalBoost * 100), 97);
+  if (chaos.bivariateDependency) o25 = Math.min(o25 + 8, 97);
 
   const o15  = poisson.probabilities.over15;
-  const u25  = liveO25 !== null ? Math.max(100 - liveO25, 1) : poisson.probabilities.under25;
+  const u25  = poisson.probabilities.under25;
   const btts = poisson.probabilities.btts;
 
   // ── Win recommendation ──
@@ -656,31 +750,6 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
         tierName: TIERS[tier].name,
         logic: `Motivation (${p1.edge}) + form (${p4.edge}) both point ${winEdge}. ${p1.assessment.slice(0, 120)}`,
       });
-    }
-  }
-
-  // ── Score-based win rec for live leads (fires when form data is unavailable) ──
-  if (isLive && !recs.some(r => r.type === 'WINS_ONLY')) {
-    const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
-    const scoreDiff = hG - aG;
-    if (scoreDiff !== 0) {
-      const leader     = scoreDiff > 0 ? home : away;
-      const absDiff    = Math.abs(scoreDiff);
-      const timePlayed = Math.min(matchMinutes / 90, 1.0);
-      // 1-goal lead: ~50% base; 2-goal: ~65%; 3-goal: ~80% — scales up with time played
-      const baseConf  = 35 + absDiff * 15;
-      const scoreConf = Math.round(Math.min(baseConf + timePlayed * 22, 92));
-      if (scoreConf >= 52) {
-        const tier = scoreConf >= 82 ? 1 : scoreConf >= 72 ? 2 : scoreConf >= 62 ? 3 : 4;
-        recs.push({
-          type: 'WINS_ONLY',
-          selection: `${leader} Win`,
-          confidence: scoreConf,
-          tier,
-          tierName: TIERS[tier].name,
-          logic: `${matchMinutes}' played, ${hG}-${aG}. ${absDiff}-goal live lead.`,
-        });
-      }
     }
   }
 
@@ -722,19 +791,6 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
       tier: btts >= 72 ? 2 : 3, tierName: btts >= 72 ? TIERS[2].name : TIERS[3].name,
       logic: `${btts}% BTTS probability from Poisson modeling.`,
     });
-  }
-
-  // ── Live Sniper ──
-  if (isLive && matchMinutes >= 55) {
-    const sniperMarket = poisson.expectedTotalGoals > 2.0 ? 'Over 2.5' : 'Over 1.5';
-    const sniperConf = Math.round(o25 * 0.82);
-    if (sniperConf >= 52) {
-      recs.push({
-        type: 'SNIPER_WATCH', selection: `${sniperMarket} Goals (Live ${matchMinutes}')`,
-        confidence: sniperConf, tier: 4, tierName: TIERS[4].name,
-        logic: `${matchMinutes}' sniper window. ${p1.mwvIndex > 0.6 ? 'MWV elevated — teams desperate for winner.' : 'Watch for late surge.'}`,
-      });
-    }
   }
 
   // Sort highest confidence first, then by tier

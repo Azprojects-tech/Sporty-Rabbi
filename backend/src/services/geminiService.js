@@ -654,7 +654,8 @@ Return a JSON array where each object has EXACTLY these fields:
  * This is the LLM layer that sits on top of V9's pure-math output.
  */
 export async function generateMatchNarrative(analysis, matchInfo) {
-  const { home = '?', away = '?', league = '', status = 'NS', matchMinutes = 0, score = '0-0' } = matchInfo || {};
+  const { home = '?', away = '?', league = '', status = 'NS', matchMinutes = 0, score = '0-0',
+          homeCards, awayCards } = matchInfo || {};
   const { overallScore = 0, recommendations = [], parameters = {}, poisson } = analysis || {};
 
   const topRec = recommendations[0];
@@ -666,33 +667,61 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     .slice(0, 3);
 
   const isLive = status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(status);
-  const context = isLive
-    ? `LIVE match — ${matchMinutes}' played, current score ${score}.`
-    : 'Pre-match analysis.';
+
+  // ── Build rich live-context block for the LLM ──
+  let liveContext = '';
+  if (isLive) {
+    const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
+    const scoreDiff = hG - aG;
+    const minsLeft  = Math.max(90 - matchMinutes, 0);
+    const leader    = scoreDiff > 0 ? home : scoreDiff < 0 ? away : null;
+    const loser     = scoreDiff > 0 ? away : scoreDiff < 0 ? home : null;
+    const hRed      = homeCards?.red || 0;
+    const aRed      = awayCards?.red || 0;
+    const hYel      = homeCards?.yellow || 0;
+    const aYel      = awayCards?.yellow || 0;
+
+    const scoreState = leader
+      ? `${leader} leads ${hG}-${aG} (${Math.abs(scoreDiff)}-goal margin). ${loser} trailing — urgency to ${scoreDiff === 0 ? 'break deadlock' : 'equalize'}.`
+      : `Goalless at ${matchMinutes}' — both teams pressing for opening goal.`;
+
+    const cardState = (hRed > 0 || aRed > 0)
+      ? `CARDS: ${hRed > 0 ? `${home} has ${hRed} red card (10 men). ` : ''}${aRed > 0 ? `${away} has ${aRed} red card (10 men). ` : ''}This dramatically changes goal expectation.`
+      : (hYel + aYel >= 6 ? `Heavy yellow card count (${home}: ${hYel}, ${away}: ${aYel}) — physical, desperate play.` : '');
+
+    const remainFrac = minsLeft / 90;
+    const lH_rem = (poisson?.homeLambda || 1.35) * remainFrac;
+    const lA_rem = (poisson?.awayLambda || 1.35) * remainFrac;
+    const probGoal  = Math.round((1 - Math.exp(-(lH_rem + lA_rem))) * 100);
+
+    liveContext = `LIVE SITUATION — ${matchMinutes}' played, ${minsLeft}' remaining.
+Score: ${hG}-${aG}. ${scoreState}
+${cardState}
+Remaining expected goals: ${home} λ=${lH_rem.toFixed(2)}, ${away} λ=${lA_rem.toFixed(2)}. P(another goal): ${probGoal}%.
+Top recommendation: ${topRec?.selection || 'None'} — ${topRec?.confidence || 0}% confidence.
+Recommendation logic: ${topRec?.logic || ''}`;
+  }
 
   const systemPrompt = `You are Agent 47, an elite football betting analyst.
 Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
+${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasing, cards, and what the remaining expected goals data means for live bettors. Do NOT just echo the Poisson numbers — reason about the SITUATION.' : ''}
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
 Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
 
   const userText = topRec
-    ? `Match: ${home} vs ${away} (${league}). ${context}
-Overall V9 Score: ${overallScore}/100
-Top recommendation: ${topRec.selection} — ${topRec.confidence}% confidence (${topRec.tierName || 'Tier ?'})
-Key driver 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
-Key driver 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
-Key driver 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
-Poisson: ${poisson?.assessment || 'N/A'}
-Reasoning: ${topRec.logic || ''}
-Write 2-3 sentences explaining WHY this bet and what the data says.`
-    : `Match: ${home} vs ${away} (${league}). ${context}
-Overall V9 Score: ${overallScore}/100 — no strong directional edge detected.
+    ? `Match: ${home} vs ${away} (${league}).
+${isLive ? liveContext : `Pre-match analysis. Overall V9 Score: ${overallScore}/100`}
 Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
-Poisson: ${poisson?.assessment || 'N/A'}
-Write 2-3 sentences describing what the data shows about this match. No specific bet — just the analytical picture.`;
+Key signal 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
+Write 2-3 sentences explaining the live betting opportunity and WHY the top recommendation makes sense given the situation.`
+    : `Match: ${home} vs ${away} (${league}).
+${isLive ? liveContext : `Pre-match. Overall V9 Score: ${overallScore}/100`}
+Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
+Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
+No strong directional edge. Write 2-3 sentences describing what the data shows.`;
 
-  const raw = await groqChat(systemPrompt, userText, { maxTokens: 220, jsonMode: true });
+  const raw = await groqChat(systemPrompt, userText, { maxTokens: 240, jsonMode: true });
 
   // Deterministic fallback when Groq is unavailable — build from V9 data directly
   if (!raw) {

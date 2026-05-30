@@ -552,6 +552,10 @@ function sanitizeMatch(match) {
     leagueCountry: String(match.leagueCountry || ''),
     homeTeamId: match.homeTeamId || null,
     awayTeamId: match.awayTeamId || null,
+    cards: {
+      home: { yellow: Number(match.cards?.home?.yellow || 0), red: Number(match.cards?.home?.red || 0) },
+      away: { yellow: Number(match.cards?.away?.yellow || 0), red: Number(match.cards?.away?.red || 0) },
+    },
   };
 }
 
@@ -586,6 +590,11 @@ async function analyzeMatch(match) {
     const xg = {
       home: getStat(homeStats, 'expected_goals') || 0,
       away: getStat(awayStats, 'expected_goals') || 0,
+    };
+
+    const cards = {
+      home: { yellow: getStat(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
+      away: { yellow: getStat(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
     };
 
     // Calculate match elapsed time (approximate from fixture)
@@ -717,6 +726,8 @@ async function analyzeMatch(match) {
         totalGW: 38,
         homeSquadIntegrity: 85,
         awaySquadIntegrity: 85,
+        homeCards: cards.home,
+        awayCards: cards.away,
       };
       try {
         analysisObj      = analyzeV9(matchData);
@@ -750,6 +761,7 @@ async function analyzeMatch(match) {
       leagueId: league.id || 0,
       matchType,
       leagueCountry: league.country || '',
+      cards,
     };
     
     const result = sanitizeMatch(analyzed);

@@ -204,6 +204,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : _defShH,
         awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : _defShA,
         matchType:        match.matchType || 'League',
+        homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
+        awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },
       };
       const res = await apiService.client.post('/analyze', matchData);
       setAnalysis(res.data);
