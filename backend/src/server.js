@@ -735,12 +735,6 @@ function analyzeMatch(match) {
       away: getStat(awayStats, 'expected_goals') || 0,
     };
 
-    // Simple confidence scoring
-    let confidence = 50; // baseline
-    if (possession.home > 60) confidence += 10;
-    if (shots.home > shots.away) confidence += 15;
-    if (xg.home > xg.away + 0.5) confidence += 10;
-
     // Calculate match elapsed time (approximate from fixture)
     const now = new Date();
     const kickoffTime = fixture.date ? new Date(fixture.date) : now;
@@ -767,6 +761,71 @@ function analyzeMatch(match) {
       statusStr = fixture.status;
     }
 
+    // ── V8-powered confidence scoring ──────────────────────────────────────────
+    // Priority 1: calibration store lookup (home+away name match) — reuses pre-computed V8.
+    // Priority 2: V8 with live stats + neutral defaults for unknown fields.
+    // Priority 3: 3-rule heuristic (only if V8 throws).
+    const normalize = (s) => (s || '').toLowerCase().trim();
+    const homeN = normalize(teams.home?.name);
+    const awayN = normalize(teams.away?.name);
+    const calMatch = calibrationStore.matches.find(m =>
+      normalize(m.home) === homeN && normalize(m.away) === awayN
+    );
+
+    let confidence, opportunitiesArr, analysisObj, kickoffUTC;
+
+    if (calMatch) {
+      // Calibration store hit — V8 analysis already computed; update with live state
+      confidence       = calMatch.confidence;
+      opportunitiesArr = calMatch.opportunities || [];
+      analysisObj      = calMatch.analysis || null;
+      kickoffUTC       = calMatch.kickoffUTC || fixture.date || null;
+    } else {
+      // No calibration entry — run V8 with available live data + neutral defaults
+      const homeXgAvg = xg.home > 0 ? xg.home : 1.2;
+      const awayXgAvg = xg.away > 0 ? xg.away : 1.0;
+      const matchData = {
+        home: teams.home?.name || 'Unknown',
+        away: teams.away?.name || 'Unknown',
+        league: league.name || 'Unknown',
+        leagueId: league.id || 0,
+        status: statusStr,
+        matchMinutes: matchMinutesElapsed || 0,
+        homeXgAvg,
+        awayXgAvg,
+        homeXgaAvg: 1.2,
+        awayXgaAvg: 1.2,
+        homePossession: possession.home || 50,
+        homeShotsPerGame: shots.home || 10,
+        awayShotsPerGame: shots.away || 10,
+        homeForm:  'W-D-L-W-D',
+        awayForm:  'D-L-W-D-L',
+        homePosition: 10,
+        awayPosition: 10,
+        homePoints: 40,
+        awayPoints: 38,
+        totalTeams: 20,
+        gameWeek: 30,
+        totalGW: 38,
+        homeSquadIntegrity: 85,
+        awaySquadIntegrity: 83,
+      };
+      try {
+        analysisObj      = analyzeV6(matchData);
+        confidence       = analysisObj.overallScore || 50;
+        opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
+      } catch (v8Err) {
+        console.warn(`[analyzeMatch] V8 fallback: ${teams.home?.name} vs ${teams.away?.name}: ${v8Err.message}`);
+        confidence = 50;
+        if (possession.home > 60) confidence += 10;
+        if (shots.home > shots.away) confidence += 15;
+        if (xg.home > xg.away + 0.5) confidence += 10;
+        opportunitiesArr = confidence > 65 ? ['Strong signal detected'] : [];
+        analysisObj = null;
+      }
+      kickoffUTC = fixture.date || null;
+    }
+
     const analyzed = {
       id: fixture.id || Math.random(),
       homeTeamId: teams.home?.id || null,
@@ -779,16 +838,18 @@ function analyzeMatch(match) {
       xg,
       status: statusStr,
       matchMinutes: matchMinutesElapsed || 1,
-      confidence: Math.min(confidence, 95),
-      opportunities: confidence > 65 ? ['Strong signal detected'] : [],
+      confidence: Math.min(Math.max(Math.round(confidence), 10), 98),
+      opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
       matchType,
       leagueCountry: league.country || '',
     };
     
-    // Sanitize before returning
-    return sanitizeMatch(analyzed);
+    const result = sanitizeMatch(analyzed);
+    if (analysisObj) result.analysis = analysisObj;
+    if (kickoffUTC) result.kickoffUTC = kickoffUTC;
+    return result;
   } catch (error) {
     console.error('❌ Error analyzing match:', error.message);
     return null; // Skip this match

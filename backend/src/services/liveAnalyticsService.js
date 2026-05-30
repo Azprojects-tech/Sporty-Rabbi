@@ -18,32 +18,33 @@ export function calculateNextGoalProbability(match) {
     const homeXG = match.xg?.home || 0;
     const awayXG = match.xg?.away || 0;
 
-    // Goal conversion rate (empirical: ~5-15% from xG)
-    const conversionRate = 0.10;
+    const minutesRemaining = Math.max(1, 90 - (match.matchMinutes || 0));
+    const minsElapsed = Math.max(1, match.matchMinutes || 1);
 
-    // Calculate expected goals remaining (xG still available)
-    const homeExpectedGoals = homeXG * conversionRate * 100; // Convert to percentage
-    const awayExpectedGoals = awayXG * conversionRate * 100;
+    // xG-per-minute rate based on xG accumulated so far
+    const homeXgRate = homeXG / minsElapsed;
+    const awayXgRate = awayXG / minsElapsed;
 
-    // Factor in shots on target (more direct indicator)
-    const homeShotConversion = homeShots > 0 ? (homeShots * 0.25) : 0; // 25% of shots on target
-    const awayShotConversion = awayShots > 0 ? (awayShots * 0.25) : 0;
+    // Shots on target proxy: each shot on target ≈ 0.08 xG equivalent
+    const homeShotXg = homeShots * 0.08;
+    const awayShotXg = awayShots * 0.08;
 
-    // Combine both metrics
-    const homeNextGoalProb = Math.min(
-      ((homeExpectedGoals + homeShotConversion) / 2).toFixed(1),
-      95
-    );
-    const awayNextGoalProb = Math.min(
-      ((awayExpectedGoals + awayShotConversion) / 2).toFixed(1),
-      95
-    );
+    // Blended lambda for remaining minutes: 70% xG rate + 30% shots proxy
+    const homeLambda = ((homeXgRate * 0.7) + ((homeShotXg / minsElapsed) * 0.3)) * minutesRemaining;
+    const awayLambda = ((awayXgRate * 0.7) + ((awayShotXg / minsElapsed) * 0.3)) * minutesRemaining;
+
+    // P(at least 1 goal in remaining time) via Poisson: 1 - e^(-λ)
+    const homeNextGoalProb = Math.min(+((1 - Math.exp(-homeLambda)) * 100).toFixed(1), 95);
+    const awayNextGoalProb = Math.min(+((1 - Math.exp(-awayLambda)) * 100).toFixed(1), 95);
 
     // Goal pace calculation (goals per minute in match so far)
     const matchMinutes = match.matchMinutes || 1;
-    const totalGoals = (match.score?.split('-')[0] || 0) + (match.score?.split('-')[1] || 0);
+    const scoreParts = (match.score || '0-0').split('-');
+    const totalGoals = (parseInt(scoreParts[0]) || 0) + (parseInt(scoreParts[1]) || 0);
     const goalsPerMinute = totalGoals / matchMinutes;
-    const projectedFinalGoals = goalsPerMinute * 90;
+    // Blend actual pace (50%) with combined xG rate (50%) for projected final goals
+    const xgBasedFinal = (homeXG + awayXG) * (90 / minsElapsed);
+    const projectedFinalGoals = (goalsPerMinute * 90 * 0.5) + (xgBasedFinal * 0.5);
 
     return {
       nextGoal: {
