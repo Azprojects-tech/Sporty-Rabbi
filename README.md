@@ -1,167 +1,179 @@
-# SportyRabbi - Sports Betting Analytics Portal
+# SportyRabbi — Football Betting Analytics Portal
 
-A real-time sports betting analytics platform that analyzes football matches and provides intelligent betting recommendations with live alerts.
+Real-time football match analytics with a 15-parameter AI scoring engine (Agent 47 V9), WhatsApp alerts, and a live React dashboard.
+
+**Live:** [sporty-rabbit.netlify.app](https://sporty-rabbit.netlify.app)  
+**Engine version:** V9 — commit `5185d1f` (May 30, 2026)
+
+---
 
 ## Features
 
-✅ **Live Match Dashboard** - Real-time score updates, possession, shots on target, xG analysis  
-✅ **Pre-Match Analytics** - Team form, head-to-head stats, odds analysis with confidence scoring  
-✅ **In-Play Alerts** - Smart triggers for value betting opportunities during live matches  
-✅ **Bet Tracking** - Log bets manually, track P&L, win rates, ROI by bet type  
-✅ **Multi-Channel Alerts** - On-screen notifications, WhatsApp messages, SMS alerts (via Twilio)  
-✅ **TopLeagues** - English Premier League, La Liga, Serie A, Bundesliga, Champions League, Europa League  
+- **Live match feed** — WebSocket-pushed scores, possession %, shots on target, xG
+- **Agent 47 V9 engine** — 15-parameter Dixon-Coles Poisson model with confidence scoring 0–100
+- **AI analyst notes** — Groq llama-3.3-70b narrative; Gemini 2.5 Flash search for calibration
+- **WhatsApp alerts** — Fires via Twilio when confidence ≥ 65%
+- **Bet slip logging** — Log manual bets, track P&L and win rate
+- **Pre-match calibration** — Auto-runs every 6 h; enriches fixtures with real form/standings via Gemini Search
+
+---
 
 ## Tech Stack
 
-**Frontend:** React + Vite + TailwindCSS  
-**Backend:** Node.js + Express + PostgreSQL  
-**Integrations:** API-Football (live data), Twilio (WhatsApp/SMS), SportyBet (deep links)  
-**Database:** PostgreSQL with real-time analytics views  
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 18 + Vite + TailwindCSS |
+| Backend | Node.js ESM + Express 4 (single `server.js`) |
+| Real-time | WebSocket (`ws`) + `node-cron` polling every 30 s |
+| Persistence | **Firebase Firestore** (alerts, bets) |
+| Data source | API-Football v3 (`v3.football.api-sports.io`) |
+| AI (narrative) | Groq `llama-3.3-70b-versatile` |
+| AI (search/calibration) | Google Gemini 2.5 Flash with Search grounding |
+| Alerts | Twilio WhatsApp sandbox |
+| Deploy | Railway (backend) + Netlify (frontend) |
+
+---
 
 ## Project Structure
 
 ```
-sporty-rabbi/
-├── frontend/          # React dashboard UI
+SportyRabbi/
+├── backend/
 │   ├── src/
-│   │   ├── components/    # Reusable UI components
-│   │   ├── pages/         # Main pages
-│   │   ├── hooks/         # Custom React hooks
-│   │   ├── services/      # API client services
-│   │   └── styles/        # TailwindCSS styles
+│   │   ├── server.js                  ← All routes, polling, WebSocket, cron jobs
+│   │   ├── config/firebase.js         ← Firebase Admin SDK
+│   │   └── services/
+│   │       ├── agent47Service.js      ← V9 engine: analyzeV9(), Dixon-Coles Poisson
+│   │       ├── geminiService.js       ← Gemini/Groq bridge, calibration, match narrative
+│   │       ├── analyticsService.js    ← Team form / H2H / standings (API-Football, cached)
+│   │       ├── liveAnalyticsService.js← In-play next-goal + momentum
+│   │       └── notificationService.js ← Twilio WhatsApp
+│   ├── firebase-service-account.json  ← Firestore credentials (NOT committed)
 │   └── package.json
-├── backend/           # Node.js/Express API
+├── frontend/
 │   ├── src/
-│   │   ├── routes/        # API endpoints
-│   │   ├── models/        # Database models
-│   │   ├── services/      # Business logic
-│   │   ├── middleware/    # Express middleware
-│   │   ├── config/        # Configuration
-│   │   └── jobs/          # Scheduled tasks (live polling)
+│   │   ├── App.jsx
+│   │   ├── components/                ← MatchFeed, DetailPanel, BetSlips, AlertHistory, …
+│   │   ├── hooks/useMatches.js        ← WebSocket + REST state management
+│   │   └── services/api.js            ← Axios API client
 │   └── package.json
-├── .github/
-│   └── copilot-instructions.md
-├── package.json       # Root workspace config
-└── README.md
+├── package.json                       ← Root workspace (npm run dev runs both)
+└── SYSTEM_DOCUMENTATION.md           ← Full technical reference
 ```
 
-## Getting Started
+---
+
+## Quick Start (Local Dev)
 
 ### Prerequisites
-- Node.js 18+ and npm
-- PostgreSQL (local or cloud)
-- API-Football API key (get free tier at [API-Football](https://www.api-football.com))
-- Twilio account (optional, for WhatsApp alerts)
+- Node.js 18+
+- API-Football key (free tier at [api-football.com](https://www.api-football.com))
+- Firebase project with Firestore enabled (service account JSON)
+- Twilio account (optional — WhatsApp alerts)
 
-### Installation
+### Setup
 
 ```bash
-# Clone and navigate to project
-cd sporty-rabbi
-
-# Install all dependencies
+# Install all dependencies (root + backend + frontend)
 npm run install-all
 
-# Set up environment variables
+# Configure backend
 cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
+# Edit backend/.env — see Environment Variables below
 
-# Create database
-psql -U postgres -c "CREATE DATABASE sporty_rabbi;"
-
-# Run migrations
-npm run migrate --prefix backend
+# Configure frontend
+# Create frontend/.env
+echo "VITE_API_BASE_URL=http://localhost:3000/api" > frontend/.env
 ```
 
-### Development
+### Run
 
 ```bash
-# Start both frontend and backend in dev mode
 npm run dev
-
-# Frontend runs on: http://localhost:5173
-# Backend API runs on: http://localhost:3000
+# Frontend → http://localhost:5173
+# Backend  → http://localhost:3000
 ```
 
-### Build for Production
-
-```bash
-npm run build
-npm start
-```
-
-## API Endpoints
-
-### Matches
-- `GET /api/matches/live` - Get all live matches
-- `GET /api/matches/:id` - Get match details with stats
-- `GET /api/matches/league/:leagueId` - Get matches by league
-
-### Analytics
-- `GET /api/analytics/match/:id` - Pre-match analysis
-- `GET /api/analytics/in-play/:id` - In-play opportunity detection
-- `POST /api/analytics/score` - Calculate confidence scores
-
-### Bets
-- `POST /api/bets` - Log a bet
-- `GET /api/bets/history` - Get bet history
-- `GET /api/bets/stats` - Get P&L and performance stats
-
-### Alerts
-- `GET /api/alerts` - Get recent alerts
-- `POST /api/alerts/subscribe` - Subscribe to WhatsApp/SMS alerts
+---
 
 ## Environment Variables
 
-Create `.env` files in both `frontend/` and `backend/`:
-
-**backend/.env:**
+**`backend/.env`**
 ```
-DATABASE_URL=postgresql://user:password@localhost/sporty_rabbi
 API_FOOTBALL_KEY=your_api_football_key
+GOOGLE_AI_API_KEY=your_gemini_api_key
+GROQ_API_KEY=your_groq_api_key
 TWILIO_ACCOUNT_SID=your_twilio_sid
 TWILIO_AUTH_TOKEN=your_twilio_token
-TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
+TWILIO_WHATSAPP_TO=whatsapp:+1234567890
 NODE_ENV=development
 PORT=3000
 ```
 
-**frontend/.env:**
+> Firebase credentials come from `backend/firebase-service-account.json` (not committed — add to Railway as env var or file mount in production).
+
+**`frontend/.env`**
 ```
 VITE_API_BASE_URL=http://localhost:3000/api
-VITE_APP_ENV=development
 ```
 
-## Supported Leagues
+---
 
-- Premier League (EPL)
-- La Liga
-- Serie A (Calcio)
-- Bundesliga
-- UEFA Champions League
-- UEFA Europa League
+## API Endpoints
 
-## How It Works
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/matches` | All cached matches (live + upcoming) |
+| GET | `/api/matches/live` | Live matches only |
+| GET | `/api/matches/upcoming` | Upcoming (calibrated) fixtures |
+| POST | `/api/analyze` | Run V9 analysis on a match (body: matchData) |
+| POST | `/api/calibrate` | Trigger manual calibration run |
+| GET | `/api/alerts` | Recent alerts from Firestore |
+| POST | `/api/bets` | Log a bet |
+| GET | `/api/bets` | Bet history |
+| PATCH | `/api/bets/:id` | Update bet result |
+| GET | `/api/bets/stats` | P&L, win rate, ROI |
+| GET | `/api/search?q=...` | NL match search (Groq → Gemini fallback) |
 
-1. **Live Data Pull** - Every 15-30 seconds, fetch live match data from API-Football
-2. **Real-Time Analysis** - Calculate stats, momentum shifts, value opportunities
-3. **Alert Generation** - Trigger notifications when confidence threshold exceeded
-4. **User Action** - Portal recommends actions; user places bet manually on SportyBet
-5. **Tracking** - Log bet details manually; system tracks performance over time
+---
+
+## Agent 47 V9 — Parameter Summary
+
+| # | Parameter | Weight | Signal |
+|---|-----------|--------|--------|
+| P1 | Motivation | 13% | Title/relegation stakes |
+| P2 | Star Power | 7% | Key player availability |
+| P3 | H2H | 3% | Historical meeting patterns |
+| P4 | Form (L10) | **15%** | Recent 5 games weighted 1.6× heavier |
+| P5 | Scoring Timing | 5% | Goals in 76–90' window |
+| P6 | Defensive Gap | 7% | Goals-against avg + injury flags |
+| P7 | Poisson | **11%** | Dixon-Coles corrected Poisson distribution |
+| P8 | xG Edge | 6% | Directional xG differential |
+| P9 | Def. Solidity | 5% | Team xGA vs league average |
+| P10 | Pace | 4% | Shots per game + conversion % |
+| P11 | Home Adv. | 3% | Live possession + shot dominance |
+| P12 | Mkt. Diverge. | 4% | Poisson model vs bookmaker implied probability |
+| P13 | Comp. Context | 5% | League tier predictability premium |
+| P14 | Lifecycle | 2% | Season phase |
+| P15 | Crisis | **10%** | Goal droughts, losing streaks, manager instability |
+
+---
+
+## Deployment
+
+Both services auto-deploy on `git push origin main`:
+- **Backend** → Railway (builds `backend/`, runs `node src/server.js`)
+- **Frontend** → Netlify (builds `frontend/`, publishes `dist/`)
+
+See [SYSTEM_DOCUMENTATION.md](SYSTEM_DOCUMENTATION.md) for full technical reference including data flow diagrams, Firestore schema, and model improvement roadmap.
+
+---
 
 ## Disclaimer
 
-⚠️ **No betting system guarantees wins.** This platform provides analysis and recommendations only. You bear all financial risk. Betting involves risk of loss. Please bet responsibly.
+⚠️ This platform provides analysis only. You bear all financial risk. Bet responsibly.
 
 ## License
 
 Private / Proprietary
-
-## Next Steps
-
-- Deploy backend to Railway/Render
-- Deploy frontend to Vercel
-- Configure Twilio for WhatsApp notifications
-- Set up database backups
-- Add email alerts
-- Expand to more leagues

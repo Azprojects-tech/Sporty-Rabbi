@@ -1,11 +1,11 @@
 # SportyRabbi — Complete System Documentation
-**Last updated: May 30, 2026**
+**Last updated: May 30, 2026 — commit `5185d1f`**
 
 ---
 
 ## 1. Project Purpose
 
-SportyRabbi is a real-time football betting analytics portal. It scrapes live global fixtures, runs them through a proprietary 15-parameter AI scoring engine (Agent 47 V8), and surfaces high-confidence betting recommendations with WhatsApp alerts.
+SportyRabbi is a real-time football betting analytics portal. It scrapes live global fixtures, runs them through a proprietary 15-parameter AI scoring engine (Agent 47 **V9**), and surfaces high-confidence betting recommendations with WhatsApp alerts.
 
 The product is NOT a sportsbook. It is a decision-support tool that tells the user **which bets to place** and at which stake, based on statistical modelling.
 
@@ -45,7 +45,7 @@ SportyRabbi/
 │   │   ├── server.js                 ← Main server: Express + WebSocket + all routes
 │   │   ├── config/firebase.js        ← Firebase Admin SDK init
 │   │   └── services/
-│   │       ├── agent47Service.js     ← The V8 engine (15-parameter scoring)
+│   │       ├── agent47Service.js     ← The V9 engine (15-parameter scoring, Dixon-Coles Poisson)
 │   │       ├── geminiService.js      ← Gemini/Groq bridge + calibration + enrichment
 │   │       ├── liveAnalyticsService.js ← In-play next-goal + momentum
 │   │       ├── analyticsService.js   ← Team form / H2H / fixture preview helpers
@@ -80,13 +80,13 @@ SportyRabbi/
     → calibrateDay() [geminiService.js]
         → Gemini 2.5 Flash + Google Search grounding
         → Returns: confirmed fixture list (10-60 matches) with today's schedule
-    → enrichFixturesWithV8() [geminiService.js]
+    → enrichFixturesWithGemini() [geminiService.js]
         → Batches of 5 fixtures
         → Gemini Search: real form, position, xG, H2H, squad news per team
         → Falls back to Groq (no search) if Gemini fails
         → Cache per fixture pair (12h TTL)
-    → enriched fixtures passed to analyzeV6() [agent47Service.js]
-        → Full 15-parameter V8 score computed
+    → enriched fixtures passed to analyzeV9() [agent47Service.js]
+        → Full 15-parameter V9 score computed (Dixon-Coles Poisson)
     → calibrationStore = { matches: [...], highConfidence: [...], calibratedAt }
     → upcomingMatches = calibrationStore.matches
     → broadcast({ type: 'UPCOMING_MATCHES' }) to all WebSocket clients
@@ -126,42 +126,54 @@ App.jsx
 ### 5d. Match Detail / Analytics Request
 ```
 User clicks match → DetailPanel.jsx
-    → GET /api/analytics/match/:id
-    → naturalLanguageToMatchData() or calibrationStore lookup
-    → analyzeV6() → full 15-param analysis
-    → returns { recommendations, poisson, parameters, bookieEdges, ... }
-    → renders in AnalyticsModal.jsx
+    → POST /api/analyze  (body: matchData incl. homeTeamId, awayTeamId, matchType)
+    → Step 1: fetch real team form, H2H, standings from API-Football (if IDs available)
+    → Step 2: live xG projection (matchMins ≥ 15)
+    → Step 3: analyzeV9() → full 15-param V9 analysis
+    → Step 4: generateMatchNarrative() → Groq analyst note (always fires; deterministic fallback if Groq unavailable)
+    → returns { recommendations, poisson, parameters, bookieEdges, narrative, ... }
+    → renders in DetailPanel.jsx (parameters, tier rec, analyst note)
 ```
+
+**Critical data-flow fix (commit `5185d1f`)**: `sanitizeMatch()` now outputs `homeTeamId` and `awayTeamId`. Previously these were stripped, causing all click-analyses to receive null team IDs and fall back to identical neutral defaults on every match.
 
 ---
 
-## 6. Agent 47 V8 Engine — Full Reference
+## 6. Agent 47 V9 Engine — Full Reference
 
-**File**: `backend/src/services/agent47Service.js`
-**Entry point**: `analyzeV6(matchData)` (also exported as default)
-**Version label**: `"V8-Master"` (despite function name `analyzeV6`, it IS the V8 logic)
+**File**: `backend/src/services/agent47Service.js`  
+**Entry point**: `export function analyzeV9(matchData)`  
+**Version label**: V9 — science-based parameter overhaul (commit `5185d1f`, May 30 2026)
 
-### 6a. 15 Parameters + Weights
+### 6a. 15 Parameters + Weights (V9)
 
-| # | Parameter | Weight | Description |
-|---|-----------|--------|-------------|
-| P1 | Motivation Gap | 16% | Title/relegation stakes, late-season pressure, MWV index |
-| P2 | Star Power | 7% | Key player availability vs absences (position-weighted) |
-| P3 | H2H History | 8% | Last N meetings: goals avg, over-rate, win distribution |
-| P4 | Form (L10) | 12% | Recent 5 weighted 1.6× heavier than previous 5. Coiled Spring detection |
-| P5 | Scoring Timing | 7% | % goals in 76-90' window vs league baseline |
-| P6 | Defensive Gap | 7% | Goals against avg + CB injury + GK error flags |
-| P7 | Poisson | 9% | Derived from Poisson model, score = Over2.5% × 0.8 |
-| P8 | xG Attack | 6% | Expected goals scored per game avg |
-| P9 | xGA Defense | 5% | Expected goals conceded per game avg |
-| P10 | Pace / Conversion | 4% | Shots per game + conversion % |
-| P11 | Timezone / Structural | 2% | Currently returns 100 (placeholder) |
-| P12 | Fixture Confirmed | 1% | Always 100 |
-| P13 | Squad Integrity | 5% | Overall % first-choice squad available |
-| P14 | League Lifecycle | 1% | Gameweek % through season, phase label |
-| P15 | Crisis / Drought | 10% | Goal droughts (3+ scoreless), losing runs (4+), interim coach instability |
+| # | Key | Weight | Description |
+|---|-----|--------|-------------|
+| P1 | `p1_motivation` | **13%** | Title/relegation stakes, late-season pressure, MWV index |
+| P2 | `p2_starPower` | **7%** | Key player availability vs absences (position-weighted) |
+| P3 | `p3_h2h` | **3%** | Last N meetings: goals avg, over-rate, win distribution |
+| P4 | `p4_form` | **15%** | Recent 5 weighted 1.6× heavier than previous 5. Coiled Spring detection |
+| P5 | `p5_scoringTiming` | **5%** | % goals in 76-90' window vs league baseline |
+| P6 | `p6_defensiveGap` | **7%** | Goals against avg + CB injury + GK error flags |
+| P7 | `p7_poisson` | **11%** | **Dixon-Coles corrected** Poisson — corrects under-prediction of 0-0/1-0/0-1/1-1 |
+| P8 | `p8_xg` | **6%** | **xG differential** — directional attacking edge (who has the xG advantage), not raw sum |
+| P9 | `p9_xga` | **5%** | **Defensive solidity** — each team's xGA vs league average; high score = tight game |
+| P10 | `p10_pace` | **4%** | Shots per game + conversion % |
+| P11 | `p11_homeAdvantage` | **3%** | Live possession dominance + shot ratio |
+| P12 | `p12_market` | **4%** | **Model vs market divergence** — Poisson O2.5 prob vs bookmaker implied prob |
+| P13 | `p13_squad` | **5%** | **Competitive context** — league tier predictability premium (Top-5 = 76, unknown = 44) |
+| P14 | `p14_lifecycle` | **2%** | Gameweek % through season, phase label |
+| P15 | `p15_crisis` | **10%** | Goal droughts (3+ scoreless), losing runs (4+), interim coach instability |
 
-**Total weight: 100%**
+**Total weight: 100%** (0.13+0.07+0.03+0.15+0.05+0.07+0.11+0.06+0.05+0.04+0.03+0.04+0.05+0.02+0.10 = 1.00)
+
+**V9 vs V8 key changes:**
+- P7: Raw Poisson → **Dixon-Coles ρ = −0.1 correction** (fixes systematic under-prediction of low-score draws)
+- P8: Raw combined xG sum → **xG directional differential** (eliminates triple-counting xG with P7 and P9)
+- P9: Raw combined xGA sum → **Defensive solidity vs league average** (distinct signal from P7)
+- P12: Bookmaker overround score → **Poisson model vs market implied probability** (genuine edge detection)
+- P13: Duplicate squad integrity (same as P2) → **Competitive context / league tier** (new independent signal)
+- P4: 14% → 15% (+1%); P12: 3% → 4% (+1%); P15: 12% → 10% (−2%)
 
 ### 6b. Tier System
 
@@ -180,22 +192,38 @@ Uses `calibrationStore.matches` sorted by confidence:
 - **Tier 3 Value Combo**: 2-4 legs ≥65%, prefer Over2.5/BTTS
 - Dynamic bankroll protection: if bankroll < ₦100k, heavier Tier 1 allocation
 
-### 6d. Poisson Model
+### 6d. Poisson Model (Dixon-Coles corrected)
 
-Uses attack strength × opponent defensive weakness:
+Lambdas use attack strength × opponent defensive weakness:
 ```
-lH = (homeXgAvg / leagueAvg) × (awayXgaAvg / leagueAvg) × leagueAvg
-lA = (awayXgAvg / leagueAvg) × (homeXgaAvg / leagueAvg) × leagueAvg
+lH = (homeXgAvg / L) × (awayXgaAvg / L) × L   where L = 1.35 (league avg per team)
+lA = (awayXgAvg / L) × (homeXgaAvg / L) × L
 ```
+
+**Dixon-Coles ρ correction** applied to joint probabilities of low-scoring cells:
+```
+tau(0,0) = 1 − lH × lA × ρ
+tau(1,0) = 1 + lA × ρ
+tau(0,1) = 1 + lH × ρ
+tau(1,1) = 1 − ρ
+tau(h,a) = 1 for h+a ≥ 3
+ρ = −0.1 (empirically fitted to European football)
+```
+
 Produces: Over 0.5/1.5/2.5/3.5 probabilities, BTTS%, most likely scoreline.
+
+**Live xG projection** (POST `/api/analyze` only, `matchMins ≥ 15`): blends accumulated live xG with rate-projected full-match xG. Blend weight ramps from 0% at 15' to 70% at ~52'.
 
 ### 6e. League Variance Scalars
 
 | League | Scalar | Effect |
 |--------|--------|--------|
-| Premier League | 1.00 | Baseline |
-| La Liga, Bundesliga, Ligue 1, Serie A | 1.00 | Baseline |
-| Brasileirão, Indonesian Liga 1 | 1.15 | Widens confidence range |
+| Premier League (39) | 1.00 | Baseline |
+| La Liga (140), Bundesliga (78) | 0.97 | Slight reduction |
+| Serie A (135) | 0.93 | Tactical variance |
+| Ligue 1 (61) | 0.90 | PSG dominance chaos |
+| Brasileirão (71) | 0.70 | High variance |
+| Unknown leagues | 0.93 | Unknown = uncertainty penalty |
 
 ### 6f. Special Detections
 
@@ -301,22 +329,26 @@ let calibrationStore = {
 
 ---
 
-## 11. Key Known Issues / Gaps (as of May 30, 2026)
+## 11. Key Known Issues / Gaps (as of May 30, 2026 — commit `5185d1f`)
 
-### Critical
-1. **`analyzeMatch()` uses 3-rule scorer instead of V8** — Live matches from API-Football get confidence from possession/shots/xG only, not the 15-parameter V8 engine. FIXED in session of May 30.
+### Fixed in this session
+- ✅ **`sanitizeMatch()` stripping team IDs** — root cause of identical parameters on all matches. Now passes `homeTeamId`/`awayTeamId` through to the frontend.
+- ✅ **P8/P9 triple-counting xG** — P8 now directional differential, P9 now defensive solidity (both distinct from P7 Poisson).
+- ✅ **P12 market signal backwards** — now computes Poisson model vs market implied probability divergence.
+- ✅ **P13 duplicate squad integrity** — now Competitive Context (league tier premium).
+- ✅ **Analyst note missing on some matches** — `generateMatchNarrative()` now always fires; deterministic fallback when Groq unavailable.
+- ✅ **Analyst note regex bug** — `'p\d+_'` → `/p\d+_/` (parameter names were never being cleaned in prompts).
 
-### Moderate
-2. **`liveAnalyticsService.js` is crude** — `calculateNextGoalProbability()` multiplies xG by 10% conversion rate which is conceptually wrong (xG already IS expected goals). Should use remaining xG from Poisson projection.
-3. **No real-time xG from API-Football** — The `expected_goals` stat is often null or 0 in live matches; we fall back to 0 which degrades V8 accuracy.
-4. **P11 (Timezone) and P12 (Fixture) are stub 100s** — These parameters always return 100 and add no signal. Their weights (3% combined) could be reallocated.
-5. **No historical bet outcome tracking** — Bet slips are generated but there is no feedback loop to measure if V8 predictions were correct over time.
+### Moderate (open)
+1. **`liveAnalyticsService.js` is crude** — `calculateNextGoalProbability()` multiplies xG by 10% conversion rate. Should use remaining-time Poisson projection instead.
+2. **No real-time xG from API-Football** — `expected_goals` stat is often null/0 for lower-league live matches. Falls back to per-league LEAGUE_XG_MAP defaults.
+3. **No historical bet outcome tracking** — No feedback loop to measure if V9 predictions were correct over time. Model weights are still hand-tuned, not backtested.
 
-### Minor
-6. **Groq `llama-3.1-70b-versatile` deprecated** — In fallback chain; may cause 404s. Already handled by try/catch fallback logic.
-7. **Calibration uses Gemini knowledge cut-off** — If running between seasons or for leagues Gemini doesn't know well (Indonesian Liga 1, Korean K-League), xG/form estimates will be less accurate.
-8. **WhatsApp alert fires per `saveAlert()` call** — If the same match generates multiple alerts rapidly (e.g., during calibration + live poll), duplicate WhatsApp messages may be sent.
-9. **No pagination on match feed** — All matches rendered as DOM nodes. Memoization added May 30 but no virtualization. With 100+ matches this may still lag.
+### Minor (open)
+4. **Groq `llama-3.1-70b-versatile` deprecated** — In fallback chain; handled by try/catch.
+5. **Calibration uses Gemini knowledge cut-off** — Lower leagues (Indonesian Liga 1, K-League) may have stale estimates.
+6. **WhatsApp alert deduplication** — Same match can generate multiple alerts during calibration + live poll overlap.
+7. **No match feed virtualization** — 100+ matches rendered as DOM nodes. Memoization applied but no windowing.
 
 ---
 
@@ -336,7 +368,7 @@ let calibrationStore = {
 ### Provider priority
 - NL search (`/api/search`): Groq first, Gemini fallback
 - Calibration (`calibrateDay`): Gemini with Search only (Groq has no search)
-- Enrichment (`enrichFixturesWithV8`): Gemini with Search first, Groq fallback
+- Enrichment (`enrichFixturesWithGemini`): Gemini with Search first, Groq fallback
 
 ---
 
@@ -375,27 +407,30 @@ git add -A && git commit -m "..." && git push
 
 ## 15. Model Improvement Roadmap (Priority Order)
 
-### P0 — Done (May 30, 2026)
-- [x] `analyzeMatch()` now merges calibration store + V8 scoring for live matches
+### Done (May 30, 2026 — commit `5185d1f`)
+- [x] V9 engine deployed: Dixon-Coles Poisson, xG differential, defensive solidity, competitive context, market divergence
+- [x] `sanitizeMatch()` passes team IDs → real form/standings fetched per click
+- [x] `generateMatchNarrative()` always fires with deterministic fallback
 - [x] React performance: useMemo/useCallback/memo applied
-- [x] CSS hover instead of JS DOM mutations
+- [x] P11 and P12 repurposed from stubs to real signals (home advantage + market divergence)
+- [x] `analyzeMatch()` merges calibration store + V9 scoring for live matches
 
 ### P1 — Next (high impact on accuracy)
-- [ ] Fix `liveAnalyticsService.js` next-goal probability to use proper Poisson remaining-xG
-- [ ] P11 (Timezone) and P12 (Fixture) should carry real signal (referee stats, venue conditions)
-- [ ] Add home advantage adjustment to Poisson lambdas (+15% for home team by default)
-- [ ] Persist V8 outcome tracking — compare prediction vs match result daily
+- [ ] Fix `liveAnalyticsService.js` — replace xG × 10% conversion with remaining-time Poisson projection
+- [ ] V9 backtesting — persist prediction + actual result, compute tier accuracy over rolling 30 days
+- [ ] Add home advantage lambda adjustment in Poisson (`lH × 1.12` vs `lA × 0.88` as literature baseline)
+- [ ] Odds movement tracking — flag large line movements as sharp money signal
 
 ### P2 — Medium term
-- [ ] Odds movement tracking — compare opening odds to current. Large movement = sharp money signal
-- [ ] Add expected value (EV) calculation per recommendation: `EV = (prob × odds) - 1`
+- [ ] Expected value (EV) calculation per recommendation: `EV = (modelProb × odds) − 1`
 - [ ] User authentication + per-user bankroll / bet history
 - [ ] Email alerts in addition to WhatsApp
+- [ ] Fixture congestion signal — games played in last 21 days as proxy for fatigue (replaces P13 if competitive context proves weak)
 
 ### P3 — Long term
-- [ ] Historical accuracy dashboard — % of V8 tier predictions that won
-- [ ] League-specific parameter tuning (different weights for Serie A vs K-League)
-- [ ] Machine learning layer to calibrate P-weights from historical outcomes
+- [ ] Historical accuracy dashboard — % of V9 tier predictions that won, by parameter driver
+- [ ] League-specific weight tuning (Serie A, K-League behave differently)
+- [ ] ML calibration layer — gradient-boosted weights fitted from historical outcomes
 - [ ] Mobile app
 
 ---
@@ -408,15 +443,15 @@ POST /api/calibrate (or auto every 6h)
 calibrateDay():
     1. Try API-Football /fixtures?date=today → raw fixture list
     2. If API-Football returns fixtures:
-       → enrichFixturesWithV8(fixtureList)
+       → enrichFixturesWithGemini(fixtureList)
            → batches of 5 → Gemini Search for real form/stats
            → Groq fallback (no search) if Gemini fails
-           → each batch → analyzeV6() → V8 score
+           → each batch → analyzeV9() → V9 score
     3. If API-Football empty/unavailable:
        → calibrateDay() in geminiService → Gemini Search grounding for full schedule
-       → enrichFixturesWithV8() same as above
+       → enrichFixturesWithGemini() same as above
     ↓
-calibrationStore.matches = enriched + V8-scored fixtures
+calibrationStore.matches = enriched + V9-scored fixtures
 calibrationStore.highConfidence = matches ≥65%
 upcomingMatches = calibrationStore.matches
 broadcast(UPCOMING_MATCHES)
@@ -428,9 +463,9 @@ Each fixture in calibrationStore has:
   id, home, away, league, leagueId, leagueCountry,
   score, status, matchMinutes, kickoffUTC,
   possession, shots, xg,
-  confidence,          // V8 overall score (0-100)
+  confidence,          // V9 overall score (0-100)
   opportunities: [],   // top recommendation labels
-  analysis: {          // full analyzeV6() output
+  analysis: {          // full analyzeV9() output
     recommendations: [],
     parameters: { p1..p15 },
     poisson: {},

@@ -196,6 +196,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
         homePossession:   match.possession?.home || 50,
+        hasLiveXg:        !!(match.xg?.home > 0 || match.xg?.away > 0),
         homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : _defHXg,
         awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : _defAXg,
         homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away  : _defAXg,

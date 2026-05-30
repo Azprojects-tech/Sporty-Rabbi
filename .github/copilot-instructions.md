@@ -1,88 +1,66 @@
 # SportyRabbi Project Instructions
 
 ## Project Overview
-SportyRabbi is a full-stack sports betting analytics portal that analyzes live football matches and provides intelligent betting recommendations with real-time alerts.
+SportyRabbi is a full-stack sports betting analytics portal that analyzes live football matches using a 15-parameter AI scoring engine (Agent 47 V9) and delivers intelligent betting recommendations with real-time WhatsApp alerts.
 
 ### Tech Stack
 - **Frontend**: React 18 + Vite + TailwindCSS
-- **Backend**: Node.js + Express + PostgreSQL
-- **Real-time Data**: API-Football integration with 30-second polling
-- **Notifications**: Twilio (WhatsApp/SMS alerts)
-- **Database**: PostgreSQL with scheduled sync jobs
+- **Backend**: Node.js ESM + Express 4 (all in a single `server.js`)
+- **Real-time**: WebSocket (`ws`) + `node-cron` polling every 30 s
+- **Database**: Firebase Firestore (alerts, bets — no PostgreSQL)
+- **Data Source**: API-Football v3
+- **AI**: Groq `llama-3.3-70b-versatile` (narrative) + Gemini 2.5 Flash with Search (calibration/enrichment)
+- **Notifications**: Twilio WhatsApp sandbox
 
 ## Project Structure
 
 ```
 SportyRabbi/
-├── frontend/                 # React dashboard
+├── frontend/
 │   ├── src/
-│   │   ├── App.jsx          # Main dashboard component
-│   │   ├── components/      # UI components (MatchCard, BetLogger, etc.)
-│   │   ├── hooks/           # Custom React hooks (useMatches, useBetStats)
-│   │   ├── services/        # API client (axios)
-│   │   ├── index.css        # Tailwind + custom styles
-│   │   └── main.jsx         # React entry point
+│   │   ├── App.jsx
+│   │   ├── components/      # MatchFeed, DetailPanel, BetSlips, AlertHistory, …
+│   │   ├── hooks/           # useMatches.js (WebSocket + REST state)
+│   │   ├── services/        # api.js (axios)
+│   │   ├── index.css
+│   │   └── main.jsx
 │   ├── index.html
 │   ├── vite.config.js
 │   ├── tailwind.config.js
 │   └── package.json
 │
-├── backend/                  # Express API server
+├── backend/
 │   ├── src/
-│   │   ├── index.js         # Server entry point
-│   │   ├── config/
-│   │   │   └── database.js  # PostgreSQL pool setup
-│   │   ├── db/
-│   │   │   ├── schema.js    # Database table definitions
-│   │   │   └── migrate.js   # Migration runner
-│   │   ├── routes/          # Express endpoints
-│   │   │   ├── matches.js   # /api/matches/*
-│   │   │   ├── analytics.js # /api/analytics/*
-│   │   │   └── bets.js      # /api/bets/*
-│   │   ├── services/        # Business logic
-│   │   │   ├── matchService.js    # API-Football sync & queries
-│   │   │   ├── analyticsService.js # Confidence scoring & alerts
-│   │   │   └── notificationService.js # Twilio WhatsApp/SMS
-│   │   └── jobs/
-│   │       └── scheduler.js  # Node-schedule for live polling
+│   │   ├── server.js              ← ALL routes + WebSocket + cron jobs (single file)
+│   │   ├── config/firebase.js     ← Firebase Admin SDK init
+│   │   └── services/
+│   │       ├── agent47Service.js  ← V9 engine: analyzeV9(), Dixon-Coles Poisson
+│   │       ├── geminiService.js   ← Gemini/Groq bridge, calibration, narrative
+│   │       ├── analyticsService.js← Team form / H2H / standings (cached 1–6 h)
+│   │       ├── liveAnalyticsService.js ← In-play next-goal + momentum
+│   │       └── notificationService.js  ← Twilio WhatsApp
+│   ├── firebase-service-account.json  ← DO NOT commit — add to Railway secrets
 │   └── package.json
 │
-├── package.json             # Root workspace config
+├── package.json             # Root workspace (npm run dev runs both)
 ├── README.md
-├── .gitignore
-└── GETTING_STARTED.md       # Setup instructions
+└── SYSTEM_DOCUMENTATION.md # Full technical reference
 ```
 
-## Key Features
+## Agent 47 V9 Engine
 
-### 1. Live Dashboard
-- Real-time match scores, possession %, shots on target, xG (expected goals)
-- Filter by league (EPL, La Liga, Serie A, Bundesliga, Champions League)
-- Click any match for detailed analysis
+Entry point: `export function analyzeV9(matchData)` in `backend/src/services/agent47Service.js`
 
-### 2. Analytics Engine
-- **Pre-match analysis**: Team form, head-to-head, odds movement
-- **In-play detection**: Momentum shifts, goal droughts, possession dominance
-- **Confidence scoring**: 0-100% for each recommended bet
-- **Value detection**: Identify when odds offer edge over probability
-
-### 3. Intelligent Alerts
-- Fires when opportunity confidence > 65%
-- Sent via WhatsApp/SMS (Twilio) or on-screen notification
-- Shows bet recommendation and reasoning
-- Deep link to SportyBet for manual placement
-
-### 4. Bet Tracking
-- Log bets manually with match ID, odds, stake, selection
-- Track win/loss status and returns
-- Dashboard P&L, win rate, ROI by bet type
-- Historical analysis to see which bet types work best
-
-### 5. Real-Time Data Sync
-- Backend polls API-Football every 30 seconds for live matches
-- Updates: score, possession, shots, xG, card status
-- Generates alerts automatically when opportunities detected
-- No direct API calls from frontend (CORS-safe)
+15 parameters with weights summing to 100%:
+- P1 Motivation (13%), P2 Star Power (7%), P3 H2H (3%)
+- **P4 Form L10 (15%)** — highest weight
+- P5 Scoring Timing (5%), P6 Defensive Gap (7%)
+- **P7 Poisson (11%)** — Dixon-Coles ρ = −0.1 corrected
+- P8 xG Edge (6%) — directional differential, P9 Def. Solidity (5%) — vs league avg
+- P10 Pace (4%), P11 Home Adv. (3%)
+- P12 Mkt. Diverge. (4%) — Poisson vs bookmaker implied probability
+- P13 Comp. Context (5%) — league tier premium
+- P14 Lifecycle (2%), **P15 Crisis (10%)**
 
 ## Development Workflow
 
@@ -99,57 +77,38 @@ cd frontend && npm run dev   # Frontend on :5173
 ### Adding a New Feature
 
 1. **Backend** (if needs data):
-   - Add endpoint in `backend/src/routes/*.js`
-   - Add logic in `backend/src/services/*.js`
-   - Update database schema if needed in `backend/src/db/schema.js`
-   - Run migration: `cd backend && npm run migrate`
+   - Add route/logic in `backend/src/server.js`
+   - Add service function in the relevant `backend/src/services/*.js` file
+   - Firestore reads/writes go through `config/firebase.js`
 
 2. **Frontend** (UI):
    - Create component in `frontend/src/components/`
    - Add API call in `frontend/src/services/api.js`
    - Add React hook if needed in `frontend/src/hooks/`
-   - Import and use in `frontend/src/App.jsx` or route
+   - Import and use in `frontend/src/App.jsx`
 
 3. **Test**:
    ```bash
-   curl http://localhost:3000/api/health  # Check backend
+   curl http://localhost:3000/api/health        # Check backend
    curl http://localhost:3000/api/matches/live  # Check data
    ```
 
-### Database Changes
-
-1. Update schema in `backend/src/db/schema.js`
-2. Run migration: `cd backend && npm run migrate`
-3. Verify tables: `psql -d sporty_rabbi -c "\dt"`
-
-### Adding API-Football Data
-
-The sync happens automatically every 30 sec in `backend/src/jobs/scheduler.js`.
-
-To add a new data point:
-1. Parse from API response in `backend/src/services/matchService.js` → `syncMatchToDatabase()`
-2. Add column to matches table in schema
-3. Update TypeScript types if using TS
-4. Query it from frontend
-
 ## Key API Endpoints
 
-### Matches
-- `GET /api/matches/live` - Live matches with current stats
-- `GET /api/matches/upcoming` - Matches starting in next 24h
-- `GET /api/matches/:id` - Match details + odds + alerts
-- `POST /api/matches/sync` - Manual sync (called every 30s automatically)
-
-### Analytics
-- `GET /api/analytics/match/:id` - Pre-match confidence score
-- `GET /api/analytics/in-play/:id` - Live betting opportunities
-- `POST /api/analytics/score` - Score a specific bet selection
-
-### Bets
-- `POST /api/bets` - Log a new bet
-- `GET /api/bets/history` - Your bet history
-- `GET /api/bets/stats` - Win rate, ROI, P&L
-- `PATCH /api/bets/:id` - Update bet result (won/lost)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/matches` | All cached matches |
+| GET | `/api/matches/live` | Live matches only |
+| GET | `/api/matches/upcoming` | Upcoming (calibrated) fixtures |
+| POST | `/api/analyze` | Run V9 analysis (body: matchData incl. homeTeamId, awayTeamId) |
+| POST | `/api/calibrate` | Trigger manual calibration |
+| GET | `/api/alerts` | Recent alerts from Firestore |
+| POST | `/api/bets` | Log a bet |
+| GET | `/api/bets` | Bet history |
+| PATCH | `/api/bets/:id` | Update bet result |
+| GET | `/api/bets/stats` | P&L, win rate, ROI |
+| GET | `/api/search?q=...` | NL match search |
 
 ## Configuration
 
@@ -157,10 +116,12 @@ To add a new data point:
 
 **Backend** (`backend/.env`):
 ```
-DATABASE_URL=postgresql://...
 API_FOOTBALL_KEY=your_key
+GOOGLE_AI_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
 TWILIO_ACCOUNT_SID=your_sid
 TWILIO_AUTH_TOKEN=your_token
+TWILIO_WHATSAPP_TO=whatsapp:+1234567890
 NODE_ENV=development
 PORT=3000
 ```
@@ -170,97 +131,54 @@ PORT=3000
 VITE_API_BASE_URL=http://localhost:3000/api
 ```
 
+Firebase credentials come from `backend/firebase-service-account.json` (not committed).
+
+## Deployment
+
+Both auto-deploy on `git push origin main`:
+- **Backend** → Railway (`node src/server.js`)
+- **Frontend** → Netlify (`npm run build` → `dist/`)
+
 ## Debugging
 
 ### Browser DevTools
-- Open http://localhost:5173 in Chrome/Firefox
-- Check Network tab to see API calls
+- Open http://localhost:5173
+- Check Network tab for API calls and WebSocket frames
 - Check Console for errors
-- React DevTools extension helps
 
 ### Backend Logs
-- Run with `npm run dev` to see console logs
-- Each API call logs execution time
-- Scheduled jobs log when they run
+- `npm run dev` streams all console output
+- Calibration, polling, and alert events are logged with timestamps
 
-### Database Debugging
-```bash
-psql -d sporty_rabbi
-SELECT * FROM matches WHERE status = 'LIVE';
-SELECT * FROM alerts ORDER BY sent_at DESC LIMIT 5;
-SELECT * FROM bets WHERE status IS NULL;
+### Firestore
+```javascript
+// Check alerts
+firebase.firestore().collection('alerts').orderBy('sentAt', 'desc').limit(5)
+// Check bets
+firebase.firestore().collection('bets').get()
 ```
 
 ## Performance Considerations
 
-1. **API-Football**: Free tier has rate limits. Monitor in `services/matchService.js`
-2. **Database**: Add indexes for frequently queried columns as data grows
-3. **Frontend**: Component memoization in React to avoid re-renders
-4. **Polling**: Currently 30s intervals - adjust in `backend/src/jobs/scheduler.js`
-
-## Deployment
-
-### Backend (Railway/Render)
-1. Push to GitHub
-2. Connect repo to Railway
-3. Set environment variables
-4. Database URL from their PostgreSQL addon
-5. Deploy
-
-### Frontend (Vercel)
-1. Connect GitHub repo to Vercel
-2. Set VITE_API_BASE_URL to production backend URL
-3. Deploy
-
-## Production Checklist
-
-- [ ] All env vars set (API keys, database URL, secrets)
-- [ ] Database backups enabled
-- [ ] Frontend VITE_API_BASE_URL points to prod API
-- [ ] CORS_ORIGIN set to frontend domain
-- [ ] Rate limiting configured on API
-- [ ] Error logging set up (Sentry, etc.)
-- [ ] Health checks monitored
-
-## Code Style & Standards
-
-- Use ES6+ syntax (import/export, arrow functions, destructuring)
-- Component files: PascalCase (MatchCard.jsx)
-- Utility functions: camelCase (formatOdds.js)
-- Consistent indentation (2 spaces)
-- Comments for complex logic
-- PropTypes or TypeScript for type safety
+1. **API-Football**: Free tier rate limits — monitor in `analyticsService.js` (1 h / 6 h caches)
+2. **Calibration**: Runs every 6 h; manual trigger via POST `/api/calibrate`
+3. **Frontend**: useMemo/useCallback/React.memo applied throughout
+4. **Polling**: 30 s live match sync — adjust in `server.js` cron schedule
 
 ## Troubleshooting Common Issues
 
 | Issue | Solution |
 |-------|----------|
-| "Cannot GET /api/matches" | Backend not running. Run `cd backend && npm run dev` |
-| CORS errors in browser | Check CORS_ORIGIN in backend/.env |
-| Database connection error | Verify DATABASE_URL, PostgreSQL running |
-| No live matches showing | Check API_FOOTBALL_KEY, monitor sync job in logs |
-| Slow performance | Reduce polling frequency, add database indexes |
-
-## Next Development Steps
-
-1. Add league filtering to frontend
-2. Implement user authentication (login/password)
-3. Add email alerts in addition to WhatsApp
-4. Build historical stats visualization
-5. Add odds tracking (monitor line movement over time)
-6. Mobile app version
-7. Machine learning for better confidence scores
-
-## Resources
-
-- [API-Football Docs](https://www.api-football.com/documentation)
-- [Express.js Guide](https://expressjs.com)
-- [React Hooks](https://react.dev/reference/react)
-- [TailwindCSS Docs](https://tailwindcss.com)
-- [PostgreSQL Docs](https://www.postgresql.org/docs/)
-- [Twilio Node Docs](https://www.twilio.com/docs/libraries/node)
+| All matches show identical parameters | `homeTeamId`/`awayTeamId` missing in request — check `sanitizeMatch()` output |
+| No analyst note on match | Groq/Gemini keys missing in `.env` or quota exhausted |
+| No live matches showing | Check `API_FOOTBALL_KEY` validity; free tier may be rate-limited |
+| CORS errors in browser | Check `CORS_ORIGIN` in `server.js` or Railway env |
+| Firebase errors | Verify `firebase-service-account.json` path and project ID |
 
 ---
 
-**Last Updated**: March 26, 2026
-**Project Status**: ✅ Ready for Development
+**Last Updated**: May 30, 2026 — commit `5185d1f`  
+**Engine**: Agent 47 V9 | **Deploy**: Railway (backend) + Netlify (frontend)  
+**Live URL**: https://sporty-rabbit.netlify.app
+
+

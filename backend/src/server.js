@@ -1572,10 +1572,10 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     // ── Step 2: Live xG projection ───────────────────────────────────────────
-    // At 30 min with 0.4 accumulated xG, V9 Poisson would see 0.4 avg — too low.
-    // Blend literal value with (rate × 90) projected full-match value,
-    // weighted by match progress. Starts at 0% blend, reaches 70% by ~52 min.
-    if (isLive && matchMins >= 15) {
+    // Only runs when ACTUAL in-match accumulated xG was available (hasLiveXg=true).
+    // Never runs on season-average fallback defaults — those would be squashed by
+    // the Poisson interaction formula (lH = avg² / L) giving absurd λ values.
+    if (isLive && matchMins >= 15 && enriched.hasLiveXg) {
       const progress    = Math.min(matchMins / 90, 1.0);
       const projFactor  = Math.min(90 / matchMins, 3.5);    // cap: avoid 15-min × 6 inflation
       const blendWeight = Math.min(progress * 1.2, 0.7);    // 0 → 0.70 over first ~52 min
