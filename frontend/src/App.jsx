@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { connectWebSocket, on, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
@@ -6,6 +6,19 @@ import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
 import AlertHistory from './components/AlertHistory';
+
+// ── Constants outside component (never recreated) ──────────────────────────
+const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+
+// Tier hierarchy for sidebar sort: lower = higher priority
+const LEAGUE_TIER = {
+  1: 1, 4: 1, 9: 1, 16: 1,
+  2: 2, 3: 2, 848: 2,
+  39: 3, 140: 3, 78: 3, 135: 3, 61: 3,
+  40: 4, 141: 4, 79: 4, 136: 4, 62: 4,
+  88: 4, 94: 4, 203: 4, 235: 4, 179: 4, 144: 4, 307: 4, 13: 4, 11: 4,
+  253: 5, 71: 5, 128: 5, 98: 5, 292: 5, 169: 5, 313: 5, 188: 5, 17: 5,
+};
 
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
@@ -125,72 +138,70 @@ export default function App() {
  }, []);
 
  // â”€â”€ Recalibrate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- async function handleCalibrate() {
- setCalibrating(true);
- try {
- const res = await apiService.client.post('/calibrate');
- const data = res.data;
- setCalibratedAt(data.calibratedAt);
-
- setAllMatches(prev => {
- const nonCal = prev.filter(m => !m._calibrated);
- const nonIds = new Set(nonCal.map(m => m.id));
- const newCal = (data.matches || [])
- .filter(m => !nonIds.has(m.id))
- .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
- return [...nonCal, ...newCal];
- });
- } catch (err) {
- console.error('Calibrate failed:', err.response?.data?.error || err.message);
- } finally {
- setCalibrating(false);
- }
- }
+ const handleCalibrate = useCallback(async () => {
+   setCalibrating(true);
+   try {
+     const res = await apiService.client.post('/calibrate');
+     const data = res.data;
+     setCalibratedAt(data.calibratedAt);
+     setAllMatches(prev => {
+       const nonCal = prev.filter(m => !m._calibrated);
+       const nonIds = new Set(nonCal.map(m => m.id));
+       const newCal = (data.matches || [])
+         .filter(m => !nonIds.has(m.id))
+         .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
+       return [...nonCal, ...newCal];
+     });
+   } catch (err) {
+     console.error('Calibrate failed:', err.response?.data?.error || err.message);
+   } finally {
+     setCalibrating(false);
+   }
+ }, []);
 
  // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- async function handleSearch(e) {
- e?.preventDefault();
- if (!searchQuery.trim()) return;
- setSearching(true);
- try {
- const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
- const analysis = res.data;
- const pseudo = {
- id: `search_${Date.now()}`,
- home: analysis.home || '?',
- away: analysis.away || '?',
- league: analysis.league || 'Search Result',
- leagueId: 0,
- score: '0-0',
- status: analysis.status || 'NS',
- matchMinutes: 0,
- confidence: analysis.overallScore || 50,
- possession: { home: 50, away: 50 },
- shots: { home: 0, away: 0 },
- xg: { home: 0, away: 0 },
- opportunities:[],
- leagueCountry:'',
- _source: 'search',
- };
- setSelectedMatch(pseudo);
- setSelectedAnalysis(analysis);
- } catch (err) {
- console.error('Search failed:', err.response?.data?.error || err.message);
- } finally {
- setSearching(false);
- }
- }
+ const handleSearch = useCallback(async (e) => {
+   e?.preventDefault();
+   if (!searchQuery.trim()) return;
+   setSearching(true);
+   try {
+     const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
+     const analysis = res.data;
+     const pseudo = {
+       id: `search_${Date.now()}`,
+       home: analysis.home || '?',
+       away: analysis.away || '?',
+       league: analysis.league || 'Search Result',
+       leagueId: 0,
+       score: '0-0',
+       status: analysis.status || 'NS',
+       matchMinutes: 0,
+       confidence: analysis.overallScore || 50,
+       possession: { home: 50, away: 50 },
+       shots: { home: 0, away: 0 },
+       xg: { home: 0, away: 0 },
+       opportunities: [],
+       leagueCountry: '',
+       _source: 'search',
+     };
+     setSelectedMatch(pseudo);
+     setSelectedAnalysis(analysis);
+   } catch (err) {
+     console.error('Search failed:', err.response?.data?.error || err.message);
+   } finally {
+     setSearching(false);
+   }
+ }, [searchQuery]);
 
  // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
- const displayedMatches = allMatches.filter(m => {
- if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
- if (filter === 'high' && (m.confidence || 0) < 80) return false;
- if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
- if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
- if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
- return true;
- });
+ const displayedMatches = useMemo(() => allMatches.filter(m => {
+   if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
+   if (filter === 'high' && (m.confidence || 0) < 80) return false;
+   if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
+   if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
+   if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
+   return true;
+ }), [allMatches, filter, selectedLeague, selectedCountry, selectedKeyword]);
 
  // Tier hierarchy: lower number = higher up in sidebar
  const LEAGUE_TIER = {
@@ -207,7 +218,7 @@ export default function App() {
    // Tier 5 — Americas / Asia / Middle East
    253: 5, 71: 5, 128: 5, 98: 5, 292: 5, 169: 5, 313: 5, 188: 5, 17: 5,
  };
- const leagueCounts = (() => {
+ const leagueCounts = useMemo(() => {
    const counts = {};
    for (const m of allMatches) {
      if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
@@ -217,15 +228,14 @@ export default function App() {
      const ta = LEAGUE_TIER[a.id] ?? 6;
      const tb = LEAGUE_TIER[b.id] ?? 6;
      if (ta !== tb) return ta - tb;
-     return b.count - a.count; // within same tier: most matches first
+     return b.count - a.count;
    });
- })();
-
- function handleSelectMatch(m) {
- setSelectedMatch(m);
- setSelectedAnalysis(m.analysis || null);
- setShowBets(false);
- }
+ }, [allMatches]);
+ const handleSelectMatch = useCallback((m) => {
+   setSelectedMatch(m);
+   setSelectedAnalysis(m.analysis || null);
+   setShowBets(false);
+ }, []);
 
  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  return (

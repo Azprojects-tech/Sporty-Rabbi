@@ -85,6 +85,10 @@ body {
 .card-hover { background: #0d1421; border: 1px solid #1a2540; border-radius: 10px; padding: 16px 20px; cursor: pointer; transition: background 0.15s; }
 .card-hover:hover { background: #111c30; }
 
+/* Match row hover via CSS (avoids JS DOM mutations on every row) */
+.match-row { transition: background 0.1s; }
+.match-row:hover { background: #131826 !important; }
+
 input, select, textarea {
   background: #080c14;
   border: 1px solid #1a2540;

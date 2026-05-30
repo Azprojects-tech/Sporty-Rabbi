@@ -9,8 +9,12 @@ import twilio from 'twilio';
 
 const SID       = process.env.TWILIO_ACCOUNT_SID;
 const TOKEN     = process.env.TWILIO_AUTH_TOKEN;
+// FROM must be in format: whatsapp:+14155238886 (Twilio sandbox or approved sender)
 const FROM      = process.env.TWILIO_WHATSAPP_FROM  || 'whatsapp:+14155238886';
-const TO        = process.env.ALERT_PHONE_NUMBER;
+// TO must be your phone in format: whatsapp:+2348012345678
+// ALERT_PHONE_NUMBER can be stored with or without the whatsapp: prefix
+const _TO_RAW   = process.env.ALERT_PHONE_NUMBER || '';
+const TO        = _TO_RAW && !_TO_RAW.startsWith('whatsapp:') ? `whatsapp:${_TO_RAW}` : _TO_RAW;
 
 const ENABLED = Boolean(SID && TOKEN && TO);
 

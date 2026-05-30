@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 
 const CONF_COLOR = s => s >= 70 ? '#00e676' : s >= 60 ? '#fbbf24' : '#ef4444';
 

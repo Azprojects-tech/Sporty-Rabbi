@@ -12,10 +12,24 @@ import axios from 'axios';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-// ─── GROQ (free alternative — 14,400 req/day, llama-3.3-70b-versatile) ───────
+// ─── GROQ / OPENROUTER (free LLM — pick one, both are OpenAI-compatible) ─────
+// Groq:       console.groq.com  → env var GROQ_API_KEY  — 14,400 req/day free
+// OpenRouter: openrouter.ai     → env var GROQ_API_KEY  — many free models
+//
+// To use Groq:       GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
+//                    GROQ_MODEL = 'llama-3.3-70b-versatile'
+// To use OpenRouter: GROQ_URL = 'https://openrouter.ai/api/v1/chat/completions'
+//                    GROQ_MODEL = 'meta-llama/llama-3.3-70b-instruct:free'
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = 'llama-3.3-70b-versatile';
+const GROQ_URL     = process.env.GROQ_URL     || 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = process.env.GROQ_MODEL   || 'llama-3.3-70b-versatile';
+
+// Fallback model chain — tried in order if the primary model returns a 404/400
+const GROQ_FALLBACK_MODELS = [
+  'llama-3.1-70b-versatile',
+  'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768',
+];
 
 const AVAILABLE = Boolean(GEMINI_API_KEY || GROQ_API_KEY);
 
@@ -29,20 +43,44 @@ if (!AVAILABLE) {
 // ─── Groq helper ──────────────────────────────────────────────────────────────
 async function groqChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = true } = {}) {
   if (!GROQ_API_KEY) return null;
-  const response = await axios.post(GROQ_URL, {
-    model: GROQ_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user',   content: userText },
-    ],
-    ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-    temperature: 0.15,
-    max_tokens: maxTokens,
-  }, {
-    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-    timeout: 30000,
-  });
-  return response.data?.choices?.[0]?.message?.content || null;
+
+  const modelsToTry = [GROQ_MODEL, ...GROQ_FALLBACK_MODELS.filter(m => m !== GROQ_MODEL)];
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await axios.post(GROQ_URL, {
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userText },
+        ],
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        temperature: 0.15,
+        max_tokens: maxTokens,
+      }, {
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      });
+      const content = response.data?.choices?.[0]?.message?.content || null;
+      if (content) {
+        if (model !== GROQ_MODEL) console.log(`[Groq] Used fallback model: ${model}`);
+        return content;
+      }
+    } catch (err) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error?.message || err.message;
+      if (status === 404 || status === 400) {
+        console.warn(`[Groq] Model ${model} unavailable (${status}): ${msg.slice(0, 80)} — trying next`);
+        continue; // try next model
+      }
+      // Auth error, network error etc — don't retry
+      console.warn(`[Groq] Request failed (${status ?? 'network'}): ${msg.slice(0, 120)}`);
+      return null;
+    }
+  }
+
+  console.warn('[Groq] All models failed — falling back to Gemini');
+  return null;
 }
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────

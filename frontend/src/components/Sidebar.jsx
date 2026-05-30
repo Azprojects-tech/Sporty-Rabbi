@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 
 const LEAGUE_FLAGS = {
   // Europe — Top 5
@@ -29,26 +29,29 @@ export default function Sidebar({ filter, setFilter, selectedLeague, setSelected
   const [compSearch, setCompSearch] = useState('');
   const searchTerm = compSearch.trim().toLowerCase();
 
-  const filteredLeagues = searchTerm
+  const filteredLeagues = useMemo(() => searchTerm
     ? leagueCounts.filter(l =>
         l.name.toLowerCase().includes(searchTerm) ||
         (l.country || '').toLowerCase().includes(searchTerm)
       )
-    : leagueCounts;
+    : leagueCounts
+  , [leagueCounts, searchTerm]);
 
   // Countries whose name matches the search term
-  const matchedCountries = searchTerm
+  const matchedCountries = useMemo(() => searchTerm
     ? [...new Set(
         filteredLeagues
           .filter(l => (l.country || '').toLowerCase().includes(searchTerm))
           .map(l => l.country)
       )].filter(Boolean)
-    : [];
+    : []
+  , [filteredLeagues, searchTerm]);
 
-  // League-name keyword button: show when 2+ leagues match by name (CAF, UEFA, World Cup, Copa…)
-  const leagueNameMatches = searchTerm
+  // League-name keyword button: show when 2+ leagues match by name
+  const leagueNameMatches = useMemo(() => searchTerm
     ? filteredLeagues.filter(l => l.name.toLowerCase().includes(searchTerm))
-    : [];
+    : []
+  , [filteredLeagues, searchTerm]);
   const showKeywordButton = leagueNameMatches.length > 1;
   // On desktop: always visible inline. On mobile: slide-in overlay.
   const sidebarStyle = isMobile ? {

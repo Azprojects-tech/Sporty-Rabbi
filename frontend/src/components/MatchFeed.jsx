@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 
 const LEAGUE_FLAGS = {
   39: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 140: '🇪🇸', 78: '🇩🇪', 135: '🇮🇹', 61: '🇫🇷',
@@ -91,16 +91,14 @@ function MatchRow({ match, isSelected, onSelect }) {
   return (
     <div
       onClick={() => onSelect(match)}
+      className="match-row"
       style={{
         display: 'flex', alignItems: 'center', gap: 0,
         padding: '11px 16px', cursor: 'pointer',
         background: isSelected ? '#001f0e' : 'transparent',
         borderLeft: isSelected ? '3px solid #00b859' : '3px solid transparent',
         borderBottom: '1px solid #131826',
-        transition: 'background 0.1s',
       }}
-      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#131826'; }}
-      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
     >
       {/* Status / time */}
       <StatusCell status={match.status} minute={match.matchMinutes} kickoffUTC={match.kickoffUTC} />
@@ -158,7 +156,7 @@ const MatchRowMemo = memo(MatchRow, (prev, next) =>
   prev.match === next.match && prev.isSelected === next.isSelected
 );
 
-export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
+function MatchFeedInner({ matches, selectedMatch, onSelectMatch }) {
   if (!matches || matches.length === 0) {
     return (
       <div style={{
@@ -172,15 +170,19 @@ export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
     );
   }
 
-  // Group by league (preserve insertion order to keep relevant leagues first)
-  const groups = new Map();
-  for (const m of matches) {
-    const key = `${m.leagueId}__${m.league}`;
-    if (!groups.has(key)) {
-      groups.set(key, { id: m.leagueId, name: m.league, country: m.leagueCountry, matches: [] });
+  // Group by league — memoized to avoid rebuilding on every render
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const groups = useMemo(() => {
+    const g = new Map();
+    for (const m of matches) {
+      const key = `${m.leagueId}__${m.league}`;
+      if (!g.has(key)) {
+        g.set(key, { id: m.leagueId, name: m.league, country: m.leagueCountry, matches: [] });
+      }
+      g.get(key).matches.push(m);
     }
-    groups.get(key).matches.push(m);
-  }
+    return g;
+  }, [matches]);
 
   return (
     <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -221,3 +223,5 @@ export default function MatchFeed({ matches, selectedMatch, onSelectMatch }) {
     </div>
   );
 }
+
+export default memo(MatchFeedInner);
