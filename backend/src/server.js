@@ -23,7 +23,7 @@ import {
   fetchLiveMatchesViaGemini,
   fetchUpcomingMatchesViaGemini,
   calibrateDay,
-  enrichFixturesWithV8,
+  enrichFixturesWithGemini,
   generateMatchNarrative,
 } from './services/geminiService.js';
 import {
@@ -41,7 +41,7 @@ const PORT = process.env.PORT || 3000;
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
 // All regulated leagues are shown — no whitelist restriction.
-// V8 confidence filtering (>=80%) is done on the frontend "80%+ Picks" tab.
+// V9 confidence filtering (>=80%) is done on the frontend "80%+ Picks" tab.
 // The constant below is kept only for the TheSportsDB league-ID lookup helper.
 const WHITELISTED_LEAGUE_IDS = null; // null = accept all leagues
 
@@ -617,10 +617,9 @@ async function analyzeMatch(match) {
     // Use API-provided elapsed minute (accurate) over kickoff-time calculation (can drift)
     const liveElapsed = typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0;
 
-    // ── V8-powered confidence scoring ──────────────────────────────────────────
-    // Priority 1: calibration store lookup (home+away name match) — reuses pre-computed V8.
-    // Priority 2: V8 with live stats + neutral defaults for unknown fields.
-    // Priority 3: 3-rule heuristic (only if V8 throws).
+    // ── V9-powered confidence scoring ──────────────────────────────────────────
+    // Priority 1: calibration store lookup (home+away name match) — reuses pre-computed V9.
+    // Priority 2: V9 with live stats + real form/standings fetched from API-Football.
     const normalize = (s) => (s || '').toLowerCase().trim();
     const homeN = normalize(teams.home?.name);
     const awayN = normalize(teams.away?.name);
@@ -1128,7 +1127,7 @@ function generateBetSlips(bankroll = BANKROLL) {
   // Prefer Over2.5 / BTTS for attacking games, Win for dominant home sides
   const tier3Legs = tier3Candidates.map(m => {
     const recs = m.analysis?.recommendations || [];
-    // Pick highest-odds V8-backed rec that isn't straight win
+    // Pick highest-odds V9-backed rec that isn't straight win
     const valueRec = recs.find(r =>
       r.type === 'over25' || r.type === 'btts' || r.type === 'away_win'
     ) || recs[0];
@@ -1512,7 +1511,7 @@ app.post('/api/bet-value', (req, res) => {
   }
 });
 
-// ─── AGENT 47 V6 FRONTIER ENDPOINTS ──────────────────────────────────────────
+// ─── AGENT 47 V9 ENDPOINTS ─────────────────────────────────────────────────
 
 /**
  * POST /api/analyze
@@ -1613,7 +1612,7 @@ app.post('/api/analyze', async (req, res) => {
 
 /**
  * GET /api/analyze/live/:matchId
- * Runs V6 analysis on a live match already in the in-memory store.
+ * Runs V9 analysis on a live match already in the in-memory store.
  * Auto-populates what it can from live stats; pass ?gameWeek=35&totalGW=38 etc via query.
  */
 app.get('/api/analyze/live/:matchId', (req, res) => {
@@ -1700,9 +1699,9 @@ app.post('/api/analyze/natural', async (req, res) => {
 // ─── SHARED CALIBRATION LOGIC ────────────────────────────────────────────────
 
 /**
- * Build a minimal V8-compatible fixture object from a bare fixture list entry.
+ * Build a minimal fixture object with neutral defaults from a bare fixture list entry.
  * Used as a fallback when Gemini enrichment is unavailable (quota exhausted).
- * Analytics are neutral defaults — V6 engine will still score the match.
+ * Analytics are neutral defaults — V9 engine will still score the match.
  * @param {{ home, away, league, leagueId, country, kickoffUTC }} f
  */
 // djb2 hash — gives each match a unique seed without any API call
@@ -1712,7 +1711,7 @@ function hashStr(s) {
   return h;
 }
 
-function buildDefaultV8Fixture(f) {
+function buildDefaultFixture(f) {
   const leagueId   = f.leagueId || 0;
   const leagueName = (f.league || '').toLowerCase();
 
@@ -1813,7 +1812,7 @@ function buildDefaultV8Fixture(f) {
       country: f.country || '',
       status: 'NS', minute: 0, homeScore: 0, awayScore: 0,
       kickoffUTC: f.kickoffUTC || null,
-      // Context fields consumed by runCalibration → analyzeV6
+      // Context fields consumed by runCalibration → analyzeV9
       homePosition: homePos,  awayPosition: awayPos,
       homePoints,             awayPoints,
       totalTeams,             gameWeek,     totalGW,
@@ -1873,7 +1872,7 @@ function buildDefaultV8Fixture(f) {
 /**
  * runCalibration()
  * Uses Gemini Search grounding to fetch today's real global fixtures,
- * runs V8 analysis on each, populates calibrationStore + upcomingMatches.
+ * runs V9 analysis on each, populates calibrationStore + upcomingMatches.
  * Called on startup, every 6 hours, and via POST /api/calibrate.
  */
 async function runCalibration() {
@@ -1895,15 +1894,15 @@ async function runCalibration() {
       }))
       .filter(f => f.home && f.away);
 
-    console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini V8...`);
+    console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini...`);
     if (fixtureList.length > 0) {
-      const enriched = await enrichFixturesWithV8(fixtureList).catch(() => null);
+      const enriched = await enrichFixturesWithGemini(fixtureList).catch(() => null);
       if (enriched && enriched.length > 0) {
         raw = enriched;
-        dataSource = 'API-Football + Gemini V8';
+        dataSource = 'API-Football + Gemini';
       } else {
         // Gemini enrichment failed (quota exhausted etc.) — use raw fixtures with neutral defaults
-        raw = fixtureList.map(f => buildDefaultV8Fixture(f));
+        raw = fixtureList.map(f => buildDefaultFixture(f));
         dataSource = 'API-Football (no Gemini)';
         console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} API-Football fixtures with default analytics`);
       }
@@ -1927,15 +1926,15 @@ async function runCalibration() {
         notes: f.league?.notes || null,
       })).filter(f => f.home && f.away);
 
-      console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini V8...`);
+      console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini...`);
       if (fixtureList.length > 0) {
-        const enriched = await enrichFixturesWithV8(fixtureList).catch(() => null);
+        const enriched = await enrichFixturesWithGemini(fixtureList).catch(() => null);
         if (enriched && enriched.length > 0) {
           raw = enriched;
-          dataSource = 'TheSportsDB + Gemini V8';
+          dataSource = 'TheSportsDB + Gemini';
         } else {
           // Gemini enrichment failed — use raw fixtures with neutral defaults
-          raw = fixtureList.map(f => buildDefaultV8Fixture(f));
+          raw = fixtureList.map(f => buildDefaultFixture(f));
           dataSource = 'TheSportsDB (no Gemini)';
           console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} TheSportsDB fixtures with default analytics`);
         }
@@ -1967,7 +1966,7 @@ async function runCalibration() {
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
-        // ── Competition context (from buildDefaultV8Fixture / Gemini enrichment) ──
+        // ── Competition context (from buildDefaultFixture / Gemini enrichment) ──
         homePosition:      f.home?.leaguePosition  || f.context?.homePosition  || matchMeta.homePosition  || 10,
         awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
         homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
@@ -2032,7 +2031,7 @@ async function runCalibration() {
       matchObj.matchMinutes = 0;
       analyzed.push(matchObj);
     } catch (vErr) {
-      console.warn(`[Calibrate] V8 skip: ${f.match?.home} vs ${f.match?.away}: ${vErr.message}`);
+      console.warn(`[Calibrate] V9 skip: ${f.match?.home} vs ${f.match?.away}: ${vErr.message}`);
     }
   }
 
@@ -2113,7 +2112,7 @@ async function runCalibration() {
 /**
  * POST /api/calibrate
  * Uses Gemini Search grounding to find today's global fixtures,
- * runs V8 on every match, stores and returns all results + 80%+ picks.
+ * runs V9 on every match, stores and returns all results + 80%+ picks.
  */
 app.post('/api/calibrate', async (req, res) => {
   try {
@@ -2143,7 +2142,7 @@ app.get('/api/calibrate/results', (req, res) => {
 
 /**
  * GET /api/search?q=Arsenal
- * Natural language team/match search → Gemini → V8 analysis.
+ * Natural language team/match search → Gemini → V9 analysis.
  */
 app.get('/api/search', async (req, res) => {
   const q = String(req.query.q || '').trim();

@@ -257,7 +257,7 @@ function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeG
   const hF = parseForm(homeFormStr);
   const aF = parseForm(awayFormStr);
 
-  // V8 Tighter Coiled Spring: only fires if xG is NOT also collapsing.
+    // V9 Tighter Coiled Spring: only fires if xG is NOT also collapsing.
   // If xG trend is negative (declining), the spring has no tension — no boost.
   const hCoil = homeXgAvg > 0 && homeGoalsAvg > 0 && (homeXgAvg / homeGoalsAvg) > 1.35
     && (homeXgTrend === null || homeXgTrend >= 0);
@@ -392,7 +392,7 @@ function scoreLifecycle(gameWeek = 30, totalGW = 38) {
   };
 }
 
-// P15 — CRISIS / DROUGHT MODE (★ V8 NEW — 10% weight) ─────────────────────────
+// P15 — CRISIS / DROUGHT MODE (★ V9 — 12% weight) ─────────────────────────
 // Penalises: goal drought (3+ games), losing runs (4+ straight), interim chaos.
 // Rewards:   settled new permanent manager (6+ weeks, improving results).
 //
@@ -754,10 +754,10 @@ function scoreMarketSignal(odds = null) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  MASTER ANALYSIS FUNCTION — analyzeV6()
+//  MASTER ANALYSIS FUNCTION — analyzeV9()
 // ─────────────────────────────────────────────────────────────────────────────
 /**
- * Run full Agent 47 V6 Frontier analysis on a match.
+ * Run full Agent 47 V9 analysis on a match.
  *
  * @param {Object} matchData
  * @param {string}   matchData.home               - Home team name
@@ -803,7 +803,7 @@ function scoreMarketSignal(odds = null) {
  * @param {boolean}  matchData.awayGKError
  * @param {string}   matchData.referee
  * @param {string}   matchData.venue
- * @returns {Object} Full V6 analysis
+ * @returns {Object} Full V9 analysis
  */
 export function analyzeV9(matchData = {}) {
   const {
@@ -827,17 +827,17 @@ export function analyzeV9(matchData = {}) {
     homePossession = 50,
     homeCBInjured = false, awayGKError = false,
     referee = null, venue = null,
-    // V8 — P15 Crisis/Drought Mode inputs
+    // P15 Crisis/Drought Mode inputs
     homeGoalDrought = 0, awayGoalDrought = 0,
     homeRecentLosses = 0, awayRecentLosses = 0,
     homeCoach = {}, awayCoach = {},
-    // V8 — xG trend (positive = improving, negative = declining, null = unknown)
+    // xG trend (positive = improving, negative = declining, null = unknown)
     homeXgTrend = null, awayXgTrend = null,
-    // V8 — league scalar override (auto-resolved from leagueId if not provided)
+    // league scalar override (auto-resolved from leagueId if not provided)
     leagueScalar = null,
   } = matchData;
 
-  // ── Run all 15 parameters (V8 Master) ─────────────────────────────────────
+  // ── Run all 15 parameters ───────────────────────────────────────────
   const p1  = scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, totalTeams, gameWeek, totalGW });
   const p2  = scoreStarPower(homeSquadIntegrity, awaySquadIntegrity, homeKeyAbsences, awayKeyAbsences);
   const p3  = scoreH2H(h2hHistory);

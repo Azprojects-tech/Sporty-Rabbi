@@ -1,9 +1,9 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║              GEMINI NATURAL LANGUAGE BRIDGE                  ║
- * ║   Converts free-text match descriptions → V6 matchData       ║
- * ╠══════════════════════════════════════════════════════════════╣
- * ║  "Persija is playing now" → structured parameters → V6 tiers ║
+ * ║   Converts free-text match descriptions → V9 matchData       ║
+ * ╠══════════════════════════════════════════════════════════════║
+ * ║  "Persija is playing now" → structured parameters → V9 tiers ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -84,13 +84,13 @@ async function groqChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = t
 }
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
-// Tells Gemini exactly what structured JSON to produce for the V6 engine.
-const SYSTEM_PROMPT = `You are a football analytics assistant for a sports betting analysis system called Agent 47 V6 Frontier.
+// Tells Gemini exactly what structured JSON to produce for the V9 engine.
+const SYSTEM_PROMPT = `You are a football analytics assistant for a sports betting analysis system called Agent 47 V9.
 
 When given a free-text description of a football match (e.g. "Persija is playing now", "Arsenal vs Chelsea tonight in the Premier League"), you must:
 
 1. Identify the match (home team, away team, league, competition stage)
-2. Use your training knowledge to estimate realistic values for all V6 parameters
+2. Use your training knowledge to estimate realistic values for all V9 parameters
 3. Return ONLY a valid JSON object — no markdown, no explanation, no extra text
 
 The JSON must follow this exact shape:
@@ -174,7 +174,7 @@ Rules:
 // ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
 
 /**
- * Convert a natural language match description into a structured V6 matchData object.
+ * Convert a natural language match description into a structured V9 matchData object.
  * @param {string} userText — e.g. "Persija is playing now", "Arsenal vs Chelsea Premier League"
  * @returns {Promise<{matchData: object, geminiConfidence: number, geminiNotes: string}>}
  */
@@ -369,7 +369,7 @@ const CALIBRATION_SYSTEM_PROMPT = `You are Agent 47, the global football analyti
 
 Using Google Search, find ALL real football matches SCHEDULED (not yet started) for today globally across all regulated professional leagues.
 IMPORTANT: Only include matches with status "NS" (not started). Do NOT include live or finished matches.
-Estimate V8 analytics parameters from your knowledge of team form, xG, squad, motivation, H2H etc.
+Estimate V9 analytics parameters from your knowledge of team form, xG, squad, motivation, H2H etc.
 Return ONLY a valid JSON array — no markdown, no explanation, nothing else outside the array brackets.
 
 Each element MUST follow EXACTLY this schema (no extra fields, no renamed fields):
@@ -472,7 +472,7 @@ function setCache(home, away, data) {
 
 // ─── ENRICHMENT PROMPT ────────────────────────────────────────────────────────
 function buildEnrichPrompt(batch, today) {
-  return `Today is ${today}. The following football fixtures are CONFIRMED for today. Your task is to look up each team's real current-season data using Google Search and fill in the V8 analytics schema accurately.
+  return `Today is ${today}. The following football fixtures are CONFIRMED for today. Your task is to look up each team's real current-season data using Google Search and fill in the V9 analytics schema accurately.
 
 For each fixture, search for:
 - Current league standings (position, points, goal difference)
@@ -510,7 +510,7 @@ Each element MUST use EXACTLY this schema:
  * @param {Array<{home,away,league,leagueId,country,kickoffUTC}>} fixtureList
  * @returns {Promise<Array|null>}
  */
-export async function enrichFixturesWithV8(fixtureList) {
+export async function enrichFixturesWithGemini(fixtureList) {
   if (!AVAILABLE) throw new Error('GEMINI_API_KEY not configured');
   if (!fixtureList || fixtureList.length === 0) return null;
 
@@ -611,7 +611,7 @@ export async function enrichFixturesWithV8(fixtureList) {
           results.push(enriched);
         }
       } else {
-        // All providers failed for this batch — caller uses buildDefaultV8Fixture (hash-seeded)
+        // All providers failed for this batch — caller uses buildDefaultFixture (hash-seeded)
         console.warn(`[Enrich] batch ${batchNum} all providers failed — using hash defaults for: ${batch.map(f => `${f.home} vs ${f.away}`).join(', ')}`);
       }
     }
