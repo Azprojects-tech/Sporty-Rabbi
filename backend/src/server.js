@@ -77,11 +77,6 @@ let alerts = [];
 let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
 
-// ─── MOCK MODE (safe local testing) ─────────────────────────────────────────
-// When MOCK_MODE=true, all API-Football calls are skipped.
-// Data comes from Gemini / ESPN / TheSportsDB only — quota-safe for dev.
-const MOCK_MODE = process.env.MOCK_MODE === 'true';
-
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
 
@@ -292,20 +287,14 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   🐰 SportyRabbi Backend Starting
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  📌 API Key:    ${API_KEY ? '✅ API-Football set (Gemini fallback ready)' : '🤖 Gemini-only mode (AI fixture data)'}
-  🧪 Mock Mode:  ${MOCK_MODE ? '✅ ON — API-Football calls skipped (safe testing)' : '❌ OFF — live API calls enabled'}
+  📌 API Key:    ${API_KEY ? '✅ API-Football configured' : '⚠️  API_FOOTBALL_KEY not set — live data unavailable'}
   🌐 API Base:   ${API_BASE}
-  ⏱️  Poll Mode:  ${MOCK_MODE ? 'Mock (Gemini/ESPN only)' : API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s + Gemini fallback` : 'Gemini every 5 min (preserves quota)'}
+  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s` : 'No API key — set API_FOOTBALL_KEY in .env'}
   🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 
 async function fetchLiveMatches() {
-  if (MOCK_MODE) {
-    console.log('🧪 MOCK_MODE: skipping API-Football live call');
-    return [];
-  }
-
   if (!API_KEY) {
     console.warn('⚠️  API_FOOTBALL_KEY not set - skipping live data. Set it in .env');
     return [];
@@ -376,7 +365,7 @@ async function fetchLiveMatches() {
  * Returns raw API-Football fixture objects (not yet analyzed).
  */
 async function fetchTodayFixturesFromApi() {
-  if (MOCK_MODE || !API_KEY || shouldSkipApiCalls()) return [];
+  if (!API_KEY || shouldSkipApiCalls()) return [];
   try {
     const today = new Date().toISOString().split('T')[0];
     console.log(`[Calibrate] Fetching today's schedule from API-Football: ${today}`);
@@ -594,7 +583,7 @@ async function fetchTodayFixturesFromSportsDB() {
 }
 
 async function fetchUpcomingMatches() {
-  if (MOCK_MODE || !API_KEY) {
+  if (!API_KEY) {
     return [];
   }
 
@@ -983,33 +972,7 @@ async function saveAlert(alertData) {
       `💡 ${alertData.message || alertData.type}`,
       `🕐 ${new Date(alertData.sentAt).toLocaleTimeString('en-NG', { timeZone: 'Africa/Lagos' })}`,
     ].join('\n');
-    sendWhatsAppAlert(msg).catch(() => {});
-  }
-}
-
-// ─── TWILIO WHATSAPP ALERTS ────────────────────────────────────────────────
-
-async function sendWhatsAppAlert(message) {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_WHATSAPP_FROM;
-  const to = process.env.ALERT_PHONE_NUMBER;
-
-  if (!sid || !token || !to) {
-    console.log('ℹ️  Twilio not configured - alerts will only show in portal');
-    return;
-  }
-
-  try {
-    const client = twilio(sid, token);
-    await client.messages.create({
-      from,
-      to,
-      body: message,
-    });
-    console.log('✓ WhatsApp alert sent');
-  } catch (error) {
-    console.error('❌ WhatsApp error:', error.message);
+    sendWhatsApp(msg).catch(() => {});
   }
 }
 
@@ -1223,6 +1186,13 @@ app.get('/api/health', (req, res) => {
 // ── WhatsApp test endpoint ─────────────────────────────────────────────────
 app.post('/api/test-whatsapp', async (req, res) => {
   const msg = req.body?.message || `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
+  const result = await sendWhatsApp(msg);
+  res.json({ twilioEnabled, ...result });
+});
+
+// GET version — trigger a test alert directly from the browser address bar
+app.get('/api/test-whatsapp', async (req, res) => {
+  const msg = `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
   const result = await sendWhatsApp(msg);
   res.json({ twilioEnabled, ...result });
 });
