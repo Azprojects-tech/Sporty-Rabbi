@@ -559,6 +559,52 @@ function sanitizeMatch(match) {
   };
 }
 
+// ─── LIVE-DATA BLENDING HELPERS ─────────────────────────────────────────────
+// Both functions implement the same principle:
+//   season avg = a strong prior built from many games;
+//   live observation = evidence accumulated so far this match.
+//   The prior is assigned a "priorStrength" in equivalent minutes so its weight
+//   decays relative to live data as the match progresses.
+//
+// Count stats (shots, xG, goals) follow a Poisson process.
+// Bayesian conjugate update with Gamma(α, β) prior gives:
+//   posterior_rate_per_90 = (seasonAvg * N + liveCount * 90) / (N + elapsedMin)
+// where N = priorStrength = minutes equivalent of season-level confidence.
+//
+// Proportion stats (possession %) use the same weighted-mean formula:
+//   posterior_pct = (seasonAvg * N + livePct * elapsedMin) / (N + elapsedMin)
+//
+// Recommended prior strengths (calibrated to typical within-game variance):
+//   xG / goals  → N =  90 min (1 full game) — converges fast; xG reflects current tactics
+//   Shots total → N = 180 min (2 full games) — moderately stable; game plan can shift
+//   Possession  → N = 360 min (4 full games) — very stable team characteristic
+
+/**
+ * Bayesian Poisson blend for count-based stats (shots, xG, goals).
+ * @param {number} seasonAvg    - season average per 90 min
+ * @param {number} liveCount    - cumulative count observed this match
+ * @param {number} elapsedMin   - minutes elapsed
+ * @param {number} priorStrength - equivalent game-minutes of prior confidence
+ * @returns {number} blended value per 90 min
+ */
+function blendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength) {
+  if (!elapsedMin || elapsedMin <= 0) return seasonAvg;
+  return (seasonAvg * priorStrength + liveCount * 90) / (priorStrength + elapsedMin);
+}
+
+/**
+ * Weighted-average blend for proportion stats (possession %).
+ * @param {number} seasonAvg    - season average proportion (0–100)
+ * @param {number} livePct      - live observed proportion (0–100)
+ * @param {number} elapsedMin   - minutes elapsed
+ * @param {number} priorStrength - equivalent game-minutes of prior confidence
+ * @returns {number} blended proportion
+ */
+function blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
+  if (!elapsedMin || elapsedMin <= 0) return seasonAvg;
+  return (seasonAvg * priorStrength + livePct * elapsedMin) / (priorStrength + elapsedMin);
+}
+
 // Analyze match for betting opportunities
 async function analyzeMatch(match) {
   try {
@@ -585,6 +631,12 @@ async function analyzeMatch(match) {
     const shots = {
       home: getStat(homeStats, 'Shots on Goal') || 0,
       away: getStat(awayStats, 'Shots on Goal') || 0,
+    };
+
+    // Total shots (not just on-goal) — consistent basis for season-avg blend
+    const totalShots = {
+      home: getStat(homeStats, 'Total Shots') || 0,
+      away: getStat(awayStats, 'Total Shots') || 0,
     };
 
     const xg = {
@@ -740,22 +792,34 @@ async function analyzeMatch(match) {
         status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
-        // Attack quality: prefer live match xG, then team's season goals avg
-        homeXgAvg:  xg.home > 0 ? xg.home : homeAvgGF,
-        awayXgAvg:  xg.away > 0 ? xg.away : awayAvgGF,
-        // Defensive quality: team's season goals-conceded avg (correct Poisson input)
-        homeXgaAvg: xg.away > 0 ? xg.away : homeAvgGA,
-        awayXgaAvg: xg.home > 0 ? xg.home : awayAvgGA,
-        // Season goal averages fed to P4 coiled spring and P6 defensive gap
+        // ── Live-data blending: Bayesian update of season averages with match evidence ──
+        // Pre-match (NS): season avg only. Live: blend decaying toward live observation.
+        // See blendCountStat / blendPctStat for derivation and prior-strength rationale.
+        ...(() => {
+          const isLive = normalizedStatus === 'LIVE' && liveMin > 0;
+          // xG / attack quality — N=90 (fast convergence; xG reflects live tactics)
+          const hXgAvg  = isLive && xg.home > 0 && homeAvgGF ? blendCountStat(homeAvgGF, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : homeAvgGF);
+          const aXgAvg  = isLive && xg.away > 0 && awayAvgGF ? blendCountStat(awayAvgGF, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : awayAvgGF);
+          // xGA / defensive quality — away xG against home defense
+          const hXgaAvg = isLive && xg.away > 0 && homeAvgGA ? blendCountStat(homeAvgGA, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : homeAvgGA);
+          const aXgaAvg = isLive && xg.home > 0 && awayAvgGA ? blendCountStat(awayAvgGA, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : awayAvgGA);
+          // Shots per game — N=180 (moderately stable; tactical changes take time)
+          const hShots  = isLive && totalShots.home > 0 ? blendCountStat(homeSeasonShots || 11, totalShots.home, liveMin, 180) : (homeSeasonShots || 11);
+          const aShots  = isLive && totalShots.away > 0 ? blendCountStat(awaySeasonShots || 11, totalShots.away, liveMin, 180) : (awaySeasonShots || 11);
+          // Possession — N=360 (very stable; a team's style rarely shifts mid-match)
+          const hPoss   = isLive && possession.home > 0 ? blendPctStat(homeSeasonPossession || 50, possession.home, liveMin, 360) : (homeSeasonPossession || 50);
+          return {
+            homeXgAvg: hXgAvg, awayXgAvg: aXgAvg,
+            homeXgaAvg: hXgaAvg, awayXgaAvg: aXgaAvg,
+            homeShotsPerGame: hShots, awayShotsPerGame: aShots,
+            homePossession: hPoss,
+          };
+        })(),
+        // Season goal averages fed to P4 coiled spring and P6 defensive gap (unchanged)
         homeGoalsAvgFor:     homeAvgGF,
         awayGoalsAvgFor:     awayAvgGF,
         homeGoalsAvgAgainst: homeAvgGA,
         awayGoalsAvgAgainst: awayAvgGA,
-        // Season avg possession is more reliable than in-game (noise at early minutes)
-        homePossession: possession.home > 0 ? possession.home : (homeSeasonPossession || 50),
-        // Season avg shots/game measures team style — not in-game accumulation
-        homeShotsPerGame: homeSeasonShots || 11,
-        awayShotsPerGame: awaySeasonShots || 11,
         homeConversionPct,
         awayConversionPct,
         homeForm:  homeFormStr,
