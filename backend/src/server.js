@@ -780,12 +780,15 @@ async function analyzeMatch(match) {
           if (as.avgShotsTotal >  0)    awaySeasonShots   = as.avgShotsTotal;
           if (as.lateGoalPct   != null) awayLateGoalPct   = as.lateGoalPct;
         }
-        // Squad integrity from active injuries/suspensions (P9 Defensive Solidity)
-        if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) {
-          homeSquadIntegrity = hInjRes.value.squadIntegrity;
+        // Squad integrity + key absences for P2 Star Power position-weighted impact
+        let homeKeyAbsences = [], awayKeyAbsences = [];
+        if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline) {
+          if (hInjRes.value.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
+          if (hInjRes.value.keyAbsences?.length)   homeKeyAbsences    = hInjRes.value.keyAbsences;
         }
-        if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) {
-          awaySquadIntegrity = aInjRes.value.squadIntegrity;
+        if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline) {
+          if (aInjRes.value.squadIntegrity != null) awaySquadIntegrity = aInjRes.value.squadIntegrity;
+          if (aInjRes.value.keyAbsences?.length)   awayKeyAbsences    = aInjRes.value.keyAbsences;
         }
       }
 
@@ -840,6 +843,8 @@ async function analyzeMatch(match) {
         totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38,
         homeSquadIntegrity,
         awaySquadIntegrity,
+        homeKeyAbsences,
+        awayKeyAbsences,
         homeLateGoalPct,
         awayLateGoalPct,
         homeCards: cards.home,
@@ -880,6 +885,8 @@ async function analyzeMatch(match) {
       matchType,
       leagueCountry: league.country || '',
       cards,
+      homeConversionPct,
+      awayConversionPct,
     };
     
     const result = sanitizeMatch(analyzed);
@@ -1984,6 +1991,9 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     }
     if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
     if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) awaySquadIntegrity = aInjRes.value.squadIntegrity;
+    let homeKeyAbsences = [], awayKeyAbsences = [];
+    if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.keyAbsences?.length) homeKeyAbsences = hInjRes.value.keyAbsences;
+    if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.keyAbsences?.length) awayKeyAbsences = aInjRes.value.keyAbsences;
 
     const liveMin       = match.matchMinutes || 0;
     const isLive        = match.isLive && liveMin > 0;
@@ -1999,6 +2009,7 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       gameWeek, totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38, totalTeams,
       homePosition, awayPosition, homePoints, awayPoints,
       homeSquadIntegrity, awaySquadIntegrity,
+      homeKeyAbsences, awayKeyAbsences,
       homeConversionPct, awayConversionPct,
       homePossession:   isLive && livePoss > 0       ? blendPctStat(homeSeasonPossession  || 50, livePoss,       liveMin, 360) : (homeSeasonPossession  || 50),
       homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(homeSeasonShots || 11, liveShotsHome, liveMin, 180) : (homeSeasonShots || 11),

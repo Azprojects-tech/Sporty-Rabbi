@@ -8,6 +8,7 @@
  */
 
 import axios from 'axios';
+import { getLeagueGoalsAvg } from './agent47Service.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
@@ -654,7 +655,7 @@ Return a JSON array where each object has EXACTLY these fields:
  * This is the LLM layer that sits on top of V9's pure-math output.
  */
 export async function generateMatchNarrative(analysis, matchInfo) {
-  const { home = '?', away = '?', league = '', status = 'NS', matchMinutes = 0, score = '0-0',
+  const { home = '?', away = '?', league = '', leagueId = 0, status = 'NS', matchMinutes = 0, score = '0-0',
           homeCards, awayCards } = matchInfo || {};
   const { overallScore = 0, recommendations = [], parameters = {}, poisson } = analysis || {};
 
@@ -690,8 +691,8 @@ export async function generateMatchNarrative(analysis, matchInfo) {
       : (hYel + aYel >= 6 ? `Heavy yellow card count (${home}: ${hYel}, ${away}: ${aYel}) — physical, desperate play.` : '');
 
     const remainFrac = minsLeft / 90;
-    const lH_rem = (poisson?.homeLambda || 1.35) * remainFrac;
-    const lA_rem = (poisson?.awayLambda || 1.35) * remainFrac;
+    const lH_rem = (poisson?.homeLambda || getLeagueGoalsAvg(leagueId)) * remainFrac;
+    const lA_rem = (poisson?.awayLambda || getLeagueGoalsAvg(leagueId)) * remainFrac;
     const probGoal  = Math.round((1 - Math.exp(-(lH_rem + lA_rem))) * 100);
 
     liveContext = `LIVE SITUATION — ${matchMinutes}' played, ${minsLeft}' remaining.

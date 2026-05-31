@@ -52,6 +52,34 @@ function setCache(key, data) {
   statsCache.set(key, { data, timestamp: Date.now() });
 }
 
+// API-Football squad position strings → scoreStarPower impactMap keys
+const SQUAD_POS_MAP = {
+  'Goalkeeper': 'goalkeeper',
+  'Defender':   'center-back',
+  'Midfielder': 'midfielder',
+  'Attacker':   'striker',
+};
+
+// Internal: fetch squad → { playerId: positionKey } map. Cached for the process lifetime
+// (squads change at most on transfer deadlines — far less frequent than any CACHE_TTL).
+async function getSquadPositionMap(teamId) {
+  const key = cacheKey('squadPos', teamId);
+  const cached = statsCache.get(key);
+  if (cached) return cached.data;   // no TTL check — squad is stable
+  try {
+    const response = await axiosInstance.get('/players/squads', { params: { team: teamId } });
+    const players = response.data.response?.[0]?.players || [];
+    const map = {};
+    for (const p of players) {
+      if (p.id) map[p.id] = SQUAD_POS_MAP[p.position] || null;
+    }
+    statsCache.set(key, { data: map, timestamp: Date.now() });
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Get team's last 10 matches and calculate form stats
  */
@@ -387,15 +415,19 @@ export async function getTeamInjuries(teamId, leagueId) {
       return type === 'injury' || type === 'suspension';
     });
     const injuryCount = active.length;
-    const squadIntegrity =
-      injuryCount === 0 ? 93 :
-      injuryCount === 1 ? 88 :
-      injuryCount === 2 ? 82 :
-      injuryCount === 3 ? 76 :
-      injuryCount === 4 ? 70 :
-      Math.max(60, 70 - (injuryCount - 4) * 4);
 
-    const result = { teamId, leagueId, injuryCount, squadIntegrity };
+    // Fetch squad roster to resolve each absent player's position.
+    // scoreStarPower() applies impact penalties per-position; a squad integrity
+    // of 100 (full-strength) lets those penalties drive the final effective score.
+    const positionMap = await getSquadPositionMap(teamId);
+    const keyAbsences = active.map(i => ({
+      name:     i.player?.name || 'Unknown',
+      position: positionMap[i.player?.id] || null,
+    }));
+
+    // squadIntegrity = 100 (full-strength baseline); scoreStarPower() reduces it
+    // via positionWeighted penalties from keyAbsences.
+    const result = { teamId, leagueId, injuryCount, squadIntegrity: 100, keyAbsences };
     // 2-hour cache
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 2 * 3600000) });
     return result;

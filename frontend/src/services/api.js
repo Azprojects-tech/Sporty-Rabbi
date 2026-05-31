@@ -96,10 +96,10 @@ let reconnectAttempts = 0;
 const MAX_RETRIES = 5;
 
 export function connectWebSocket(onReady) {
-  // Use direct Railway URL for WebSocket (can't be proxied through Netlify)
-  // Convert https:// to wss:// automatically
-  const wsUrl = import.meta.env.VITE_WS_URL || 
-    'wss://web-production-cccff.up.railway.app';
+  // Derive WebSocket URL from the API base URL — avoids hardcoding deployment-specific URLs.
+  // https://host/api → wss://host  |  http://host/api → ws://host
+  const wsUrl = import.meta.env.VITE_WS_URL ||
+    API_BASE.replace(/^\/api$/, '').replace(/\/api$/, '').replace(/^https/, 'wss').replace(/^http/, 'ws');
 
   return new Promise((resolve, reject) => {
     ws = new WebSocket(wsUrl);

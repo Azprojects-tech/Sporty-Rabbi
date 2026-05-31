@@ -91,7 +91,7 @@ const LEAGUE_GOALS_AVG = {
   849: 1.25,  // Conference League (alt)
   4:   1.20,  // World Cup
 };
-function getLeagueGoalsAvg(leagueId) {
+export function getLeagueGoalsAvg(leagueId) {
   return LEAGUE_GOALS_AVG[+leagueId] ?? 1.35;
 }
 

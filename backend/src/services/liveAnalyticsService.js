@@ -25,9 +25,12 @@ export function calculateNextGoalProbability(match) {
     const homeXgRate = homeXG / minsElapsed;
     const awayXgRate = awayXG / minsElapsed;
 
-    // Shots on target proxy: each shot on target ≈ 0.08 xG equivalent
-    const homeShotXg = homeShots * 0.08;
-    const awayShotXg = awayShots * 0.08;
+    // Shots proxy xG: use team's actual season conversion rate when available,
+    // fall back to 0.08 (8% — cross-league average for shots on target).
+    const homeConvRate = match.homeConversionPct > 0 ? match.homeConversionPct / 100 : 0.08;
+    const awayConvRate = match.awayConversionPct > 0 ? match.awayConversionPct / 100 : 0.08;
+    const homeShotXg = homeShots * homeConvRate;
+    const awayShotXg = awayShots * awayConvRate;
 
     // Blended lambda for remaining minutes: 70% xG rate + 30% shots proxy
     // Cap at 4.0 (realistic max goals in remaining time) to prevent early-game inflation
