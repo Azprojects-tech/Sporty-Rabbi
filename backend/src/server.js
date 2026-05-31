@@ -621,6 +621,58 @@ function blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
 }
 
 /**
+ * Lightweight fixture parser — extracts display fields from a raw API-Football
+ * fixture object without making ANY additional API calls.
+ * Used for upcoming matches on cold start (calibration store empty).
+ * These entries are flagged _lite:true and replaced once calibration runs.
+ */
+function parseLightFixture(match) {
+  try {
+    const fixture = match.fixture || {};
+    const teams   = match.teams   || {};
+    const league  = match.league  || {};
+    const goals   = match.goals   || {};
+
+    let statusStr = 'NS';
+    if (typeof fixture.status === 'object' && fixture.status?.short) {
+      statusStr = fixture.status.short;
+    } else if (typeof fixture.status === 'string') {
+      statusStr = fixture.status;
+    }
+
+    const homeId = teams.home?.id   || null;
+    const awayId = teams.away?.id   || null;
+    const hName  = teams.home?.name || 'Home';
+    const aName  = teams.away?.name || 'Away';
+    const hGoals = goals.home ?? 0;
+    const aGoals = goals.away ?? 0;
+
+    return {
+      id:            `${homeId || hName}-${awayId || aName}-${(fixture.date || '').split('T')[0]}`,
+      home:          hName,
+      away:          aName,
+      homeTeamId:    homeId,
+      awayTeamId:    awayId,
+      score:         `${hGoals}-${aGoals}`,
+      status:        statusStr,
+      matchMinutes:  fixture.status?.elapsed || 0,
+      kickoffUTC:    fixture.date || null,
+      league:        league.name  || 'Unknown League',
+      leagueId:      league.id    || 0,
+      leagueCountry: league.country || '',
+      confidence:    null,
+      opportunities: [],
+      possession:    { home: 50, away: 50 },
+      shots:         { home: 0, away: 0 },
+      xg:            { home: 0, away: 0 },
+      _lite:         true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Process an array of raw API-Football match objects through analyzeMatch()
  * in small batches to avoid 429 bursts. Each batch runs in parallel, but
  * batches are serialised with a small gap between them.
@@ -1035,7 +1087,14 @@ async function pollUpcomingMatches() {
       console.log('🔄 Polling upcoming matches...');
       const matches = await fetchUpcomingMatches();
       console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
-      processedMatches = matches ? await batchAnalyze(matches, 3) : [];
+
+      if (matches && matches.length > 0) {
+        // Cold start (calibration empty): use zero-call lightweight parser so we never
+        // burst 400+ API calls on a fresh deploy. Calibration will enrich these later.
+        // Warm (calibration ran): still use lightweight — calibration is the enrichment source.
+        processedMatches = matches.map(parseLightFixture).filter(m => m !== null);
+        console.log(`📋 Parsed ${processedMatches.length} upcoming fixtures (lightweight, no extra API calls)`);
+      }
     }
     // No Gemini fallback — it hallucinates wrong fixtures.
     // If API-Football is unavailable, calibration data (above) is the source of truth.
