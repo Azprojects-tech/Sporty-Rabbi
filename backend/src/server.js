@@ -1425,6 +1425,25 @@ app.post('/api/quota/reset', (req, res) => {
   });
 });
 
+// ── Debug: raw live fixture count from API-Football (no analyzeMatch) ──────
+app.get('/api/debug/live-raw', async (req, res) => {
+  try {
+    const raw = await fetchLiveMatches();
+    const sample = (raw || []).slice(0, 5).map(m => ({
+      id: m.fixture?.id,
+      home: m.teams?.home?.name,
+      away: m.teams?.away?.name,
+      league: m.league?.name,
+      country: m.league?.country,
+      status: m.fixture?.status?.short,
+      elapsed: m.fixture?.status?.elapsed,
+    }));
+    res.json({ rawCount: (raw || []).length, sample, quotaState });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: '✓ Online',
