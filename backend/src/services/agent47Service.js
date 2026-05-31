@@ -69,6 +69,32 @@ const LEAGUE_SCALARS = {
   253: 0.85,  // MLS
 };
 
+// Per-league average goals per team per game (empirical 2023-25 seasons)
+const LEAGUE_GOALS_AVG = {
+  39:  1.35,  // Premier League
+  140: 1.25,  // La Liga
+  78:  1.55,  // Bundesliga
+  61:  1.35,  // Ligue 1
+  135: 1.25,  // Serie A
+  88:  1.60,  // Eredivisie
+  179: 1.45,  // Scottish Premiership
+  40:  1.30,  // Championship (England)
+  94:  1.25,  // Primeira Liga
+  119: 1.35,  // J1 League
+  98:  1.35,  // J1 League (alt)
+  203: 1.45,  // Saudi Pro League
+  71:  1.45,  // Brasileirão Serie A
+  253: 1.45,  // MLS
+  2:   1.35,  // Champions League
+  3:   1.30,  // Europa League
+  848: 1.25,  // Conference League
+  849: 1.25,  // Conference League (alt)
+  4:   1.20,  // World Cup
+};
+function getLeagueGoalsAvg(leagueId) {
+  return LEAGUE_GOALS_AVG[+leagueId] ?? 1.35;
+}
+
 // ─── RESEARCH CONSTANTS (April 2026 end-of-season findings) ───────────────────
 const RESEARCH = {
   LIGUE1_LATE_GOAL_PCT:         0.30,  // 30% of Ligue 1 goals after 76'
@@ -403,11 +429,11 @@ function scoreXGDifferential(homeXgAvg, awayXgAvg) {
 // Measures how each team's defence compares to the league average xGA baseline.
 // High score = both defences conceding below average = tighter game likely.
 // Distinct from P6 (gap between the two teams' defences) and P7 (absolute xGA in Poisson lambdas).
-function scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg) {
+function scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg, leagueAvgGA = 1.35) {
   if (homeXgaAvg == null || awayXgaAvg == null) {
     return { score: null, edge: 'NEUTRAL', assessment: 'No defensive xGA data available.' };
   }
-  const L      = RESEARCH.LEAGUE_AVG_GOALS_PER_GAME;
+  const L      = leagueAvgGA;
   const hBonus = L - homeXgaAvg;  // positive = conceding LESS than league average
   const aBonus = L - awayXgaAvg;
   const avgBonus = (hBonus + aBonus) / 2;
@@ -567,21 +593,27 @@ function scoreCrisisMode({
 }
 
 // ─── POISSON PROJECTION ───────────────────────────────────────────────────────
-function runPoisson(hXg, aXg, hXga, aXga) {
+function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
   if (hXg == null || aXg == null || hXga == null || aXga == null) {
     return {
       homeLambda: null, awayLambda: null,
       expectedTotalGoals: null,
-      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null },
+      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null, draw: null },
       likelyScore: null,
       insufficientData: true,
       assessment: 'Insufficient team statistics for Poisson projection.',
     };
   }
-  const L = RESEARCH.LEAGUE_AVG_GOALS_PER_GAME;
+  const L = getLeagueGoalsAvg(leagueId);
   // Attack strength × opponent defensive weakness
   const lH = Math.max((hXg / L) * (aXga / L) * L, 0.10);
   const lA = Math.max((aXg / L) * (hXga / L) * L, 0.10);
+
+  // Draw probability: Dixon-Coles corrected P(i-i) for i = 0..7
+  let pDraw = 0;
+  for (let g = 0; g <= 7; g++) {
+    pDraw += dcTau(g, g, lH, lA) * poissonProb(lH, g) * poissonProb(lA, g);
+  }
 
   const probs = {
     over05:  Math.round(probOver(lH, lA, 0)  * 100),
@@ -590,6 +622,7 @@ function runPoisson(hXg, aXg, hXga, aXga) {
     over35:  Math.round(probOver(lH, lA, 3)  * 100),
     btts:    Math.round(probBTTS(lH, lA)      * 100),
     under25: Math.round((1 - probOver(lH, lA, 2)) * 100),
+    draw:    Math.round(pDraw * 100),
   };
 
   const ls = likelyScore(lH, lA);
@@ -598,7 +631,7 @@ function runPoisson(hXg, aXg, hXga, aXga) {
     expectedTotalGoals: +(lH + lA).toFixed(2),
     probabilities: probs,
     likelyScore: ls,
-    assessment: `Projected ${(lH + lA).toFixed(1)} goals. ${probs.over25}% O2.5. ${probs.btts}% BTTS. Most likely: ${ls.score} (${ls.probability}%).`,
+    assessment: `Projected ${(lH + lA).toFixed(1)} goals. ${probs.over25}% O2.5. ${probs.btts}% BTTS. Draw: ${probs.draw}%. Most likely: ${ls.score} (${ls.probability}%).`,
   };
 }
 
@@ -1048,8 +1081,8 @@ export function analyzeV9(matchData = {}) {
   const p3  = scoreH2H(h2hHistory);
   const p4  = scoreForm(homeForm, awayForm, homeXgAvg, awayXgAvg, homeGoalsAvgFor, awayGoalsAvgFor, homeXgTrend, awayXgTrend);
   const p5  = scoreTiming(homeLateGoalPct, awayLateGoalPct);
-  const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, 1.35, homeCBInjured, awayGKError);
-  const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg);
+  const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, getLeagueGoalsAvg(leagueId), homeCBInjured, awayGKError);
+  const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg, leagueId);
 
   // ── Live match: replace pre-match "Most likely: X-Y" with projected FINAL score ──
   // The Poisson lambdas are full-game averages. For a live match we scale them to
@@ -1077,7 +1110,7 @@ export function analyzeV9(matchData = {}) {
 
   const p7  = { score: poi.probabilities.over25, assessment: poi.assessment }; // full signal, no suppression
   const p8  = scoreXGDifferential(homeXgAvg, awayXgAvg);
-  const p9  = scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg);
+  const p9  = scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg, getLeagueGoalsAvg(leagueId));
   const p10 = scorePace(homeConversionPct, awayConversionPct, homeShotsPerGame, awayShotsPerGame);
   const p11 = scoreHomeAdvantage(homePossession, homeShotsPerGame, awayShotsPerGame, venue, status);
   const p12 = scoreMarketSignal(matchData.odds || null, poi.probabilities);

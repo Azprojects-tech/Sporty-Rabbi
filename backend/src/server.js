@@ -713,6 +713,7 @@ async function analyzeMatch(match) {
       let homeConversionPct = null, awayConversionPct = null;
       let homeSeasonShots = null, awaySeasonShots = null;
       let homeSeasonPossession = null;
+      let homeLateGoalPct = null, awayLateGoalPct = null;
       let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
@@ -748,8 +749,10 @@ async function analyzeMatch(match) {
         if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
           const s = h2hRes.value.stats;
           const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-          const gpg = n > 0 ? (s.totalGoals || n * 2.5) / n : 2.5;
-          const gH = Math.round(gpg * 0.55), gA = Math.round(gpg * 0.45);
+          // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
+          const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
+          const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
+          const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
           for (let i = 0; i < (s.teamAWins || 0); i++) h2hHistory.push({ homeGoals: gH + 1, awayGoals: gA, winner: 'home' });
           for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
           for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
@@ -769,11 +772,13 @@ async function analyzeMatch(match) {
           if (hs.conversionPct != null) homeConversionPct    = hs.conversionPct;
           if (hs.avgShotsTotal >  0)    homeSeasonShots      = hs.avgShotsTotal;
           if (hs.avgPossession != null) homeSeasonPossession = hs.avgPossession;
+          if (hs.lateGoalPct   != null) homeLateGoalPct      = hs.lateGoalPct;
         }
         if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
           const as = aStatsRes.value.stats;
           if (as.conversionPct != null) awayConversionPct = as.conversionPct;
           if (as.avgShotsTotal >  0)    awaySeasonShots   = as.avgShotsTotal;
+          if (as.lateGoalPct   != null) awayLateGoalPct   = as.lateGoalPct;
         }
         // Squad integrity from active injuries/suspensions (P9 Defensive Solidity)
         if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) {
@@ -835,6 +840,8 @@ async function analyzeMatch(match) {
         totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38,
         homeSquadIntegrity,
         awaySquadIntegrity,
+        homeLateGoalPct,
+        awayLateGoalPct,
         homeCards: cards.home,
         awayCards: cards.away,
         homeGoalDrought,
@@ -1138,16 +1145,17 @@ async function saveAlert(alertData) {
 const BANKROLL = 250000; // ₦ — adjust via env if needed later
 
 function oddsForSelection(match, selType) {
-  const o = match.analysis?.odds || match.odds || {};
+  const o    = match.analysis?.odds || match.odds || {};
   const conf = match.confidence || 50;
-  // Use Gemini-estimated odds if available, otherwise derive from confidence
+  const poi  = match.analysis?.poisson?.probabilities;  // V9 Poisson-derived probabilities
+  // Use Gemini-estimated odds if available, otherwise derive from confidence/Poisson
   const deriveOdds = (impliedProb) => Math.max(1.05, +(1 / Math.min(impliedProb, 0.97)).toFixed(2));
   switch (selType) {
     case 'home_win':  return o.homeWin  || deriveOdds(conf / 100);
     case 'away_win':  return o.awayWin  || deriveOdds(conf / 100);
-    case 'over25':    return o.over25   || deriveOdds(0.62);
-    case 'btts':      return o.btts     || deriveOdds(0.55);
-    case 'draw':      return o.draw     || deriveOdds(0.28);
+    case 'over25':    return o.over25   || (poi?.over25 != null ? deriveOdds(poi.over25 / 100) : deriveOdds(0.62));
+    case 'btts':      return o.btts     || (poi?.btts   != null ? deriveOdds(poi.btts   / 100) : deriveOdds(0.55));
+    case 'draw':      return o.draw     || (poi?.draw   != null ? deriveOdds(poi.draw   / 100) : deriveOdds(0.28));
     default:          return 1.5;
   }
 }
@@ -1859,8 +1867,10 @@ app.post('/api/analyze', async (req, res) => {
       if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
         const s = h2hRes.value.stats;
         const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-        const gpg = n > 0 ? (s.totalGoals || n * 2.5) / n : 2.5;
-        const gH = Math.round(gpg * 0.55), gA = Math.round(gpg * 0.45);
+        // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
+        const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
+        const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
+        const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
         enriched.h2hHistory = [];
         for (let i = 0; i < (s.teamAWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gH+1, awayGoals: gA,   winner: 'home' });
         for (let i = 0; i < (s.teamBWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gH+1, winner: 'away' });
@@ -1958,16 +1968,19 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
     let homeConversionPct = null, awayConversionPct = null;
     let homeSeasonShots = null, awaySeasonShots = null, homeSeasonPossession = null;
+    let homeLateGoalPct = null, awayLateGoalPct = null;
     if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
       const s = hStatsRes.value.stats;
       if (s.conversionPct != null) homeConversionPct    = s.conversionPct;
       if (s.avgShotsTotal  >  0)   homeSeasonShots      = s.avgShotsTotal;
       if (s.avgPossession != null) homeSeasonPossession = s.avgPossession;
+      if (s.lateGoalPct   != null) homeLateGoalPct      = s.lateGoalPct;
     }
     if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
       const s = aStatsRes.value.stats;
       if (s.conversionPct != null) awayConversionPct = s.conversionPct;
       if (s.avgShotsTotal  >  0)   awaySeasonShots   = s.avgShotsTotal;
+      if (s.lateGoalPct   != null) awayLateGoalPct   = s.lateGoalPct;
     }
     if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
     if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) awaySquadIntegrity = aInjRes.value.squadIntegrity;
@@ -1990,6 +2003,8 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       homePossession:   isLive && livePoss > 0       ? blendPctStat(homeSeasonPossession  || 50, livePoss,       liveMin, 360) : (homeSeasonPossession  || 50),
       homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(homeSeasonShots || 11, liveShotsHome, liveMin, 180) : (homeSeasonShots || 11),
       awayShotsPerGame: isLive && liveShotsAway > 0  ? blendCountStat(awaySeasonShots || 11, liveShotsAway, liveMin, 180) : (awaySeasonShots || 11),
+      homeLateGoalPct,
+      awayLateGoalPct,
       // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
       homeXgAvg:  liveXgHome > 0 ? liveXgHome : null,
       awayXgAvg:  liveXgAway > 0 ? liveXgAway : null,

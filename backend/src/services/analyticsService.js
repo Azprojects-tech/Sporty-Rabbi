@@ -346,9 +346,15 @@ export async function getTeamStatistics(teamId, leagueId) {
     const conversionPct = shotsOn > 0 ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
     const avgPossession = possessionRaw ? parseFloat(possessionRaw) : null;
 
+    // Late-goal % from minute-bucket data — API-Football goals.for.minute
+    const goalsByMinute = s.goals?.for?.minute || {};
+    const late76_90  = goalsByMinute['76-90']?.total  ?? 0;
+    const late91_105 = goalsByMinute['91-105']?.total ?? 0;
+    const lateGoalPct = goalsFor > 0 ? +((late76_90 + late91_105) / goalsFor).toFixed(3) : null;
+
     const result = {
       teamId, leagueId,
-      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played },
+      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played, lateGoalPct },
     };
     // 6-hour cache
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 6 * 3600000) });
