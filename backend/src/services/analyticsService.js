@@ -315,3 +315,86 @@ export async function getFixturePreview(fixtureId, homeTeamId, awayTeamId, leagu
     return null;
   }
 }
+
+/**
+ * Get season team statistics: shots per game, conversion rate, possession average.
+ * Cached 6 hours — season aggregates change slowly.
+ */
+export async function getTeamStatistics(teamId, leagueId) {
+  if (!API_AVAILABLE) return offlineFallback('teamStats', teamId, leagueId);
+  if (!teamId || !leagueId) return offlineFallback('teamStats', teamId, leagueId);
+  try {
+    const year = new Date().getMonth() < 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+    const key = cacheKey('teamStats', teamId, leagueId, year);
+    const cached = getCache(key);
+    if (cached) return cached;
+
+    const response = await axiosInstance.get('/teams/statistics', {
+      params: { team: teamId, league: leagueId, season: year },
+    });
+    const s = response.data.response;
+    if (!s) return offlineFallback('teamStats', teamId, leagueId);
+
+    const played        = s.fixtures?.played?.total ?? 1;
+    const goalsFor      = s.goals?.for?.total?.total ?? 0;
+    const shotsTotal    = s.shots?.total?.total ?? 0;
+    const shotsOn       = s.shots?.on?.total ?? 0;
+    const possessionRaw = s.ball_possession ?? null;
+
+    const avgShotsTotal = played > 0 ? +(shotsTotal / played).toFixed(1) : null;
+    const avgShotsOn    = played > 0 ? +(shotsOn    / played).toFixed(1) : null;
+    const conversionPct = shotsOn > 0 ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
+    const avgPossession = possessionRaw ? parseFloat(possessionRaw) : null;
+
+    const result = {
+      teamId, leagueId,
+      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played },
+    };
+    // 6-hour cache
+    statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 6 * 3600000) });
+    return result;
+  } catch (err) {
+    console.error('❌ Error fetching team statistics:', err.message);
+    return offlineFallback('teamStats', teamId, leagueId);
+  }
+}
+
+/**
+ * Get active injury/suspension count and derive squad integrity score.
+ * Cached 2 hours — squad availability can change before match day.
+ */
+export async function getTeamInjuries(teamId, leagueId) {
+  if (!API_AVAILABLE) return offlineFallback('injuries', teamId, leagueId);
+  if (!teamId || !leagueId) return offlineFallback('injuries', teamId, leagueId);
+  try {
+    const year = new Date().getMonth() < 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+    const key = cacheKey('injuries', teamId, leagueId, year);
+    const cached = getCache(key);
+    if (cached) return cached;
+
+    const response = await axiosInstance.get('/injuries', {
+      params: { team: teamId, league: leagueId, season: year },
+    });
+    const injuries = response.data.response || [];
+    const active = injuries.filter(i => {
+      const type = (i.player?.type || '').toLowerCase();
+      return type === 'injury' || type === 'suspension';
+    });
+    const injuryCount = active.length;
+    const squadIntegrity =
+      injuryCount === 0 ? 93 :
+      injuryCount === 1 ? 88 :
+      injuryCount === 2 ? 82 :
+      injuryCount === 3 ? 76 :
+      injuryCount === 4 ? 70 :
+      Math.max(60, 70 - (injuryCount - 4) * 4);
+
+    const result = { teamId, leagueId, injuryCount, squadIntegrity };
+    // 2-hour cache
+    statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 2 * 3600000) });
+    return result;
+  } catch (err) {
+    console.error('❌ Error fetching team injuries:', err.message);
+    return offlineFallback('injuries', teamId, leagueId);
+  }
+}

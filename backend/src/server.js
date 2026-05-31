@@ -15,7 +15,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
-import { getTeamForm, getH2H, getFixturePreview, getStandings } from './services/analyticsService.js';
+import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries } from './services/analyticsService.js';
 import { analyzeV9 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
 import {
@@ -658,14 +658,22 @@ async function analyzeMatch(match) {
       let gameWeek = 30;
       let homeAvgGF = null, homeAvgGA = null, awayAvgGF = null, awayAvgGA = null;
       let homeGoalDrought = 0, awayGoalDrought = 0, homeRecentLosses = 0, awayRecentLosses = 0;
+      let homeConversionPct = null, awayConversionPct = null;
+      let homeSeasonShots = null, awaySeasonShots = null;
+      let homeSeasonPossession = null;
+      let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
-        const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
+        const [hRes, aRes, h2hRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
           getTeamForm(homeTeamId, league.id),
           getTeamForm(awayTeamId, league.id),
           getH2H(homeTeamId, awayTeamId),
           getStandings(league.id),
+          getTeamStatistics(homeTeamId, league.id),
+          getTeamStatistics(awayTeamId, league.id),
+          getTeamInjuries(homeTeamId, league.id),
+          getTeamInjuries(awayTeamId, league.id),
         ]);
         // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
@@ -703,6 +711,25 @@ async function analyzeMatch(match) {
           const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
           if (played > 0) gameWeek = played;
         }
+        // Season team statistics: conversion rate, shots/game, possession (P10 Pace + P11 HomeAdv)
+        if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
+          const hs = hStatsRes.value.stats;
+          if (hs.conversionPct != null) homeConversionPct    = hs.conversionPct;
+          if (hs.avgShotsTotal >  0)    homeSeasonShots      = hs.avgShotsTotal;
+          if (hs.avgPossession != null) homeSeasonPossession = hs.avgPossession;
+        }
+        if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
+          const as = aStatsRes.value.stats;
+          if (as.conversionPct != null) awayConversionPct = as.conversionPct;
+          if (as.avgShotsTotal >  0)    awaySeasonShots   = as.avgShotsTotal;
+        }
+        // Squad integrity from active injuries/suspensions (P9 Defensive Solidity)
+        if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) {
+          homeSquadIntegrity = hInjRes.value.squadIntegrity;
+        }
+        if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) {
+          awaySquadIntegrity = aInjRes.value.squadIntegrity;
+        }
       }
 
       const matchData = {
@@ -724,9 +751,13 @@ async function analyzeMatch(match) {
         awayGoalsAvgFor:     awayAvgGF,
         homeGoalsAvgAgainst: homeAvgGA,
         awayGoalsAvgAgainst: awayAvgGA,
-        homePossession: possession.home || 50,
-        homeShotsPerGame: shots.home || 10,
-        awayShotsPerGame: shots.away || 10,
+        // Season avg possession is more reliable than in-game (noise at early minutes)
+        homePossession: possession.home > 0 ? possession.home : (homeSeasonPossession || 50),
+        // Season avg shots/game measures team style — not in-game accumulation
+        homeShotsPerGame: homeSeasonShots || 11,
+        awayShotsPerGame: awaySeasonShots || 11,
+        homeConversionPct,
+        awayConversionPct,
         homeForm:  homeFormStr,
         awayForm:  awayFormStr,
         h2hHistory,
@@ -736,9 +767,10 @@ async function analyzeMatch(match) {
         awayPoints,
         totalTeams,
         gameWeek,
-        totalGW: 38,
-        homeSquadIntegrity: 85,
-        awaySquadIntegrity: 85,
+        // Derive total game weeks from league size: (n-1)*2 rounds in a round-robin
+        totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38,
+        homeSquadIntegrity,
+        awaySquadIntegrity,
         homeCards: cards.home,
         awayCards: cards.away,
         homeGoalDrought,
@@ -1998,6 +2030,10 @@ async function runCalibration() {
   let raw = [];
   let dataSource = 'unknown';
 
+  // Team stats maps: populated when API-Football team IDs are available
+  const calTeamIdMap = new Map(); // normalizedName → { id, leagueId }
+  const calTeamStats = new Map(); // teamId → { conversionPct, avgShotsTotal, avgPossession, squadIntegrity }
+
   // ── Step 1: Real fixture list from API-Football ────────────────────────────
   const apiFixtures = await fetchTodayFixturesFromApi();
   if (apiFixtures.length > 0) {
@@ -2005,12 +2041,38 @@ async function runCalibration() {
       .map(f => ({
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,
+        homeTeamId: f.teams?.home?.id,
+        awayTeamId: f.teams?.away?.id,
         league: f.league?.name,
         leagueId: f.league?.id || 0,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
       }))
       .filter(f => f.home && f.away);
+
+    // Build name→ID map and pre-fetch team stats/injuries in parallel (all cached 2–6 h)
+    for (const f of fixtureList) {
+      if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId });
+      if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId });
+    }
+    if (calTeamIdMap.size > 0) {
+      const uniqueTeams = [...new Map([...calTeamIdMap.values()].map(v => [v.id, v])).values()];
+      await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId }) => {
+        try {
+          const [statsRes, injRes] = await Promise.all([
+            getTeamStatistics(id, leagueId),
+            getTeamInjuries(id, leagueId),
+          ]);
+          calTeamStats.set(id, {
+            conversionPct:  statsRes?.stats?.conversionPct ?? null,
+            avgShotsTotal:  statsRes?.stats?.avgShotsTotal ?? null,
+            avgPossession:  statsRes?.stats?.avgPossession ?? null,
+            squadIntegrity: injRes?.squadIntegrity         ?? null,
+          });
+        } catch (_) {}
+      }));
+      console.log(`[Calibrate] Pre-fetched real API stats for ${calTeamStats.size} teams`);
+    }
 
     console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini...`);
     if (fixtureList.length > 0) {
@@ -2070,6 +2132,15 @@ async function runCalibration() {
       const matchMeta = f.match || {};
       const homeName = matchMeta.home || (typeof f.home === 'string' ? f.home : null) || 'Unknown';
       const awayName = matchMeta.away || (typeof f.away === 'string' ? f.away : null) || 'Unknown';
+      // Look up real API-Football stats for this match (available when data source is API-Football)
+      const hLookup    = calTeamIdMap.get(homeName.toLowerCase());
+      const aLookup    = calTeamIdMap.get(awayName.toLowerCase());
+      const hRealStats = hLookup ? calTeamStats.get(hLookup.id) : null;
+      const aRealStats = aLookup ? calTeamStats.get(aLookup.id) : null;
+      const calTotalTeams = f.context?.totalTeams || matchMeta.totalTeams || 20;
+      const calTotalGW    = f.context?.totalGameWeeks || matchMeta.totalGW ||
+        (calTotalTeams > 1 ? (calTotalTeams - 1) * 2 : 38);
+
       const matchData = {
         home: homeName,
         away: awayName,
@@ -2083,9 +2154,9 @@ async function runCalibration() {
         awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
         homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
         awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 40,
-        totalTeams:        f.context?.totalTeams   || matchMeta.totalTeams   || 20,
+        totalTeams:        calTotalTeams,
         gameWeek:          f.context?.gameWeek     || matchMeta.gameWeek     || 30,
-        totalGW:           f.context?.totalGameWeeks || matchMeta.totalGW   || 38,
+        totalGW:           calTotalGW,
         // ── Team form strings ──────────────────────────────────────────────────
         homeForm: Array.isArray(f.home?.recentForm)
           ? f.home.recentForm.join('-')
@@ -2093,20 +2164,20 @@ async function runCalibration() {
         awayForm: Array.isArray(f.away?.recentForm)
           ? f.away.recentForm.join('-')
           : (matchMeta.awayForm || null),
-        // ── Squad quality ──────────────────────────────────────────────────────
-        homeSquadIntegrity: f.home?.squadIntegrity || 85,
-        awaySquadIntegrity: f.away?.squadIntegrity || 85,
+        // ── Squad quality: real API-Football injuries → integrity, Gemini as fallback ──
+        homeSquadIntegrity: hRealStats?.squadIntegrity ?? f.home?.squadIntegrity ?? 85,
+        awaySquadIntegrity: aRealStats?.squadIntegrity ?? f.away?.squadIntegrity ?? 85,
         // ── Goal expectation ──────────────────────────────────────────────────
         homeXgAvg:  f.home?.xgAvg  || null,
         awayXgAvg:  f.away?.xgAvg  || null,
         homeXgaAvg: f.home?.xgaAvg || null,
         awayXgaAvg: f.away?.xgaAvg || null,
-        // ── Conversion / shots ────────────────────────────────────────────────
-        homeConversionPct: f.home?.conversionPct || 11,
-        awayConversionPct: f.away?.conversionPct || 10,
-        homeShotsPerGame:  f.home?.shotsPerGame  || 12,
-        awayShotsPerGame:  f.away?.shotsPerGame  || 10,
-        homePossession: 50,
+        // ── Conversion / shots: real API-Football stats, Gemini as fallback ──
+        homeConversionPct: hRealStats?.conversionPct ?? f.home?.conversionPct ?? null,
+        awayConversionPct: aRealStats?.conversionPct ?? f.away?.conversionPct ?? null,
+        homeShotsPerGame:  hRealStats?.avgShotsTotal ?? f.home?.shotsPerGame  ?? null,
+        awayShotsPerGame:  aRealStats?.avgShotsTotal ?? f.away?.shotsPerGame  ?? null,
+        homePossession:    hRealStats?.avgPossession ?? 50,
         homeStats: f.home,
         awayStats: f.away,
         h2h: f.h2h,
