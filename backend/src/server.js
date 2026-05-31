@@ -78,6 +78,7 @@ let upcomingMatches = [];
 let alerts = [];
 let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
+let calibrationRunning = false;
 
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
@@ -619,6 +620,26 @@ function blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
   return (seasonAvg * priorStrength + livePct * elapsedMin) / (priorStrength + elapsedMin);
 }
 
+/**
+ * Process an array of raw API-Football match objects through analyzeMatch()
+ * in small batches to avoid 429 bursts. Each batch runs in parallel, but
+ * batches are serialised with a small gap between them.
+ * BATCH_SIZE=3 means at most 3×8=24 simultaneous API-Football calls.
+ */
+async function batchAnalyze(matches, batchSize = 3) {
+  const results = [];
+  for (let i = 0; i < matches.length; i += batchSize) {
+    const batch = matches.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(analyzeMatch));
+    results.push(...batchResults);
+    // Small inter-batch gap only when more batches remain — avoids minute-limit spikes
+    if (i + batchSize < matches.length) {
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+  return results.filter(m => m !== null);
+}
+
 // Analyze match for betting opportunities
 async function analyzeMatch(match) {
   try {
@@ -957,7 +978,7 @@ async function pollLiveMatches() {
       // ── API-Football mode only — no Gemini fallback for live scores ──────
       // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
-      processedMatches = matches ? (await Promise.all(matches.map(analyzeMatch))).filter(m => m !== null) : [];
+      processedMatches = matches ? await batchAnalyze(matches, 3) : [];
     }
     // If API-Football quota is exhausted or unavailable, live tab stays empty.
     // Real-time scores require a real-time source.
@@ -1014,7 +1035,7 @@ async function pollUpcomingMatches() {
       console.log('🔄 Polling upcoming matches...');
       const matches = await fetchUpcomingMatches();
       console.log(`📥 Fetched ${matches ? matches.length : 0} raw fixtures`);
-      processedMatches = matches ? (await Promise.all(matches.map(analyzeMatch))).filter(m => m !== null) : [];
+      processedMatches = matches ? await batchAnalyze(matches, 3) : [];
     }
     // No Gemini fallback — it hallucinates wrong fixtures.
     // If API-Football is unavailable, calibration data (above) is the source of truth.
@@ -2625,26 +2646,19 @@ async function runCalibration() {
 
 /**
  * POST /api/calibrate
- * Uses Gemini Search grounding to find today's global fixtures,
- * runs V9 on every match, stores and returns all results + 80%+ picks.
+ * Fire-and-forget: starts calibration in the background and returns immediately.
+ * Poll GET /api/calibrate/results to get the outcome.
  */
-app.post('/api/calibrate', async (req, res) => {
-  try {
-    const store = await runCalibration();
-    res.json({
-      success: true,
-      totalScanned: store.totalScanned,
-      total: store.matches.length,
-      highConfidenceCount: store.highConfidence.length,
-      calibratedAt: store.calibratedAt,
-      matches: store.matches,
-      highConfidence: store.highConfidence,
-      calibrationHealth: store.calibrationHealth || null,
-    });
-  } catch (err) {
-    console.error('[Calibrate] Error:', err.message);
-    res.status(500).json({ error: err.message });
+app.post('/api/calibrate', (req, res) => {
+  if (calibrationRunning) {
+    return res.json({ status: 'already_running', message: 'Calibration is already in progress.' });
   }
+  calibrationRunning = true;
+  res.json({ status: 'started', message: 'Calibration started. Poll /api/calibrate/results for progress.' });
+  // Run async in background — response already sent
+  runCalibration()
+    .catch(err => console.error('[Calibrate] Background run error:', err.message))
+    .finally(() => { calibrationRunning = false; });
 });
 
 /**
@@ -2652,7 +2666,7 @@ app.post('/api/calibrate', async (req, res) => {
  * Returns the last stored calibration results without re-running.
  */
 app.get('/api/calibrate/results', (req, res) => {
-  res.json(calibrationStore);
+  res.json({ ...calibrationStore, running: calibrationRunning });
 });
 
 /**

@@ -164,23 +164,41 @@ export default function App() {
  const handleCalibrate = useCallback(async () => {
    setCalibrating(true);
    try {
-     const res = await apiService.client.post('/calibrate');
-     const data = res.data;
-     setCalibratedAt(data.calibratedAt);
-     setAllMatches(prev => {
-       const nonCal = prev.filter(m => !m._calibrated);
-       const nonIds = new Set(nonCal.map(m => m.id));
-       const newCal = (data.matches || [])
-         .filter(m => !nonIds.has(m.id))
-         .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
-       return [...nonCal, ...newCal];
+     // Fire-and-forget: backend returns immediately, we poll for results
+     await apiService.client.post('/calibrate');
+     const prevCalibratedAt = calibratedAt;
+     let attempts = 0;
+     await new Promise((resolve) => {
+       const poll = setInterval(async () => {
+         attempts++;
+         try {
+           const r = await apiService.client.get('/calibrate/results');
+           const data = r.data;
+           if (!data.running && data.calibratedAt && data.calibratedAt !== prevCalibratedAt) {
+             clearInterval(poll);
+             setCalibratedAt(data.calibratedAt);
+             setAllMatches(prev => {
+               const nonCal = prev.filter(m => !m._calibrated);
+               const nonIds = new Set(nonCal.map(m => m.id));
+               const newCal = (data.matches || [])
+                 .filter(m => !nonIds.has(m.id))
+                 .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
+               return [...nonCal, ...newCal];
+             });
+             resolve();
+           } else if (attempts >= 60) {
+             clearInterval(poll);
+             resolve();
+           }
+         } catch { clearInterval(poll); resolve(); }
+       }, 3000);
      });
    } catch (err) {
      console.error('Calibrate failed:', err.response?.data?.error || err.message);
    } finally {
      setCalibrating(false);
    }
- }, []);
+ }, [calibratedAt]);
 
  // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  const handleSearch = useCallback(async (e) => {
