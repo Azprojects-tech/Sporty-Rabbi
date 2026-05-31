@@ -448,9 +448,19 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                 <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda} &middot; A:{poisson.awayLambda}</div>
               </div>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
-                <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>LIKELY SCORE</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: '#3b82f6' }}>{poisson.likelyScore?.score || '--'}</div>
-                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>{poisson.likelyScore?.probability}%</div>
+                <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>
+                  {poisson.liveProjectedFinalScore ? 'PROJECTED FINAL' : 'LIKELY SCORE'}
+                </div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: '#3b82f6' }}>
+                  {poisson.liveProjectedFinalScore
+                    ? poisson.liveProjectedFinalScore.score
+                    : (poisson.likelyScore?.score || '--')}
+                </div>
+                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>
+                  {poisson.liveProjectedFinalScore
+                    ? `${poisson.liveProjectedFinalScore.probAnotherGoal}% P(+goal)`
+                    : `${poisson.likelyScore?.probability ?? '--'}%`}
+                </div>
               </div>
             </div>
             {[

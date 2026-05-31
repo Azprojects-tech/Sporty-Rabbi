@@ -582,31 +582,40 @@ function evaluateChaos({ motivation, form, matchMinutes = 0, earlyGoalScored = f
 // ─── TIER RECOMMENDATIONS ─────────────────────────────────────────────────────
 function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData) {
   const { home, away, status, matchMinutes = 0, score = '0-0' } = matchData;
-  const isLive = status === 'LIVE';
+  // All in-play statuses — API-Football also returns 1H, 2H, HT, ET, BT, P
+  const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
+  // Normalise elapsed time — HT is always at least 45' (API sometimes returns 0 or null)
+  const effectiveMins = (status === 'HT' && matchMinutes < 45) ? 45 : matchMinutes;
 
-  // ── LIVE: Late-game decisive score lock ─────────────────────────────────────
-  if (isLive && matchMinutes > 0) {
+  // ── LIVE: Late-game / halftime decisive score lock ────────────────────────
+  if (isLive && effectiveMins > 0) {
     const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
     const diff = Math.abs(hG - aG);
     const locked =
-      (matchMinutes >= 75 && diff >= 2) ||
-      (matchMinutes >= 85 && diff >= 1) ||
-      (matchMinutes >= 60 && diff >= 3) ||
-      (matchMinutes >= 45 && diff >= 3);  // 3-goal lead at halftime+
+      (effectiveMins >= 75 && diff >= 2) ||
+      (effectiveMins >= 85 && diff >= 1) ||
+      (effectiveMins >= 60 && diff >= 3) ||
+      (status === 'HT'     && diff >= 2) ||   // HT 2-goal lead: whole 2nd half to rescue — historically < 5%
+      (effectiveMins >= 45 && diff >= 3);      // 3-goal lead past 45'
     if (locked && diff > 0) {
       const leader = hG > aG ? home : away;
       let conf;
-      if      (matchMinutes >= 85 && diff >= 2) conf = Math.min(90 + Math.round((matchMinutes - 85) * 1.2) + diff * 2, 97);
-      else if (matchMinutes >= 75 && diff >= 2) conf = Math.min(84 + Math.round((matchMinutes - 75) * 0.8) + diff * 2, 96);
-      else if (matchMinutes >= 85 && diff === 1) conf = Math.min(76 + Math.round((matchMinutes - 85) * 1.5), 88);
-      else                                       conf = Math.min(80 + Math.round((matchMinutes - 60) * 0.4) + diff, 92);
+      if      (effectiveMins >= 85 && diff >= 2)  conf = Math.min(90 + Math.round((effectiveMins - 85) * 1.2) + diff * 2, 97);
+      else if (effectiveMins >= 75 && diff >= 2)  conf = Math.min(84 + Math.round((effectiveMins - 75) * 0.8) + diff * 2, 96);
+      else if (effectiveMins >= 85 && diff === 1) conf = Math.min(76 + Math.round((effectiveMins - 85) * 1.5), 88);
+      // Halftime-specific: comeback probability from 2+ goals down at HT is historically < 5%
+      else if (status === 'HT' && diff >= 4) conf = 95;
+      else if (status === 'HT' && diff >= 3) conf = 91;
+      else if (status === 'HT' && diff >= 2) conf = 85;
+      // 45–74 minute large lead
+      else conf = Math.min(75 + Math.round((effectiveMins - 45) * 0.35) + diff * 2, 90);
       return [{
         type: 'WINS_ONLY',
         selection: `${leader} Win`,
         confidence: conf,
         tier: conf >= 85 ? 1 : conf >= 72 ? 2 : 3,
         tierName: conf >= 85 ? TIERS[1].name : conf >= 72 ? TIERS[2].name : TIERS[3].name,
-        logic: `${matchMinutes}' played, ${hG}-${aG}. ${diff}-goal lead. Comeback probability < ${100 - conf}%.`,
+        logic: `${effectiveMins}' played, ${hG}-${aG}. ${diff}-goal lead. Comeback probability < ${100 - conf}%.`,
       }];
     }
   }
@@ -619,7 +628,7 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     const totalGoals = hG + aG;
     const scoreDiff  = hG - aG;   // positive = home leading
     const absDiff    = Math.abs(scoreDiff);
-    const minsLeft   = Math.max(90 - matchMinutes, 2); // floor at 2 to avoid div-by-zero
+    const minsLeft   = Math.max(90 - effectiveMins, 2); // floor at 2 to avoid div-by-zero
     const remainFrac = minsLeft / 90;
 
     // Discipline: red card → 10-man team → ~38% fewer expected goals for that side
@@ -966,6 +975,31 @@ export function analyzeV9(matchData = {}) {
   const p5  = scoreTiming(homeLateGoalPct, awayLateGoalPct);
   const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, 1.35, homeCBInjured, awayGKError);
   const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg);
+
+  // ── Live match: replace pre-match "Most likely: X-Y" with projected FINAL score ──
+  // The Poisson lambdas are full-game averages. For a live match we scale them to
+  // remaining time and add current score → real projected final score.
+  const LIVE_STATUSES_V9 = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+  if (LIVE_STATUSES_V9.has(status)) {
+    const [hG, aG] = (score || '0-0').split('-').map(n => parseInt(n, 10) || 0);
+    const effMins  = (status === 'HT' && matchMinutes < 45) ? 45 : matchMinutes;
+    const minsLeft = Math.max(90 - effMins, 0);
+    const remFrac  = minsLeft / 90;
+    const lH_rem   = poi.homeLambda * remFrac;
+    const lA_rem   = poi.awayLambda * remFrac;
+    const addl     = likelyScore(lH_rem, lA_rem);
+    const addH     = parseInt(addl.score.split('-')[0]) || 0;
+    const addA     = parseInt(addl.score.split('-')[1]) || 0;
+    const probMore = Math.round((1 - Math.exp(-(lH_rem + lA_rem))) * 100);
+    poi.liveProjectedFinalScore = {
+      score: `${hG + addH}-${aG + addA}`,
+      remainingLambda: { home: +lH_rem.toFixed(2), away: +lA_rem.toFixed(2) },
+      probAnotherGoal: probMore,
+    };
+    // Replace the stale pre-match assessment with live-context facts
+    poi.assessment = `${effMins}' played · ${minsLeft}' remaining. Projected final: ${hG + addH}-${aG + addA}. P(another goal): ${probMore}%.`;
+  }
+
   const p7  = { score: poi.probabilities.over25, assessment: poi.assessment }; // full signal, no suppression
   const p8  = scoreXGDifferential(homeXgAvg, awayXgAvg);
   const p9  = scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg);
