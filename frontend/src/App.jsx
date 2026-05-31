@@ -189,32 +189,45 @@ export default function App() {
    setSearching(true);
    try {
      const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
-     const analysis = res.data;
-     const pseudo = {
-       id: `search_${Date.now()}`,
-       home: analysis.home || '?',
-       away: analysis.away || '?',
-       league: analysis.league || 'Search Result',
-       leagueId: 0,
-       score: '0-0',
-       status: analysis.status || 'NS',
-       matchMinutes: 0,
-       confidence: analysis.overallScore || 50,
-       possession: { home: 50, away: 50 },
-       shots: { home: 0, away: 0 },
-       xg: { home: 0, away: 0 },
-       opportunities: [],
-       leagueCountry: '',
-       _source: 'search',
-     };
-     setSelectedMatch(pseudo);
-     setSelectedAnalysis(analysis);
+     const data = res.data;
+
+     if (data.type === 'matches' && data.matches?.length > 0) {
+       // Real cached matches found — prefer the live version already in allMatches
+       // (it may have richer in-play stats), fall back to what the server returned.
+       const best = data.matches[0];
+       const live = allMatches.find(m => m.id === best.id) || best;
+       setSelectedMatch(live);
+       setSelectedAnalysis(live.analysis || null);
+       setShowBets(false);
+     } else {
+       // LLM synthesis fallback — build a pseudo match for the detail panel
+       const analysis = data.analysis || data;
+       const pseudo = {
+         id: `search_${Date.now()}`,
+         home: analysis.home || '?',
+         away: analysis.away || '?',
+         league: analysis.league || 'Search Result',
+         leagueId: 0,
+         score: '0-0',
+         status: analysis.status || 'NS',
+         matchMinutes: 0,
+         confidence: analysis.overallScore || 50,
+         possession: { home: 50, away: 50 },
+         shots: { home: 0, away: 0 },
+         xg: { home: 0, away: 0 },
+         opportunities: [],
+         leagueCountry: '',
+         _source: 'search',
+       };
+       setSelectedMatch(pseudo);
+       setSelectedAnalysis(analysis);
+     }
    } catch (err) {
      console.error('Search failed:', err.response?.data?.error || err.message);
    } finally {
      setSearching(false);
    }
- }, [searchQuery]);
+ }, [searchQuery, allMatches]);
 
  // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  const displayedMatches = useMemo(() => allMatches.filter(m => {

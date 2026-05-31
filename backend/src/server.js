@@ -2196,17 +2196,102 @@ app.get('/api/calibrate/results', (req, res) => {
 });
 
 /**
- * GET /api/search?q=Arsenal
- * Natural language team/match search → Gemini → V9 analysis.
+ * Fuzzy-search the in-memory match pool (live + upcoming) for matches whose
+ * home/away team names, league name, or country match the query tokens.
+ *
+ * Handles common spelling variants and abbreviations:
+ *   "brasil" → "brazil", "rb" → "red bull", "atletico" → "atletico", …
+ */
+function searchMatchPool(query) {
+  const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+
+  // Detect "live" intent before stripping those words
+  const liveIntent = /\b(live|now|playing|currently|right now)\b/i.test(query);
+
+  // Normalise: lowercase + strip accents + common spelling variants
+  const norm = (s) =>
+    (s || '')
+      .toLowerCase()
+      .replace(/[àáâãä]/g, 'a')
+      .replace(/[èéêë]/g, 'e')
+      .replace(/[ìíîï]/g, 'i')
+      .replace(/[òóôõö]/g, 'o')
+      .replace(/[ùúûü]/g, 'u')
+      .replace(/[ñ]/g, 'n')
+      .replace(/[ç]/g, 'c');
+
+  // Expand abbreviations / common aliases in the query
+  const ALIASES = [
+    [/\brb\b/g,           'red bull'],
+    [/\batleti\b/g,       'atletico'],
+    [/\bbarca\b/g,        'barcelona'],
+    [/\bbvb\b/g,          'dortmund'],
+    [/\bpsg\b/g,          'paris saint'],
+    [/\bbrasil\b/g,       'brazil'],
+    [/\bespana\b/g,       'spain'],
+    [/\bdeutschland\b/g,  'germany'],
+    [/\bholland\b/g,      'netherlands'],
+    [/\bucl\b/g,          'champions'],
+    [/\buel\b/g,          'europa'],
+    [/\bwc\b/g,           'world cup'],
+    [/\bpl\b/g,           'premier league'],
+    [/\bserie\s*a\b/g,    'serie a'],
+  ];
+
+  let normalised = norm(query).replace(/\b(live|now|playing|currently|right now)\b/g, '').trim();
+  for (const [pattern, replacement] of ALIASES) {
+    normalised = normalised.replace(pattern, replacement);
+  }
+
+  const tokens = normalised.split(/\s+/).filter((t) => t.length >= 2);
+  if (!tokens.length) return { matches: [], liveIntent };
+
+  const pool = [...liveMatches, ...upcomingMatches];
+
+  const scored = pool
+    .map((m) => {
+      const hay = norm(`${m.home} ${m.away} ${m.league} ${m.leagueCountry}`);
+      let score = 0;
+      for (const tok of tokens) {
+        if (hay.includes(tok)) score += 2;
+        // Extra weight for whole-word boundary match
+        try { if (new RegExp(`\\b${tok}\\b`).test(hay)) score += 1; } catch (_) { /* skip bad token */ }
+      }
+      // Always boost live matches slightly (real-time relevance)
+      const isLive = LIVE_STATUSES.has(m.status);
+      if (isLive) score += 0.5;
+      // Extra boost when the user explicitly wants live
+      if (liveIntent && isLive) score += 3;
+      return { m, score };
+    })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return { matches: scored.slice(0, 6).map((s) => s.m), liveIntent };
+}
+
+/**
+ * GET /api/search?q=red bull live
+ * 1. Fuzzy-search the live/upcoming match cache → return real match objects
+ * 2. If nothing found → LLM synthesis fallback (Groq/Gemini)
  */
 app.get('/api/search', async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'Provide ?q=team+name or match description' });
   try {
+    // ── Step 1: search real in-memory matches ─────────────────────────────
+    const { matches, liveIntent } = searchMatchPool(q);
+    if (matches.length > 0) {
+      console.log(`[Search] "${q}" → ${matches.length} real match(es) found`);
+      return res.json({ type: 'matches', matches, liveIntent, query: q });
+    }
+
+    // ── Step 2: nothing in cache — LLM synthesis ──────────────────────────
+    console.log(`[Search] "${q}" → no cache hits, falling back to LLM`);
     const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(q);
     const analysis = analyzeV9(matchData);
     analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: q };
-    res.json(analysis);
+    return res.json({ type: 'synthetic', analysis, query: q });
   } catch (err) {
     console.error('[Search] Error:', err.message);
     res.status(500).json({ error: err.message });
