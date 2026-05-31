@@ -1024,27 +1024,29 @@ async function pollLiveMatches() {
   isPolling = true;
 
   try {
-    let processedMatches = [];
-
     if (API_KEY && !shouldSkipApiCalls()) {
       // ── API-Football mode only — no Gemini fallback for live scores ──────
       // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
-      processedMatches = matches ? await batchAnalyze(matches, 3) : [];
-    }
-    // If API-Football quota is exhausted or unavailable, live tab stays empty.
-    // Real-time scores require a real-time source.
-    
-    if (processedMatches.length > 0) {
-      liveMatches = processedMatches;
-      setCache('liveMatches', liveMatches);
-      broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
-      console.log(`✓ Updated ${liveMatches.length} live matches`);
+      const processedMatches = matches ? await batchAnalyze(matches, 3) : [];
+
+      if (processedMatches.length > 0) {
+        liveMatches = processedMatches;
+        setCache('liveMatches', liveMatches);
+        broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+        console.log(`✓ Updated ${liveMatches.length} live matches`);
+      } else {
+        console.log('ℹ️  No live matches right now');
+        liveMatches = [];
+        setCache('liveMatches', []);
+        broadcast({ type: 'LIVE_MATCHES', payload: [] });
+      }
     } else {
-      console.log('ℹ️  No live matches right now');
-      liveMatches = [];
-      setCache('liveMatches', []);
-      broadcast({ type: 'LIVE_MATCHES', payload: [] });
+      // Quota guard active — keep existing data, don't wipe live matches mid-game.
+      console.log('⏭️  Skipped live poll (quota guard active), keeping existing data');
+      if (liveMatches.length > 0) {
+        broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+      }
     }
   } catch (error) {
     console.error('❌ Poll error:', error.message);
