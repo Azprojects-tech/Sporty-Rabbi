@@ -28,6 +28,14 @@ function scoreColor(s) {
 }
 
 function ScoreBar({ score }) {
+  if (score == null) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+        <div style={{ flex: 1, background: '#0a0d15', borderRadius: 3, height: 3 }} />
+        <span style={{ fontSize: 11, fontWeight: 500, color: '#374151', minWidth: 24, textAlign: 'right' }}>--</span>
+      </div>
+    );
+  }
   const c = scoreColor(score);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
@@ -422,7 +430,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                       </div>
                       <div style={{ fontSize: 9, color: '#4a5568' }}>{weight}</div>
                     </div>
-                    <ScoreBar score={p.score || 0} />
+                    <ScoreBar score={p.score ?? null} />
                     {hasDetail && (
                       <span style={{ fontSize: 10, color: '#4a5568', flexShrink: 0, marginLeft: 4 }}>
                         {isExpanded ? '[^]' : '[v]'}
@@ -441,6 +449,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         {/* POISSON */}
         {section === 'poisson' && poisson && (
           <div>
+            {poisson.insufficientData ? (
+              <div style={{ padding: '32px 0', textAlign: 'center' }}>
+                <p style={{ fontSize: 13, color: '#4a5568', marginBottom: 8 }}>Insufficient data for Poisson projection.</p>
+                <p style={{ fontSize: 11, color: '#374151' }}>Real-time xG or team season stats required.</p>
+              </div>
+            ) : (<>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>EXPECTED GOALS</div>
@@ -484,6 +498,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             {poisson.assessment && (
               <p style={{ fontSize: 11, color: '#4a5568', marginTop: 12, lineHeight: 1.6 }}>{poisson.assessment}</p>
             )}
+            </>)}
           </div>
         )}
 

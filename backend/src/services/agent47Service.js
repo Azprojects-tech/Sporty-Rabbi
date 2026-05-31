@@ -139,6 +139,33 @@ function likelyScore(lH, lA) {
   return { score, probability: Math.round(best * 100) };
 }
 
+/**
+ * P(leader maintains their goal advantage at full time).
+ * Uses independent bivariate Poisson: P(trailer_goals_added - leader_goals_added < diff)
+ * where each side follows Pois(remaining_lambda).
+ *
+ * This is the only scientifically valid way to compute live-match win confidence: it
+ * accounts for actual team quality (λ), remaining time, and game-state motivation.
+ * A strong trailing team (e.g. Bayern at HT, high λ) correctly shows lower confidence
+ * for the leading team — which no hardcoded table can capture.
+ *
+ * @param {number} lLeader_rem  - Expected goals remaining for the leading team
+ * @param {number} lTrailer_rem - Expected goals remaining for the trailing team
+ * @param {number} diff         - Current goal gap (integer >= 1)
+ */
+function pLeadMaintained(lLeader_rem, lTrailer_rem, diff) {
+  let p = 0;
+  for (let hAdd = 0; hAdd <= 10; hAdd++) {
+    for (let aAdd = 0; aAdd <= 10; aAdd++) {
+      // lead is maintained when trailer fails to close the full gap: aAdd - hAdd < diff
+      if (aAdd - hAdd < diff) {
+        p += poissonProb(lLeader_rem, hAdd) * poissonProb(lTrailer_rem, aAdd);
+      }
+    }
+  }
+  return Math.min(Math.max(p, 0), 1);
+}
+
 // ─── FORM PARSER ──────────────────────────────────────────────────────────────
 /** Accepts "W-W-L-D-W" string or ['W','W','L','D','W'] array */
 function parseForm(raw) {
@@ -233,7 +260,7 @@ function scoreStarPower(homeIntegrity = 85, awayIntegrity = 85, homeAbsences = [
 // P3 — H2H HISTORY
 function scoreH2H(history = []) {
   if (!history.length) {
-    return { score: 50, goalsAvg: 2.5, overRate: 0.50, edge: 'NEUTRAL', assessment: 'No H2H data — using league baseline' };
+    return { score: null, edge: 'NEUTRAL', assessment: 'No H2H history available.' };
   }
   const totalGoals = history.reduce((s, m) => s + (m.homeGoals || 0) + (m.awayGoals || 0), 0);
   const goalsAvg   = totalGoals / history.length;
@@ -271,7 +298,10 @@ function weightedFormScore(raw) {
   return maxWeight > 0 ? (weighted / maxWeight) * 100 : 50;
 }
 
-function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeGoalsAvg = 1.5, awayGoalsAvg = 1.0, homeXgTrend = null, awayXgTrend = null) {
+function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeGoalsAvg = null, awayGoalsAvg = null, homeXgTrend = null, awayXgTrend = null) {
+  if (!homeFormStr && !awayFormStr) {
+    return { score: null, home: { formStr: null, winRate: 0 }, away: { formStr: null, winRate: 0 }, edge: 'NEUTRAL', assessment: 'No form data available.' };
+  }
   const hF = parseForm(homeFormStr);
   const aF = parseForm(awayFormStr);
 
@@ -320,7 +350,10 @@ function scoreTiming(homeLateGoalPct = 0.20, awayLateGoalPct = 0.20) {
 }
 
 // P6 — DEFENSIVE GAP
-function scoreDefensiveGap(homeGAAvg = 1.2, awayGAAvg = 1.2, leagueAvgGA = 1.35, homeCBOut = false, awayGKError = false) {
+function scoreDefensiveGap(homeGAAvg, awayGAAvg, leagueAvgGA = 1.35, homeCBOut = false, awayGKError = false) {
+  if (homeGAAvg == null || awayGAAvg == null) {
+    return { score: null, edge: 'NEUTRAL', assessment: 'No goals-against data available.' };
+  }
   const hVuln = (homeGAAvg / leagueAvgGA) * 40 + (homeCBOut ? 15 : 0);
   const aVuln = (awayGAAvg / leagueAvgGA) * 40 + (awayGKError ? 20 : 0);
 
@@ -347,15 +380,18 @@ function scoreDefensiveGap(homeGAAvg = 1.2, awayGAAvg = 1.2, leagueAvgGA = 1.35,
 // P8 — xG QUALITY DIFFERENTIAL (directional attacking edge)
 // Scores WHO has the xG advantage, not HOW MUCH xG both teams produce.
 // Avoids double-counting with P7 which already incorporates absolute xG magnitudes in Poisson lambdas.
-function scoreXGDifferential(homeXgAvg = 1.35, awayXgAvg = 1.35) {
-  const diff  = (homeXgAvg || 1.35) - (awayXgAvg || 1.35);
-  const ratio = (awayXgAvg || 1.35) > 0 ? (homeXgAvg || 1.35) / (awayXgAvg || 1.35) : 1.0;
+function scoreXGDifferential(homeXgAvg, awayXgAvg) {
+  if (homeXgAvg == null || awayXgAvg == null) {
+    return { score: null, edge: 'NEUTRAL', assessment: 'No xG data available.' };
+  }
+  const diff  = homeXgAvg - awayXgAvg;
+  const ratio = awayXgAvg > 0 ? homeXgAvg / awayXgAvg : 1.0;
   const edge  = ratio > 1.25 ? 'HOME' : ratio < 0.80 ? 'AWAY' : 'NEUTRAL';
   const score = Math.min(Math.max(Math.round(50 + diff * 15), 20), 80);
   return {
     score,
-    homeXgAvg: +(homeXgAvg || 1.35).toFixed(2),
-    awayXgAvg: +(awayXgAvg || 1.35).toFixed(2),
+    homeXgAvg: +homeXgAvg.toFixed(2),
+    awayXgAvg: +awayXgAvg.toFixed(2),
     differential: +diff.toFixed(2),
     ratio: +ratio.toFixed(2),
     edge,
@@ -367,10 +403,13 @@ function scoreXGDifferential(homeXgAvg = 1.35, awayXgAvg = 1.35) {
 // Measures how each team's defence compares to the league average xGA baseline.
 // High score = both defences conceding below average = tighter game likely.
 // Distinct from P6 (gap between the two teams' defences) and P7 (absolute xGA in Poisson lambdas).
-function scoreDefensiveSolidity(homeXgaAvg = 1.35, awayXgaAvg = 1.35) {
+function scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg) {
+  if (homeXgaAvg == null || awayXgaAvg == null) {
+    return { score: null, edge: 'NEUTRAL', assessment: 'No defensive xGA data available.' };
+  }
   const L      = RESEARCH.LEAGUE_AVG_GOALS_PER_GAME;
-  const hBonus = L - (homeXgaAvg || L);  // positive = conceding LESS than league average
-  const aBonus = L - (awayXgaAvg || L);
+  const hBonus = L - homeXgaAvg;  // positive = conceding LESS than league average
+  const aBonus = L - awayXgaAvg;
   const avgBonus = (hBonus + aBonus) / 2;
   const score  = Math.min(Math.max(Math.round(50 + avgBonus * 22), 15), 85);
   const hLabel = hBonus > 0.2 ? 'solid' : hBonus < -0.2 ? 'leaky' : 'average';
@@ -381,10 +420,10 @@ function scoreDefensiveSolidity(homeXgaAvg = 1.35, awayXgaAvg = 1.35) {
   else                  profile = 'Average defensive profiles — neutral goals market signal.';
   return {
     score,
-    homeXgaAvg: +(homeXgaAvg || L).toFixed(2),
-    awayXgaAvg: +(awayXgaAvg || L).toFixed(2),
+    homeXgaAvg: +homeXgaAvg.toFixed(2),
+    awayXgaAvg: +awayXgaAvg.toFixed(2),
     edge: hBonus > aBonus + 0.25 ? 'HOME' : aBonus > hBonus + 0.25 ? 'AWAY' : 'NEUTRAL',
-    assessment: `Home defence ${hLabel} (${(homeXgaAvg||L).toFixed(2)} xGA/game). Away defence ${aLabel} (${(awayXgaAvg||L).toFixed(2)} xGA/game). ${profile}`,
+    assessment: `Home defence ${hLabel} (${homeXgaAvg.toFixed(2)} xGA/game). Away defence ${aLabel} (${awayXgaAvg.toFixed(2)} xGA/game). ${profile}`,
   };
 }
 
@@ -529,10 +568,20 @@ function scoreCrisisMode({
 
 // ─── POISSON PROJECTION ───────────────────────────────────────────────────────
 function runPoisson(hXg, aXg, hXga, aXga) {
+  if (hXg == null || aXg == null || hXga == null || aXga == null) {
+    return {
+      homeLambda: null, awayLambda: null,
+      expectedTotalGoals: null,
+      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null },
+      likelyScore: null,
+      insufficientData: true,
+      assessment: 'Insufficient team statistics for Poisson projection.',
+    };
+  }
   const L = RESEARCH.LEAGUE_AVG_GOALS_PER_GAME;
   // Attack strength × opponent defensive weakness
-  const lH = Math.max(((hXg || L) / L) * ((aXga || L) / L) * L, 0.10);
-  const lA = Math.max(((aXg || L) / L) * ((hXga || L) / L) * L, 0.10);
+  const lH = Math.max((hXg / L) * (aXga / L) * L, 0.10);
+  const lA = Math.max((aXg / L) * (hXga / L) * L, 0.10);
 
   const probs = {
     over05:  Math.round(probOver(lH, lA, 0)  * 100),
@@ -598,24 +647,34 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
       (status === 'HT'     && diff >= 2) ||   // HT 2-goal lead: whole 2nd half to rescue — historically < 5%
       (effectiveMins >= 45 && diff >= 3);      // 3-goal lead past 45'
     if (locked && diff > 0) {
-      const leader = hG > aG ? home : away;
-      let conf;
-      if      (effectiveMins >= 85 && diff >= 2)  conf = Math.min(90 + Math.round((effectiveMins - 85) * 1.2) + diff * 2, 97);
-      else if (effectiveMins >= 75 && diff >= 2)  conf = Math.min(84 + Math.round((effectiveMins - 75) * 0.8) + diff * 2, 96);
-      else if (effectiveMins >= 85 && diff === 1) conf = Math.min(76 + Math.round((effectiveMins - 85) * 1.5), 88);
-      // Halftime-specific: comeback probability from 2+ goals down at HT is historically < 5%
-      else if (status === 'HT' && diff >= 4) conf = 95;
-      else if (status === 'HT' && diff >= 3) conf = 91;
-      else if (status === 'HT' && diff >= 2) conf = 85;
-      // 45–74 minute large lead
-      else conf = Math.min(75 + Math.round((effectiveMins - 45) * 0.35) + diff * 2, 90);
+      // Without team-quality Poisson lambdas we cannot scientifically quantify comeback probability.
+      if (poisson.homeLambda == null || poisson.awayLambda == null) return [];
+      const leader       = hG > aG ? home : away;
+      const leaderIsHome = hG > aG;
+      const minsLeft     = Math.max(90 - effectiveMins, 2);
+      const remainFrac   = minsLeft / 90;
+      const homeRed      = matchData.homeCards?.red || 0;
+      const awayRed      = matchData.awayCards?.red || 0;
+      const homeCardMult = homeRed > 0 ? 0.62 : 1.0;
+      const awayCardMult = awayRed  > 0 ? 0.62 : 1.0;
+      // A team leading by 2+ goals manages the game; the trailer pushes harder.
+      const leaderMotiveMult  = diff >= 2 ? 0.80 : 1.0;
+      const trailerMotiveMult = diff >= 2 ? 1.18 : 1.12;
+      const lLeader_rem  = leaderIsHome
+        ? Math.max(poisson.homeLambda * remainFrac * leaderMotiveMult * homeCardMult, 0.01)
+        : Math.max(poisson.awayLambda * remainFrac * leaderMotiveMult * awayCardMult, 0.01);
+      const lTrailer_rem = leaderIsHome
+        ? Math.max(poisson.awayLambda * remainFrac * trailerMotiveMult * awayCardMult, 0.01)
+        : Math.max(poisson.homeLambda * remainFrac * trailerMotiveMult * homeCardMult, 0.01);
+      const conf     = Math.round(pLeadMaintained(lLeader_rem, lTrailer_rem, diff) * 100);
+      const cardNote = homeRed > 0 ? ` ⚠️ ${home} 10 men.` : awayRed > 0 ? ` ⚠️ ${away} 10 men.` : '';
       return [{
         type: 'WINS_ONLY',
         selection: `${leader} Win`,
         confidence: conf,
         tier: conf >= 85 ? 1 : conf >= 72 ? 2 : 3,
         tierName: conf >= 85 ? TIERS[1].name : conf >= 72 ? TIERS[2].name : TIERS[3].name,
-        logic: `${effectiveMins}' played, ${hG}-${aG}. ${diff}-goal lead. Comeback probability < ${100 - conf}%.`,
+        logic: `${effectiveMins}' played, ${hG}-${aG}. ${diff}-goal lead. P(lead maintained): ${conf}%.${cardNote}`,
       }];
     }
   }
@@ -624,6 +683,8 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
 
   // ── LIVE PATH — remaining-time Poisson, score-state motivation, card-aware ─
   if (isLive) {
+    // Cannot compute Poisson-based live recommendations without team-quality lambdas.
+    if (poisson.homeLambda == null || poisson.awayLambda == null) return [];
     const [hG, aG] = score.split('-').map(n => parseInt(n, 10) || 0);
     const totalGoals = hG + aG;
     const scoreDiff  = hG - aG;   // positive = home leading
@@ -657,12 +718,14 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
 
     // ── Win recommendation (time-scaled, card-boosted) ──
     if (scoreDiff !== 0) {
-      const leader     = scoreDiff > 0 ? home : away;
-      const loser      = scoreDiff > 0 ? away : home;
-      const timeFactor = Math.min(matchMinutes / 90, 1.0);
-      // Extra confidence when the losing team also has a red card
-      const cardBonus  = (scoreDiff > 0 && awayRed > 0) ? 8 : (scoreDiff < 0 && homeRed > 0) ? 8 : 0;
-      const winConf    = Math.round(Math.min(28 + absDiff * 18 + timeFactor * 38 + absDiff * 4 + cardBonus, 97));
+      const leader       = scoreDiff > 0 ? home : away;
+      const loser        = scoreDiff > 0 ? away : home;
+      // lH_rem and lA_rem already encode: time fraction, motivation state, and red card penalty.
+      // pLeadMaintained computes P(trailer fails to close gap) via bivariate Poisson.
+      const leaderIsHome = scoreDiff > 0;
+      const lLeader      = leaderIsHome ? lH_rem : lA_rem;
+      const lTrailer     = leaderIsHome ? lA_rem : lH_rem;
+      const winConf      = Math.round(pLeadMaintained(lLeader, lTrailer, absDiff) * 100);
       if (winConf >= 52) {
         const tier     = winConf >= 85 ? 1 : winConf >= 72 ? 2 : winConf >= 62 ? 3 : 4;
         const cardNote = homeRed > 0 ? ` ⚠️ ${home} 10 men.` : awayRed > 0 ? ` ⚠️ ${away} 10 men.` : '';
@@ -943,11 +1006,11 @@ export function analyzeV9(matchData = {}) {
     status = 'NS', matchMinutes = 0, score = '0-0',
     homeSquadIntegrity = 90, awaySquadIntegrity = 90,
     homeKeyAbsences = [], awayKeyAbsences = [],
-    homeForm = 'W-L-D-W-L', awayForm = 'W-L-D-W-L',  // genuinely neutral: 2W 1D 2L each
-    homeGoalsAvgFor = 1.35, awayGoalsAvgFor = 1.35,
-    homeGoalsAvgAgainst = 1.35, awayGoalsAvgAgainst = 1.35,
-    homeXgAvg = 1.35, awayXgAvg = 1.35,
-    homeXgaAvg = 1.35, awayXgaAvg = 1.35,
+    homeForm = null, awayForm = null,
+    homeGoalsAvgFor = null, awayGoalsAvgFor = null,
+    homeGoalsAvgAgainst = null, awayGoalsAvgAgainst = null,
+    homeXgAvg = null, awayXgAvg = null,
+    homeXgaAvg = null, awayXgaAvg = null,
     h2hHistory = [],
     homeLateGoalPct = 0.20, awayLateGoalPct = 0.20,
     homeConversionPct = 10, awayConversionPct = 10,
@@ -980,7 +1043,7 @@ export function analyzeV9(matchData = {}) {
   // The Poisson lambdas are full-game averages. For a live match we scale them to
   // remaining time and add current score → real projected final score.
   const LIVE_STATUSES_V9 = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
-  if (LIVE_STATUSES_V9.has(status)) {
+  if (LIVE_STATUSES_V9.has(status) && poi.homeLambda != null && poi.awayLambda != null) {
     const [hG, aG] = (score || '0-0').split('-').map(n => parseInt(n, 10) || 0);
     const effMins  = (status === 'HT' && matchMinutes < 45) ? 45 : matchMinutes;
     const minsLeft = Math.max(90 - effMins, 0);
@@ -1010,24 +1073,31 @@ export function analyzeV9(matchData = {}) {
   const p14 = scoreLifecycle(gameWeek, totalGW);
   const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
 
-  // ── Weighted composite score (V8: 15 parameters + league scalar) ──────────
-  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 0.93; // unknown = slight uncertainty penalty
-  const rawScore =
-    p1.score  * W.p1_motivation  +
-    p2.score  * W.p2_starPower   +
-    p3.score  * W.p3_h2h         +
-    p4.score  * W.p4_form        +
-    p5.score  * W.p5_scoringTiming +
-    p6.score  * W.p6_defensiveGap +
-    p7.score  * W.p7_poisson     +
-    p8.score  * W.p8_xg          +
-    p9.score  * W.p9_xga         +
-    p10.score * W.p10_pace       +
-    p11.score * W.p11_homeAdvantage +
-    p12.score * W.p12_market       +
-    p13.score * W.p13_squad      +
-    p14.score * W.p14_lifecycle  +
-    p15.score * W.p15_crisis;
+  // ── Weighted composite score (V9: 15 parameters + league scalar) ──────────
+  // Parameters with no data (null score) are excluded; remaining weights are
+  // rescaled proportionally so the composite always sums to 100%.
+  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 0.93;
+  const paramScores = [
+    [p1.score,  W.p1_motivation],
+    [p2.score,  W.p2_starPower],
+    [p3.score,  W.p3_h2h],
+    [p4.score,  W.p4_form],
+    [p5.score,  W.p5_scoringTiming],
+    [p6.score,  W.p6_defensiveGap],
+    [p7.score,  W.p7_poisson],
+    [p8.score,  W.p8_xg],
+    [p9.score,  W.p9_xga],
+    [p10.score, W.p10_pace],
+    [p11.score, W.p11_homeAdvantage],
+    [p12.score, W.p12_market],
+    [p13.score, W.p13_squad],
+    [p14.score, W.p14_lifecycle],
+    [p15.score, W.p15_crisis],
+  ].filter(([s]) => s != null);
+  const totalWeight = paramScores.reduce((acc, [, w]) => acc + w, 0);
+  const rawScore = totalWeight > 0
+    ? paramScores.reduce((acc, [s, w]) => acc + s * (w / totalWeight), 0)
+    : 50;
   const overall = Math.round(Math.min(rawScore * scalar, 100));
 
   // ── Chaos variables ────────────────────────────────────────────────────────

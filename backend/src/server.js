@@ -649,18 +649,10 @@ async function analyzeMatch(match) {
     } else {
       // Live match (always fresh) or no calibration — run V9 with actual live data
       const liveMin = liveElapsed || matchMinutesElapsed || 0;
-      // Per-league xG baselines
-      const LEAGUE_XG = {
-        39:  [1.55, 1.35], 40:  [1.45, 1.35], 78:  [1.70, 1.50], 79:  [1.55, 1.40],
-        135: [1.15, 1.05], 61:  [1.15, 1.05], 140: [1.30, 1.20], 88:  [1.65, 1.45],
-        71:  [1.45, 1.30], 94:  [1.30, 1.20], 144: [1.40, 1.30], 235: [1.25, 1.15],
-        307: [1.20, 1.10], 2:   [1.35, 1.25], 3:   [1.30, 1.25], 179: [1.40, 1.30],
-      };
-      const [defHomeXg, defAwayXg] = LEAGUE_XG[league.id] || [1.35, 1.35];
 
       // ── Fetch real team form, H2H + league standings from API-Football (cached) ──
-      let homeFormStr = 'W-L-D-W-L';
-      let awayFormStr = 'W-L-D-W-L';
+      let homeFormStr = null;
+      let awayFormStr = null;
       let h2hHistory = [];
       let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20;
       let gameWeek = 30;
@@ -721,17 +713,17 @@ async function analyzeMatch(match) {
         status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
-        // Attack quality: prefer live match xG, then team's season goals avg, then league default
-        homeXgAvg:  xg.home > 0 ? xg.home : (homeAvgGF ?? defHomeXg),
-        awayXgAvg:  xg.away > 0 ? xg.away : (awayAvgGF ?? defAwayXg),
+        // Attack quality: prefer live match xG, then team's season goals avg
+        homeXgAvg:  xg.home > 0 ? xg.home : homeAvgGF,
+        awayXgAvg:  xg.away > 0 ? xg.away : awayAvgGF,
         // Defensive quality: team's season goals-conceded avg (correct Poisson input)
-        homeXgaAvg: xg.away > 0 ? xg.away : (homeAvgGA ?? defAwayXg),
-        awayXgaAvg: xg.home > 0 ? xg.home : (awayAvgGA ?? defHomeXg),
+        homeXgaAvg: xg.away > 0 ? xg.away : homeAvgGA,
+        awayXgaAvg: xg.home > 0 ? xg.home : awayAvgGA,
         // Season goal averages fed to P4 coiled spring and P6 defensive gap
-        homeGoalsAvgFor:     homeAvgGF ?? defHomeXg,
-        awayGoalsAvgFor:     awayAvgGF ?? defAwayXg,
-        homeGoalsAvgAgainst: homeAvgGA ?? defAwayXg,
-        awayGoalsAvgAgainst: awayAvgGA ?? defHomeXg,
+        homeGoalsAvgFor:     homeAvgGF,
+        awayGoalsAvgFor:     awayAvgGF,
+        homeGoalsAvgAgainst: homeAvgGA,
+        awayGoalsAvgAgainst: awayAvgGA,
         homePossession: possession.home || 50,
         homeShotsPerGame: shots.home || 10,
         awayShotsPerGame: shots.away || 10,
@@ -1589,8 +1581,8 @@ app.post('/api/analyze', async (req, res) => {
         if (hs.form) enriched.homeForm = hs.form.split('').join('-');
         if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsFor)     > 0) enriched.homeXgAvg           = parseFloat(hs.avgGoalsFor);
         if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsAgainst) > 0) enriched.homeXgaAvg          = parseFloat(hs.avgGoalsAgainst);
-        enriched.homeGoalsAvgFor      = parseFloat(hs.avgGoalsFor)     || enriched.homeXgAvg  || 1.35;
-        enriched.homeGoalsAvgAgainst  = parseFloat(hs.avgGoalsAgainst) || enriched.homeXgaAvg || 1.35;
+        enriched.homeGoalsAvgFor      = parseFloat(hs.avgGoalsFor)     || enriched.homeXgAvg;
+        enriched.homeGoalsAvgAgainst  = parseFloat(hs.avgGoalsAgainst) || enriched.homeXgaAvg;
         if (hs.goalDrought  != null) enriched.homeGoalDrought  = hs.goalDrought;
         if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
       }
@@ -1599,8 +1591,8 @@ app.post('/api/analyze', async (req, res) => {
         if (as.form) enriched.awayForm = as.form.split('').join('-');
         if (!enriched.hasLiveXg && parseFloat(as.avgGoalsFor)     > 0) enriched.awayXgAvg           = parseFloat(as.avgGoalsFor);
         if (!enriched.hasLiveXg && parseFloat(as.avgGoalsAgainst) > 0) enriched.awayXgaAvg          = parseFloat(as.avgGoalsAgainst);
-        enriched.awayGoalsAvgFor      = parseFloat(as.avgGoalsFor)     || enriched.awayXgAvg  || 1.35;
-        enriched.awayGoalsAvgAgainst  = parseFloat(as.avgGoalsAgainst) || enriched.awayXgaAvg || 1.35;
+        enriched.awayGoalsAvgFor      = parseFloat(as.avgGoalsFor)     || enriched.awayXgAvg;
+        enriched.awayGoalsAvgAgainst  = parseFloat(as.avgGoalsAgainst) || enriched.awayXgaAvg;
         if (as.goalDrought  != null) enriched.awayGoalDrought  = as.goalDrought;
         if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
       }
@@ -2032,18 +2024,18 @@ async function runCalibration() {
         // ── Team form strings ──────────────────────────────────────────────────
         homeForm: Array.isArray(f.home?.recentForm)
           ? f.home.recentForm.join('-')
-          : (matchMeta.homeForm || 'W-L-D-W-L'),
+          : (matchMeta.homeForm || null),
         awayForm: Array.isArray(f.away?.recentForm)
           ? f.away.recentForm.join('-')
-          : (matchMeta.awayForm || 'W-L-D-W-L'),
+          : (matchMeta.awayForm || null),
         // ── Squad quality ──────────────────────────────────────────────────────
         homeSquadIntegrity: f.home?.squadIntegrity || 85,
         awaySquadIntegrity: f.away?.squadIntegrity || 85,
         // ── Goal expectation ──────────────────────────────────────────────────
-        homeXgAvg:  f.home?.xgAvg  || 1.35,
-        awayXgAvg:  f.away?.xgAvg  || 1.35,
-        homeXgaAvg: f.home?.xgaAvg || 1.35,
-        awayXgaAvg: f.away?.xgaAvg || 1.35,
+        homeXgAvg:  f.home?.xgAvg  || null,
+        awayXgAvg:  f.away?.xgAvg  || null,
+        homeXgaAvg: f.home?.xgaAvg || null,
+        awayXgaAvg: f.away?.xgaAvg || null,
         // ── Conversion / shots ────────────────────────────────────────────────
         homeConversionPct: f.home?.conversionPct || 11,
         awayConversionPct: f.away?.conversionPct || 10,
