@@ -263,7 +263,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   const probs = poisson?.probabilities || {};
 
   const topPicks = recommendations
-    .slice(0, 3)
     .map(r => ({
       ...r,
       selection: typeof r.selection === 'object'
