@@ -75,6 +75,10 @@ app.use(express.json());
 // No database needed for MVP - data stored in memory
 let liveMatches = [];
 let upcomingMatches = [];
+// Per-match analysis cache: avoids re-running 8 API calls per match on every poll.
+// Invalidated when score changes or after 5 minutes.
+const liveAnalysisCache = new Map(); // matchId → { result, score, timestamp }
+const LIVE_ANALYSIS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 let alerts = [];
 let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
@@ -698,6 +702,34 @@ async function analyzeMatch(match) {
     const fixture = match.fixture || {};
     const goals = match.goals || {};
     const stats = match.statistics || [];
+
+    // ── Per-match analysis cache ──────────────────────────────────────────────
+    // The 8 API calls (form, H2H, standings, stats×2, injuries×2) are expensive.
+    // Reuse cached analysis if the score hasn't changed and it's < 5 minutes old.
+    const matchId = fixture.id;
+    const currentScore = `${goals.home ?? 0}-${goals.away ?? 0}`;
+    if (matchId) {
+      const cached = liveAnalysisCache.get(matchId);
+      if (cached && cached.score === currentScore && (Date.now() - cached.timestamp) < LIVE_ANALYSIS_CACHE_TTL) {
+        // Update only real-time fields; keep expensive analysis from cache
+        const homeStats = (stats && stats[0]) ? stats[0].statistics || [] : [];
+        const awayStats = (stats && stats[1]) ? stats[1].statistics || [] : [];
+        const getStat = (arr, key) => { const s = arr.find(s => s.type === key); return (!s || s.value == null) ? 0 : (typeof s.value === 'number' ? s.value : parseFloat(s.value) || 0); };
+        const liveElapsed = typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0;
+        return {
+          ...cached.result,
+          score: currentScore,
+          matchMinutes: liveElapsed || cached.result.matchMinutes,
+          possession: { home: getStat(homeStats, 'Ball Possession'), away: getStat(awayStats, 'Ball Possession') },
+          shots:       { home: getStat(homeStats, 'Shots on Goal'),   away: getStat(awayStats, 'Shots on Goal') },
+          xg:          { home: getStat(homeStats, 'expected_goals'),  away: getStat(awayStats, 'expected_goals') },
+          cards: {
+            home: { yellow: getStat(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
+            away: { yellow: getStat(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
+          },
+        };
+      }
+    }
     const teams = match.teams || {};
     const league = match.league || {};
 
@@ -979,6 +1011,10 @@ async function analyzeMatch(match) {
     const result = sanitizeMatch(analyzed);
     if (analysisObj) result.analysis = analysisObj;
     if (kickoffUTC) result.kickoffUTC = kickoffUTC;
+    // Store in per-match cache so the next poll reuses this analysis
+    if (matchId) {
+      liveAnalysisCache.set(matchId, { result, score: currentScore, timestamp: Date.now() });
+    }
     return result;
   } catch (error) {
     console.error('❌ Error analyzing match:', error.message);
@@ -1117,10 +1153,9 @@ async function pollUpcomingMatches() {
   }
 }
 
-// Start polling with adaptive frequency based on data source
-// API-Football mode: fast polling (5s default)
-// Gemini mode: slow polling (every 5s cron, but cache TTL prevents actual Gemini calls more than every 5 min)
-const pollInterval = process.env.LIVE_POLL_INTERVAL || 5;
+// Start polling — 30s default keeps well within API-Football's 300 req/min rate limit
+// even when 20+ live matches are being analyzed (1 fixture call + cached analysis).
+const pollInterval = process.env.LIVE_POLL_INTERVAL || 30;
 cron.schedule(`*/${pollInterval} * * * * *`, async () => {
   try {
     // Poll live matches
