@@ -10,6 +10,7 @@ export function BetLogger() {
     odds: '',
     stake: '',
     confidence: '',
+    closingOdds: '',
     leagueName: '',
   });
   const [loading, setLoading] = useState(false);
@@ -17,7 +18,7 @@ export function BetLogger() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    const numericFields = ['odds', 'stake', 'confidence'];
+    const numericFields = ['odds', 'stake', 'confidence', 'closingOdds'];
     setFormData((prev) => ({
       ...prev,
       [name]: numericFields.includes(name) ? parseFloat(value) || '' : value,
@@ -38,6 +39,7 @@ export function BetLogger() {
         odds: '',
         stake: '',
         confidence: '',
+        closingOdds: '',
         leagueName: '',
       });
       setTimeout(() => {
@@ -133,6 +135,17 @@ export function BetLogger() {
             min="1"
             max="100"
             value={formData.confidence}
+            onChange={handleChange}
+            className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
+          />
+
+          <input
+            type="number"
+            name="closingOdds"
+            placeholder="Closing odds (optional, for CLV tracking)"
+            step="0.01"
+            min="1"
+            value={formData.closingOdds}
             onChange={handleChange}
             className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
           />

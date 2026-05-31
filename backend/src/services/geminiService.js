@@ -611,7 +611,7 @@ export async function enrichFixturesWithGemini(fixtureList) {
           results.push(enriched);
         }
       } else {
-        // All providers failed for this batch — caller uses buildDefaultFixture (hash-seeded)
+        // All providers failed for this batch — fixtures are skipped (no placeholders used)
         console.warn(`[Enrich] batch ${batchNum} all providers failed — using hash defaults for: ${batch.map(f => `${f.home} vs ${f.away}`).join(', ')}`);
       }
     }

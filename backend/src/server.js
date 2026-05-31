@@ -973,6 +973,7 @@ setTimeout(() => {
 cron.schedule('0 0,6,12,18 * * *', () => {
   console.log('[AutoCal] Scheduled 6-hour recalibration starting...');
   runCalibration().catch(err => console.error('[AutoCal] Scheduled failed:', err.message));
+  purgeOldPredictions().catch(err => console.warn('[AutoCal] Prediction purge failed:', err.message));
 });
 
 // ─── ALERT PERSISTENCE ────────────────────────────────────────────────────
@@ -1467,7 +1468,12 @@ app.get('/api/bets/patterns', async (req, res) => {
       : null;
     const calibrationGap = (winRate != null && avgConf != null)
       ? +(winRate - avgConf).toFixed(1) : null;
-    return { settled: total, won, lost: total - won, winRate, avgConf, calibrationGap };
+    // CLV: only when both entry odds and closing odds are recorded
+    const betsWithCLV = items.filter(b => b.closingOdds != null && b.odds != null && Number(b.closingOdds) > 0);
+    const avgCLV = betsWithCLV.length >= 3
+      ? +(betsWithCLV.reduce((s, b) => s + ((Number(b.odds) - Number(b.closingOdds)) / Number(b.closingOdds)) * 100, 0) / betsWithCLV.length).toFixed(2)
+      : null;
+    return { settled: total, won, lost: total - won, winRate, avgConf, calibrationGap, avgCLV, clvSampleSize: betsWithCLV.length };
   }
 
   function detectFlag(stats, label) {
@@ -1903,177 +1909,75 @@ app.post('/api/analyze/natural', async (req, res) => {
   }
 });
 
-// ─── SHARED CALIBRATION LOGIC ────────────────────────────────────────────────
+// ─── CALIBRATION ENGINE ──────────────────────────────────────────────────────
 
 /**
- * Build a minimal fixture object with neutral defaults from a bare fixture list entry.
- * Used as a fallback when Gemini enrichment is unavailable (quota exhausted).
- * Analytics are neutral defaults — V9 engine will still score the match.
- * @param {{ home, away, league, leagueId, country, kickoffUTC }} f
+ * Compute Brier Score and Log Loss from settled bets that have a confidence value.
+ * Returns null when fewer than 5 settled bets with confidence exist.
  */
-// djb2 hash — gives each match a unique seed without any API call
-function hashStr(s) {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h) ^ s.charCodeAt(i); h = h >>> 0; }
-  return h;
-}
+function computeCalibrationHealth(settledBets) {
+  const withConf = settledBets.filter(b => b.confidence != null && (b.result === 'won' || b.result === 'lost'));
+  if (withConf.length < 5) return null;
 
-function buildDefaultFixture(f) {
-  const leagueId   = f.leagueId || 0;
-  const leagueName = (f.league || '').toLowerCase();
-
-  // ── Classify competition type ───────────────────────────────────────────────
-  const isUEFAKnockout = [2, 3, 848].includes(leagueId) ||
-    leagueName.includes('europa') || leagueName.includes('conference') || leagueName.includes('champions');
-  const isDomesticCup  = !isUEFAKnockout && (
-    leagueName.includes('cup') || leagueName.includes('copa') || leagueName.includes('coupe')
-    || leagueName.includes('pokal') || leagueName.includes('vase') || f.isKnockout === true
-  );
-  const isTopLeague    = [39, 140, 78, 61, 135].includes(leagueId);
-  const isMidLeague    = [64, 88, 144, 179, 203, 235, 253, 307, 94].includes(leagueId);
-
-  // ── Set context per competition tier ───────────────────────────────────────
-  // UEFA knockouts: both finalists/semifinalists — max motivation, strong form
-  // Domestic cup: knockout game — high urgency, moderate form unknown
-  // Top-5 league end of season: title/relegation/European spots at stake
-  // Mid-tier league: moderate competitive stakes
-  // Other: baseline defaults
-  let homePos, awayPos, homePoints, awayPoints, totalTeams, gameWeek, totalGW,
-      homeForm, awayForm, homeXg, awayXg, homeXga, awayXga, squadInt,
-      homeStar, homeShotsAvg, awayShotsAvg, h2hHW, h2hAW, h2hD, h2hGoals, bttsRate,
-      homeConv, awayConv;
-
-  if (isUEFAKnockout || isDomesticCup) {
-    // Knockout stage — survival motivation maxed for both sides
-    // Simulate as "late stage of a 14-round knockout" (lifecycle ≈ 0.93 → "Death Run")
-    homePos = 1; awayPos = 2;
-    homePoints = 24; awayPoints = 21;  // knockout points (wins × 3)
-    totalTeams = 8; gameWeek = 13; totalGW = 14;
-    homeForm = 'W-W-D-W-W'; awayForm = 'W-W-W-D-W';
-    homeXg = 1.7; awayXg = 1.5;
-    homeXga = 1.0; awayXga = 1.1;
-    squadInt = 88;
-    homeStar = 3; homeShotsAvg = 15; awayShotsAvg = 13;
-    homeConv = 14; awayConv = 13;
-    h2hHW = 2; h2hAW = 2; h2hD = 1; h2hGoals = 3.2; bttsRate = 0.65;
-  } else if (isTopLeague) {
-    // Top-5 European league, end of season (GW35/38 → lifecycle 0.92 → "End-Game")
-    // Home side assumed to have mild advantage (upper-mid table vs lower-mid)
-    homePos = 6; awayPos = 15;
-    homePoints = 54; awayPoints = 36;
-    totalTeams = 20; gameWeek = 35; totalGW = 38;
-    homeForm = 'W-D-W-D-W'; awayForm = 'L-D-L-W-D';
-    homeXg = 1.6; awayXg = 1.1;
-    homeXga = 1.1; awayXga = 1.6;
-    squadInt = 86;
-    homeStar = 2; homeShotsAvg = 14; awayShotsAvg = 10;
-    homeConv = 12; awayConv = 10;
-    h2hHW = 3; h2hAW = 2; h2hD = 5; h2hGoals = 2.5; bttsRate = 0.55;
-  } else if (isMidLeague) {
-    // Mid-tier European / international league — neutral defaults, slight home edge
-    homePos = 7; awayPos = 10;
-    homePoints = 42; awayPoints = 36;
-    totalTeams = 18; gameWeek = 28; totalGW = 34;
-    homeForm = 'W-D-W-L-W'; awayForm = 'D-L-W-D-L';
-    homeXg = 1.4; awayXg = 1.2;
-    homeXga = 1.2; awayXga = 1.4;
-    squadInt = 82;
-    homeStar = 2; homeShotsAvg = 12; awayShotsAvg = 10;
-    homeConv = 11; awayConv = 10;
-    h2hHW = 3; h2hAW = 3; h2hD = 4; h2hGoals = 2.4; bttsRate = 0.52;
-  } else {
-    // Lower / international / unknown league — conservative defaults
-    homePos = 8; awayPos = 11;
-    homePoints = 35; awayPoints = 28;
-    totalTeams = 16; gameWeek = 22; totalGW = 30;
-    homeForm = 'W-D-L-W-D'; awayForm = 'L-D-W-L-D';
-    homeXg = 1.2; awayXg = 1.1;
-    homeXga = 1.3; awayXga = 1.4;
-    squadInt = 78;
-    homeStar = 1; homeShotsAvg = 11; awayShotsAvg = 9;
-    homeConv = 10; awayConv = 9;
-    h2hHW = 3; h2hAW = 3; h2hD = 4; h2hGoals = 2.3; bttsRate = 0.50;
+  const N = withConf.length;
+  let brierSum = 0, logLossSum = 0, wins = 0;
+  for (const b of withConf) {
+    const p = Math.min(Math.max(Number(b.confidence) / 100, 0.0001), 0.9999);
+    const y = b.result === 'won' ? 1 : 0;
+    brierSum   += (p - y) ** 2;
+    logLossSum += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
+    if (y) wins++;
   }
 
-  // ── Per-match seed: gives each game unique realistic values without any LLM ──
-  const _seed = hashStr(`${f.home || ''}|${f.away || ''}|${leagueId}`);
-  const _jit  = (v, s) => +Math.max(0.3, v + ((_seed % (s * 200 + 1)) / 100 - s)).toFixed(2);
-  const _HOME_FORMS = ['W-D-L-W-D','W-W-D-L-W','D-W-D-W-L','W-L-W-D-W','D-W-W-D-L','W-D-W-L-D'];
-  const _AWAY_FORMS = ['L-D-W-L-D','D-L-L-W-D','L-W-D-L-D','D-L-W-D-L','L-D-D-W-L','W-D-L-D-L'];
-  homeXg       = _jit(homeXg,  0.3);
-  awayXg       = _jit(awayXg,  0.25);
-  homeXga      = _jit(homeXga, 0.2);
-  awayXga      = _jit(awayXga, 0.2);
-  homePos      = Math.max(1, Math.min(totalTeams - 1, homePos      + (_seed % 9) - 4));
-  awayPos      = Math.max(homePos + 1, Math.min(totalTeams, awayPos + ((_seed >>> 4) % 9) - 4));
-  homeShotsAvg = Math.max(6, Math.round(homeShotsAvg + ((_seed >>> 8)  % 5) - 2));
-  awayShotsAvg = Math.max(5, Math.round(awayShotsAvg + ((_seed >>> 12) % 5) - 2));
-  homeForm     = _HOME_FORMS[(_seed >>> 1) % _HOME_FORMS.length];
-  awayForm     = _AWAY_FORMS[(_seed >>> 5) % _AWAY_FORMS.length];
+  const brier   = +(brierSum   / N).toFixed(4);
+  const logLoss = +(logLossSum / N).toFixed(4);
+  const winRate = +(wins / N * 100).toFixed(1);
+  const avgConf = +(withConf.reduce((s, b) => s + Number(b.confidence), 0) / N).toFixed(1);
+  const calGap  = +(winRate - avgConf).toFixed(1);
+
+  const brierStatus   = brier   < 0.18 ? '🟢 EXCELLENT' : brier   < 0.22 ? '🟢 GOOD' : brier   < 0.25 ? '🟡 FAIR' : '🔴 POOR';
+  const logLossStatus = logLoss < 0.30 ? '🟢 EXCELLENT' : logLoss < 0.35 ? '🟢 GOOD' : logLoss < 0.40 ? '🟡 FAIR' : '🔴 POOR';
+  const calStatus     = Math.abs(calGap) < 10
+    ? '🟢 WELL CALIBRATED'
+    : calGap < -20 ? '🔴 OVERCONFIDENT'
+    : calGap >  20 ? '🟡 UNDERCONFIDENT'
+    : '🟡 SLIGHT DEVIATION';
 
   return {
-    match: {
-      home: f.home, away: f.away,
-      league: f.league || 'Unknown',
-      leagueId,
-      country: f.country || '',
-      status: 'NS', minute: 0, homeScore: 0, awayScore: 0,
-      kickoffUTC: f.kickoffUTC || null,
-      // Context fields consumed by runCalibration → analyzeV9
-      homePosition: homePos,  awayPosition: awayPos,
-      homePoints,             awayPoints,
-      totalTeams,             gameWeek,     totalGW,
-      homeForm,               awayForm,
-      round: f.round || null,
-      notes: f.notes || null,
-    },
-    home: {
-      motivationScore: isUEFAKnockout || isDomesticCup ? 9 : isTopLeague ? 7 : 6,
-      starPlayers: homeStar,
-      starPlayersMissing: 0,
-      recentForm: homeForm.split('-'),
-      goalsScored:    [2, 1, 2, 1, 2].map(v => Math.round(v * (homeXg / 1.5))),
-      goalsConceded:  [0, 1, 1, 0, 1].map(v => Math.round(v * (homeXga / 1.0))),
-      xgAvg: homeXg, xgaAvg: homeXga,
-      pace: isUEFAKnockout ? 8 : 6,
-      leaguePosition: homePos,
-      squadIntegrity: squadInt,
-      conversionPct: homeConv,
-      shotsPerGame: homeShotsAvg,
-    },
-    away: {
-      motivationScore: isUEFAKnockout || isDomesticCup ? 9 : isTopLeague ? 5 : 5,
-      starPlayers: homeStar,
-      starPlayersMissing: 0,
-      recentForm: awayForm.split('-'),
-      goalsScored:    [1, 1, 2, 1, 1].map(v => Math.round(v * (awayXg / 1.2))),
-      goalsConceded:  [1, 1, 0, 1, 2].map(v => Math.round(v * (awayXga / 1.3))),
-      xgAvg: awayXg, xgaAvg: awayXga,
-      pace: isUEFAKnockout ? 7 : 5,
-      leaguePosition: awayPos,
-      squadIntegrity: squadInt,
-      conversionPct: awayConv,
-      shotsPerGame: awayShotsAvg,
-    },
-    h2h: { homeWins: h2hHW, awayWins: h2hAW, draws: h2hD, avgGoals: h2hGoals, bttsRate },
-    odds: {
-      homeWin: isUEFAKnockout ? 1.9 : 2.2,
-      draw: 3.2,
-      awayWin: isUEFAKnockout ? 2.0 : 3.3,
-      over25: isUEFAKnockout ? 1.65 : 1.85,
-      btts: isUEFAKnockout ? 1.70 : 1.85,
-    },
-    context: {
-      neutralVenue: false, earlyGoal: false, redCard: false,
-      gameWeek, totalGameWeeks: totalGW,
-      homePoints, awayPoints,
-      homePosition: homePos, awayPosition: awayPos,
-      totalTeams,
-      homeGoalDifferential: Math.round(homeXg * gameWeek * 0.3),
-      awayGoalDifferential: Math.round(awayXg * gameWeek * 0.2),
-      timezone: 'UTC',
-    },
+    sampleSize: N,
+    brierScore: brier,    brierStatus,
+    logLoss,              logLossStatus,
+    winRate,
+    avgStatedConfidence: avgConf,
+    calibrationGap: calGap,
+    calibrationStatus: calStatus,
+    halt:    brier > 0.25 || logLoss > 0.45,
+    caution: brier > 0.22 || logLoss > 0.40,
   };
+}
+
+/**
+ * Purge prediction records older than 90 days from Firestore.
+ * Called from the 6-hour scheduled cron to keep storage lean.
+ */
+async function purgeOldPredictions() {
+  const db = getDb();
+  if (!db) return;
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const snap = await db.collection('predictions')
+      .where('predictedAt', '<', cutoff.toISOString())
+      .limit(500)
+      .get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    console.log(`[Predictions] Purged ${snap.size} records older than 90 days`);
+  } catch (err) {
+    console.warn('[Predictions] Purge failed:', err.message);
+  }
 }
 
 /**
@@ -2084,6 +1988,13 @@ function buildDefaultFixture(f) {
  */
 async function runCalibration() {
   console.log('[Calibrate] Starting day calibration (API-Football → TheSportsDB → Gemini Search)...');
+
+  // ── Flush stale data before fetching fresh ────────────────────────────────
+  calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
+  upcomingMatches = [];
+  cache.upcomingMatches = { data: [], timestamp: 0 };
+  console.log('[Calibrate] Flushed stale state. Running fresh calibration...');
+
   let raw = [];
   let dataSource = 'unknown';
 
@@ -2108,10 +2019,7 @@ async function runCalibration() {
         raw = enriched;
         dataSource = 'API-Football + Gemini';
       } else {
-        // Gemini enrichment failed (quota exhausted etc.) — use raw fixtures with neutral defaults
-        raw = fixtureList.map(f => buildDefaultFixture(f));
-        dataSource = 'API-Football (no Gemini)';
-        console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} API-Football fixtures with default analytics`);
+        console.log('[Calibrate] Enrichment unavailable for API-Football fixtures — trying next source');
       }
     }
   }
@@ -2140,10 +2048,7 @@ async function runCalibration() {
           raw = enriched;
           dataSource = 'TheSportsDB + Gemini';
         } else {
-          // Gemini enrichment failed — use raw fixtures with neutral defaults
-          raw = fixtureList.map(f => buildDefaultFixture(f));
-          dataSource = 'TheSportsDB (no Gemini)';
-          console.log(`[Calibrate] Gemini enrichment unavailable — using ${raw.length} TheSportsDB fixtures with default analytics`);
+          console.log('[Calibrate] Enrichment unavailable for TheSportsDB fixtures — trying Gemini Search');
         }
       }
     }
@@ -2173,7 +2078,7 @@ async function runCalibration() {
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
-        // ── Competition context (from buildDefaultFixture / Gemini enrichment) ──
+        // ── Competition context (from Gemini/Groq enrichment) ──
         homePosition:      f.home?.leaguePosition  || f.context?.homePosition  || matchMeta.homePosition  || 10,
         awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
         homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
@@ -2243,11 +2148,21 @@ async function runCalibration() {
   }
 
   const highConfidence = analyzed.filter(m => m.confidence >= 80);
+  // ── Compute calibration health from settled bets ─────────────────────────
+  const _settledBets = bets.filter(b => b.result === 'won' || b.result === 'lost');
+  const calibrationHealth = computeCalibrationHealth(_settledBets);
+  if (calibrationHealth?.halt) {
+    console.warn(`[Calibrate] ⚠️  Model health: ${calibrationHealth.calibrationStatus} — Brier ${calibrationHealth.brierScore}, LogLoss ${calibrationHealth.logLoss}`);
+  } else if (calibrationHealth) {
+    console.log(`[Calibrate] Model health: ${calibrationHealth.calibrationStatus} (Brier ${calibrationHealth.brierScore}, n=${calibrationHealth.sampleSize})`);
+  }
+
   calibrationStore = {
     matches: analyzed,
     highConfidence,
     calibratedAt: new Date().toISOString(),
     totalScanned: raw.length,
+    calibrationHealth,
   };
 
   // Persist to Firestore so calibration survives server restarts
@@ -2259,43 +2174,87 @@ async function runCalibration() {
         highConfidence,
         calibratedAt: calibrationStore.calibratedAt,
         totalScanned: raw.length,
+        calibrationHealth,
         savedAt: new Date().toISOString(),
       });
       console.log(`🔥 Calibration persisted to Firestore (${analyzed.length} matches)`);
     } catch (err) {
       console.warn('⚠️  Calibration Firestore save failed:', err.message);
     }
+
+    // ── Track forward predictions for long-term calibration measurement ──────
+    if (analyzed.length > 0) {
+      try {
+        const predBatch = _calDb.batch();
+        const today = new Date().toISOString().split('T')[0];
+        const deleteAfter = new Date();
+        deleteAfter.setDate(deleteAfter.getDate() + 90);
+        for (const m of analyzed) {
+          const docRef = _calDb.collection('predictions').doc(
+            `${m.id}_${today}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+          );
+          predBatch.set(docRef, {
+            matchId: m.id,
+            home: m.home, away: m.away,
+            league: m.league, leagueId: m.leagueId || 0,
+            kickoffUTC: m.kickoffUTC || null,
+            confidence: m.confidence || 0,
+            recommendations: (m.analysis?.recommendations || []).slice(0, 3).map(r => ({
+              type: r.type, selection: r.selection, confidence: r.confidence,
+            })),
+            predictedAt: calibrationStore.calibratedAt,
+            deleteAfter: deleteAfter.toISOString(),
+            outcome: null,
+            settledAt: null,
+          }, { merge: false });
+        }
+        await predBatch.commit();
+        console.log(`[Calibrate] ${analyzed.length} predictions stored in Firestore (TTL: 90 days)`);
+      } catch (predErr) {
+        console.warn('[Calibrate] Prediction tracking save failed:', predErr.message);
+      }
+    }
   }
 
-  // ── Send WhatsApp alerts for high-confidence calibration matches ─────────
+  // ── Two-tier WhatsApp alerts ──────────────────────────────────────────────
+  // 80%+ → 🏆 HIGH CONFIDENCE (premium)
+  // 65–79% → 📊 CALIBRATION PICK (standard)
+  // <65%   → silent (stored + searchable, no alert)
   try {
-    const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
     const today = new Date().toDateString();
     const alreadySentToday = new Set(
-      alerts.filter(a => a.type === 'calibration' && new Date(a.sentAt).toDateString() === today)
+      alerts.filter(a => a.type?.startsWith('calibration') && new Date(a.sentAt).toDateString() === today)
             .map(a => `${a.home}|${a.away}`)
     );
     for (const m of analyzed) {
-      if ((m.confidence || 0) >= minConf) {
-        const matchKey = `${m.home}|${m.away}`;
-        if (!alreadySentToday.has(matchKey)) {
-          alreadySentToday.add(matchKey); // prevent duplicates within same run
-          const topRec = m.analysis?.recommendations?.[0];
-          await saveAlert({
-            matchId: m.id,
-            home: m.home,
-            away: m.away,
-            league: m.league,
-            type: 'calibration',
-            message: topRec
-              ? `${topRec.selection} — Tier ${topRec.tier}, ${topRec.confidence}% confidence`
-              : 'High-confidence pre-match opportunity detected',
-            confidence: m.confidence,
-            kickoffUTC: m.kickoffUTC || null,
-            sentAt: new Date().toISOString(),
-          }).catch(e => console.warn(`[Calibrate] Alert save failed: ${e.message}`));
-        }
-      }
+      const conf = m.confidence || 0;
+      if (conf < 65) continue; // silent threshold
+
+      const matchKey = `${m.home}|${m.away}`;
+      if (alreadySentToday.has(matchKey)) continue;
+      alreadySentToday.add(matchKey);
+
+      const isPremium = conf >= 80;
+      const topRec    = m.analysis?.recommendations?.[0];
+      const alertType = isPremium ? 'calibration_premium' : 'calibration';
+      const message   = isPremium
+        ? `🏆 HIGH CONFIDENCE: ${topRec ? `${topRec.selection} — ${topRec.confidence}% confidence` : `${m.home} vs ${m.away} — ${conf}% overall`}`
+        : topRec
+          ? `📊 ${topRec.selection} — Tier ${topRec.tier}, ${topRec.confidence}% confidence`
+          : `📊 ${m.home} vs ${m.away} — ${conf}% confidence`;
+
+      await saveAlert({
+        matchId: m.id,
+        home: m.home,
+        away: m.away,
+        league: m.league,
+        type: alertType,
+        message,
+        confidence: conf,
+        confidenceTier: isPremium ? 'PREMIUM' : 'STANDARD',
+        kickoffUTC: m.kickoffUTC || null,
+        sentAt: new Date().toISOString(),
+      }).catch(e => console.warn(`[Calibrate] Alert save failed: ${e.message}`));
     }
   } catch (alertErr) {
     console.warn(`[Calibrate] Alert loop error: ${alertErr.message}`);
@@ -2332,6 +2291,7 @@ app.post('/api/calibrate', async (req, res) => {
       calibratedAt: store.calibratedAt,
       matches: store.matches,
       highConfidence: store.highConfidence,
+      calibrationHealth: store.calibrationHealth || null,
     });
   } catch (err) {
     console.error('[Calibrate] Error:', err.message);
