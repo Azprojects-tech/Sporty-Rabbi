@@ -686,7 +686,7 @@ async function fetchTodayMatchNews(fixtureList) {
         systemInstruction: { parts: [{ text: 'You are a football news analyst. Return ONLY valid JSON arrays. No markdown. No extra text outside the array brackets.' }] },
         contents: [{
           role: 'user',
-          parts: [{ text: `Today is ${today}. Using Google Search, find CONFIRMED news from the last 72 hours about these football matches that would affect betting analysis:\n\n${shortList}\n\nOnly include verified facts: key player injuries/suspensions confirmed by a club or credible journalist, manager sackings in the last 7 days, confirmed lineup information from official sources. NEVER invent or speculate.\n\nReturn ONLY a valid JSON array ([] if no confirmed news found):\n[{"home":"...","away":"...","homeInjuries":[{"name":"...","position":"striker|midfielder|center-back|goalkeeper|winger"}],"awayInjuries":[...],"homeManagerChange":false,"awayManagerChange":false,"notes":"any other confirmed context"}]\nOmit fixtures entirely if no confirmed news was found.` }],
+          parts: [{ text: `Today is ${today}. Using Google Search, find CONFIRMED news from the last 72 hours about these football matches that would affect betting analysis:\n\n${shortList}\n\nOnly include verified facts: key player injuries/suspensions confirmed by a club or credible journalist, manager sackings in the last 7 days, confirmed lineup information from official sources. NEVER invent or speculate.\n\nFor each absent/suspended player, assess their ACTUAL recent contribution — not historical reputation. A holding midfielder who consistently disrupts play, wins possession, and covers ground is as impactful as a scorer. A goalkeeper in poor recent form may have less impact absent than their name suggests. Look for: goals/assists in last 10 games for attackers; clean sheets, saves-per-game for goalkeepers; tackles, interceptions, key passes for midfielders/defenders. Note if the team's results have clearly differed in recent matches without this specific player.\n\nReturn ONLY a valid JSON array ([] if no confirmed news found):\n[{"home":"...","away":"...","homeInjuries":[{"name":"...","position":"striker|midfielder|center-back|goalkeeper|winger|defensive-mid|fullback","role":"e.g. defensive-anchor|creative-hub|set-piece-taker|goalscorer|shot-stopper|ball-winner","recentImpact":"high|medium|low","recentContributionNotes":"brief factual note e.g. 2 goals in last 10 games or team kept 5 clean sheets in 6 with them or won 1 of 5 without them"}],"awayInjuries":[...],"homeManagerChange":false,"awayManagerChange":false,"notes":"any other confirmed context"}]\nOmit fixtures entirely if no confirmed news was found.` }],
         }],
         generationConfig: { temperature: 0.1, maxOutputTokens: 4000 },
       }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
@@ -752,7 +752,15 @@ RULES:
 - homeKeyAbsencesAdd / awayKeyAbsencesAdd: only add players CONFIRMED absent or suspended.
 - Return null for any field you are NOT adjusting.
 - If the news contains nothing that warrants a parameter change, return null/empty for all fields.
-- Return ONLY valid JSON. No markdown. No explanation outside the JSON.`;
+- Return ONLY valid JSON. No markdown. No explanation outside the JSON.
+
+CRITICAL — Weight adjustments by ACTUAL recent contribution, not historical reputation:
+- A high-profile player (e.g. star striker) with low recent form (e.g. 2 goals in last 10, team still winning) → small adjustment (3-6 points)
+- A defensive midfielder who anchors the press, wins duels, and the team has lost 3 of 4 without them → large adjustment (12-18 points)
+- A goalkeeper in recent poor form (errors leading to goals) who is now absent → their absence may be NEUTRAL or even slightly positive
+- A set-piece specialist whose absence removes a major delivery threat → medium adjustment even if not a scorer
+- Always read recentImpact and recentContributionNotes from the news data before deciding magnitude
+- recentImpact=high → 10-18 point range, medium → 5-10, low → 0-5 (can return null if truly negligible)`;
 
   const tasks = [];
   for (const fixture of fixtureList) {

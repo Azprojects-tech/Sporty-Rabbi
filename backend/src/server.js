@@ -1929,6 +1929,35 @@ app.post('/api/analyze', async (req, res) => {
       if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
     }
 
+    // ── Step 2a: Live shots & possession blend ──────────────────────────────
+    // When a live match has ≥25 minutes of data, blend observed in-match shots
+    // rate and possession into V9's inputs alongside the season-average baseline.
+    // Affects P10 Pace (scorePace) and P11 Home Advantage (scoreHomeAdvantage).
+    // Blend weight ramps 20%→60% across 25–90 min: season context anchors early,
+    // actual match performance dominates late. Neither fully overrides the other.
+    if (isLive && matchMins >= 25) {
+      const hShots = enriched.shots?.home ?? 0;
+      const aShots = enriched.shots?.away ?? 0;
+      const hPoss  = enriched.possession?.home ?? null;
+      // Ramp: 0.20 at 25 min → 0.60 at 90 min
+      const liveW = Math.min(0.60, 0.20 + ((matchMins - 25) / 65) * 0.40);
+      const norm  = 90 / matchMins;
+      if (hShots > 0) {
+        const liveShotsH = hShots * norm;
+        const baseH = enriched.homeShotsPerGame || 12;
+        enriched.homeShotsPerGame = parseFloat((liveShotsH * liveW + baseH * (1 - liveW)).toFixed(1));
+      }
+      if (aShots > 0) {
+        const liveShotsA = aShots * norm;
+        const baseA = enriched.awayShotsPerGame || 10;
+        enriched.awayShotsPerGame = parseFloat((liveShotsA * liveW + baseA * (1 - liveW)).toFixed(1));
+      }
+      if (hPoss != null && hPoss !== 50) {
+        // Live possession is a direct real-time signal — use as-is
+        enriched.homePossession = hPoss;
+      }
+    }
+
     // ── Step 2: Live xG projection ───────────────────────────────────────────
     // Only runs when ACTUAL in-match accumulated xG was available (hasLiveXg=true).
     // Never runs on season-average fallback defaults — those would be squashed by
