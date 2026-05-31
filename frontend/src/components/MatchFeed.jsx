@@ -192,6 +192,19 @@ function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
     }
   }, [pullDist, onRefresh, refreshing]);
 
+  // Group by league — must be before any early return (Rules of Hooks)
+  const groups = useMemo(() => {
+    const g = new Map();
+    for (const m of (matches || [])) {
+      const key = `${m.leagueId}__${m.league}`;
+      if (!g.has(key)) {
+        g.set(key, { id: m.leagueId, name: m.league, country: m.leagueCountry, matches: [] });
+      }
+      g.get(key).matches.push(m);
+    }
+    return g;
+  }, [matches]);
+
   if (!matches || matches.length === 0) {
     return (
       <div style={{
@@ -204,20 +217,6 @@ function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
       </div>
     );
   }
-
-  // Group by league — memoized to avoid rebuilding on every render
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const groups = useMemo(() => {
-    const g = new Map();
-    for (const m of matches) {
-      const key = `${m.leagueId}__${m.league}`;
-      if (!g.has(key)) {
-        g.set(key, { id: m.leagueId, name: m.league, country: m.leagueCountry, matches: [] });
-      }
-      g.get(key).matches.push(m);
-    }
-    return g;
-  }, [matches]);
 
   const pullProgress = Math.min(pullDist / PULL_THRESHOLD, 1);
   const showIndicator = refreshing || pullDist > 8;
