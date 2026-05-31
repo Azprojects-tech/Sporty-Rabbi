@@ -663,6 +663,9 @@ async function analyzeMatch(match) {
       let awayFormStr = 'W-L-D-W-L';
       let h2hHistory = [];
       let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20;
+      let gameWeek = 30;
+      let homeAvgGF = null, homeAvgGA = null, awayAvgGF = null, awayAvgGA = null;
+      let homeGoalDrought = 0, awayGoalDrought = 0, homeRecentLosses = 0, awayRecentLosses = 0;
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
@@ -673,11 +676,21 @@ async function analyzeMatch(match) {
           getStandings(league.id),
         ]);
         // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
-        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats?.form) {
-          homeFormStr = hRes.value.stats.form.split('').join('-');
+        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
+          const hs = hRes.value.stats;
+          if (hs.form)  homeFormStr      = hs.form.split('').join('-');
+          if (parseFloat(hs.avgGoalsFor)     > 0) homeAvgGF        = parseFloat(hs.avgGoalsFor);
+          if (parseFloat(hs.avgGoalsAgainst) > 0) homeAvgGA        = parseFloat(hs.avgGoalsAgainst);
+          if (hs.goalDrought  != null) homeGoalDrought  = hs.goalDrought;
+          if (hs.recentLosses != null) homeRecentLosses = hs.recentLosses;
         }
-        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats?.form) {
-          awayFormStr = aRes.value.stats.form.split('').join('-');
+        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
+          const as = aRes.value.stats;
+          if (as.form)  awayFormStr      = as.form.split('').join('-');
+          if (parseFloat(as.avgGoalsFor)     > 0) awayAvgGF        = parseFloat(as.avgGoalsFor);
+          if (parseFloat(as.avgGoalsAgainst) > 0) awayAvgGA        = parseFloat(as.avgGoalsAgainst);
+          if (as.goalDrought  != null) awayGoalDrought  = as.goalDrought;
+          if (as.recentLosses != null) awayRecentLosses = as.recentLosses;
         }
         // Build h2h history from aggregate stats for scoreH2H()
         if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
@@ -689,12 +702,14 @@ async function analyzeMatch(match) {
           for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
           for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
         }
-        // Real league standings — position and points for motivation scoring
+        // Real league standings — position, points and gameWeek for P1/P14
         if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
           const tms = standingsRes.value.teams;
           totalTeams = standingsRes.value.totalTeams || 20;
           if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position; homePoints = tms[homeTeamId].points; }
           if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position; awayPoints = tms[awayTeamId].points; }
+          const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
+          if (played > 0) gameWeek = played;
         }
       }
 
@@ -706,11 +721,17 @@ async function analyzeMatch(match) {
         status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
-        homeXgAvg: xg.home > 0 ? xg.home : defHomeXg,
-        awayXgAvg: xg.away > 0 ? xg.away : defAwayXg,
-        // xGa = how many goals the team concedes; best proxy = opponent's attack output
-        homeXgaAvg: xg.away > 0 ? xg.away : defAwayXg,
-        awayXgaAvg: xg.home > 0 ? xg.home : defHomeXg,
+        // Attack quality: prefer live match xG, then team's season goals avg, then league default
+        homeXgAvg:  xg.home > 0 ? xg.home : (homeAvgGF ?? defHomeXg),
+        awayXgAvg:  xg.away > 0 ? xg.away : (awayAvgGF ?? defAwayXg),
+        // Defensive quality: team's season goals-conceded avg (correct Poisson input)
+        homeXgaAvg: xg.away > 0 ? xg.away : (homeAvgGA ?? defAwayXg),
+        awayXgaAvg: xg.home > 0 ? xg.home : (awayAvgGA ?? defHomeXg),
+        // Season goal averages fed to P4 coiled spring and P6 defensive gap
+        homeGoalsAvgFor:     homeAvgGF ?? defHomeXg,
+        awayGoalsAvgFor:     awayAvgGF ?? defAwayXg,
+        homeGoalsAvgAgainst: homeAvgGA ?? defAwayXg,
+        awayGoalsAvgAgainst: awayAvgGA ?? defHomeXg,
         homePossession: possession.home || 50,
         homeShotsPerGame: shots.home || 10,
         awayShotsPerGame: shots.away || 10,
@@ -722,12 +743,16 @@ async function analyzeMatch(match) {
         homePoints,
         awayPoints,
         totalTeams,
-        gameWeek: 30,
+        gameWeek,
         totalGW: 38,
         homeSquadIntegrity: 85,
         awaySquadIntegrity: 85,
         homeCards: cards.home,
         awayCards: cards.away,
+        homeGoalDrought,
+        awayGoalDrought,
+        homeRecentLosses,
+        awayRecentLosses,
       };
       try {
         analysisObj      = analyzeV9(matchData);
@@ -1559,11 +1584,25 @@ app.post('/api/analyze', async (req, res) => {
         getH2H(homeTeamId, awayTeamId),
         getStandings(leagueId),
       ]);
-      if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats?.form) {
-        enriched.homeForm = hRes.value.stats.form.split('').join('-');
+      if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
+        const hs = hRes.value.stats;
+        if (hs.form) enriched.homeForm = hs.form.split('').join('-');
+        if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsFor)     > 0) enriched.homeXgAvg           = parseFloat(hs.avgGoalsFor);
+        if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsAgainst) > 0) enriched.homeXgaAvg          = parseFloat(hs.avgGoalsAgainst);
+        enriched.homeGoalsAvgFor      = parseFloat(hs.avgGoalsFor)     || enriched.homeXgAvg  || 1.35;
+        enriched.homeGoalsAvgAgainst  = parseFloat(hs.avgGoalsAgainst) || enriched.homeXgaAvg || 1.35;
+        if (hs.goalDrought  != null) enriched.homeGoalDrought  = hs.goalDrought;
+        if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
       }
-      if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats?.form) {
-        enriched.awayForm = aRes.value.stats.form.split('').join('-');
+      if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
+        const as = aRes.value.stats;
+        if (as.form) enriched.awayForm = as.form.split('').join('-');
+        if (!enriched.hasLiveXg && parseFloat(as.avgGoalsFor)     > 0) enriched.awayXgAvg           = parseFloat(as.avgGoalsFor);
+        if (!enriched.hasLiveXg && parseFloat(as.avgGoalsAgainst) > 0) enriched.awayXgaAvg          = parseFloat(as.avgGoalsAgainst);
+        enriched.awayGoalsAvgFor      = parseFloat(as.avgGoalsFor)     || enriched.awayXgAvg  || 1.35;
+        enriched.awayGoalsAvgAgainst  = parseFloat(as.avgGoalsAgainst) || enriched.awayXgaAvg || 1.35;
+        if (as.goalDrought  != null) enriched.awayGoalDrought  = as.goalDrought;
+        if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
       }
       if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
         const s = h2hRes.value.stats;
@@ -1580,6 +1619,8 @@ app.post('/api/analyze', async (req, res) => {
         enriched.totalTeams = standingsRes.value.totalTeams || 20;
         if (tms[homeTeamId]) { enriched.homePosition = tms[homeTeamId].position; enriched.homePoints = tms[homeTeamId].points; }
         if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position; enriched.awayPoints = tms[awayTeamId].points; }
+        const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
+        if (played > 0) enriched.gameWeek = played;
       }
     }
 

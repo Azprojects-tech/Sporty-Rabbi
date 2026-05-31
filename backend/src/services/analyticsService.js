@@ -81,6 +81,8 @@ export async function getTeamForm(teamId, league = null) {
           avgGoalsFor: 0,
           avgGoalsAgainst: 0,
           form: 'N/A',
+          goalDrought: 0,
+          recentLosses: 0,
         },
       };
     }
@@ -113,6 +115,21 @@ export async function getTeamForm(teamId, league = null) {
       }
     });
 
+    // Consecutive recent losses — i=0 is the most recent fixture
+    // (API-Football returns fixtures newest-first for last: N queries)
+    let recentLosses = 0;
+    for (let i = 0; i < formStr.length; i++) {
+      if (formStr[i] === 'L') recentLosses++; else break;
+    }
+
+    // Consecutive recent goalless games
+    let goalDrought = 0;
+    for (let i = 0; i < matches.length; i++) {
+      const isHomeTeam = matches[i].teams.home.id === teamId;
+      const teamGoals  = isHomeTeam ? (matches[i].goals.home || 0) : (matches[i].goals.away || 0);
+      if (teamGoals === 0) goalDrought++; else break;
+    }
+
     const result = {
       teamId,
       teamName: matches[0].teams.home.id === teamId 
@@ -136,6 +153,8 @@ export async function getTeamForm(teamId, league = null) {
         avgGoalsAgainst: (goalsAgainst / matches.length).toFixed(2),
         form: formStr.join(''), // Last 10 matches (full L10 for V9 engine)
         winRate: ((wins / matches.length) * 100).toFixed(1),
+        goalDrought,
+        recentLosses,
       },
     };
 
