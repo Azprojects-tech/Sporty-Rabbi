@@ -647,6 +647,159 @@ Return a JSON array where each object has EXACTLY these fields:
   return matches;
 }
 
+// ─── CONTEXTUAL PARAMETER ADJUSTMENT (Gemini Search + Groq Reasoning) ────────
+//
+// Two-LLM pipeline that adds real analytical value BEFORE V9 runs:
+//
+//   Gemini+Search (ONE call per calibration cycle)
+//     → Scans today's web for confirmed news: injuries, suspensions,
+//       manager changes, lineup confirmations
+//     → Structured facts, not narrative
+//
+//   Groq (one call per fixture WITH news, run in parallel)
+//     → Receives the confirmed facts for that specific match
+//     → Reasons about WHICH V9 input parameters to adjust and by HOW MUCH
+//     → Bounded adjustments (±20 max, confirmed facts only, no guessing)
+//
+// Result: V9 runs on contextually-adjusted inputs — not just statistics.
+// This is the genuine analytical value LLMs add that no API can provide.
+// The narrative (generateMatchNarrative) remains unchanged after V9 runs.
+
+const NEWS_FETCH_CACHE = new Map(); // key: YYYY-MM-DD → { data: Map, ts: number }
+
+async function fetchTodayMatchNews(fixtureList) {
+  if (!GEMINI_API_KEY || !fixtureList?.length) return new Map();
+  const today = new Date().toISOString().split('T')[0];
+  const cached = NEWS_FETCH_CACHE.get(today);
+  if (cached && Date.now() - cached.ts < 2 * 60 * 60 * 1000) return cached.data; // 2h TTL
+
+  const shortList = fixtureList.slice(0, 40)
+    .map(f => `${f.home} vs ${f.away} (${f.league || 'Unknown'})`)
+    .join('\n');
+
+  const newsMap = new Map();
+  for (const model of GEMINI_SPORTS_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const response = await axios.post(url, {
+        tools: [{ google_search: {} }],
+        systemInstruction: { parts: [{ text: 'You are a football news analyst. Return ONLY valid JSON arrays. No markdown. No extra text outside the array brackets.' }] },
+        contents: [{
+          role: 'user',
+          parts: [{ text: `Today is ${today}. Using Google Search, find CONFIRMED news from the last 72 hours about these football matches that would affect betting analysis:\n\n${shortList}\n\nOnly include verified facts: key player injuries/suspensions confirmed by a club or credible journalist, manager sackings in the last 7 days, confirmed lineup information from official sources. NEVER invent or speculate.\n\nReturn ONLY a valid JSON array ([] if no confirmed news found):\n[{"home":"...","away":"...","homeInjuries":[{"name":"...","position":"striker|midfielder|center-back|goalkeeper|winger"}],"awayInjuries":[...],"homeManagerChange":false,"awayManagerChange":false,"notes":"any other confirmed context"}]\nOmit fixtures entirely if no confirmed news was found.` }],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 4000 },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
+
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+      if (!text.trim()) continue;
+
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start === -1 || end === -1 || end <= start) continue;
+
+      const newsArray = JSON.parse(text.slice(start, end + 1));
+      if (!Array.isArray(newsArray)) continue;
+
+      for (const item of newsArray) {
+        const key = `${(item.home || '').toLowerCase().trim()}:${(item.away || '').toLowerCase().trim()}`;
+        if (key !== ':') newsMap.set(key, item);
+      }
+      console.log(`[ContextAdjust] Gemini+Search: confirmed news for ${newsMap.size} of ${fixtureList.length} fixtures`);
+      break;
+    } catch (err) {
+      console.warn(`[ContextAdjust] News fetch ${model} failed: ${(err.response?.data?.error?.message || err.message).slice(0, 100)}`);
+    }
+  }
+
+  NEWS_FETCH_CACHE.set(today, { data: newsMap, ts: Date.now() });
+  return newsMap;
+}
+
+/**
+ * fetchAndReasonContextAdjustments(fixtureList)
+ *
+ * Orchestrates the two-LLM parameter adjustment pipeline:
+ *   1. Gemini+Search  — ONE call: get confirmed news for all fixtures
+ *   2. Groq (parallel) — one call per fixture with news: reason about adjustments
+ *
+ * Returns Map<"home:away", { homeSquadIntegrity, awaySquadIntegrity,
+ *   homeKeyAbsencesAdd, awayKeyAbsencesAdd, contextWarnings, adjustmentReasoning }>
+ *
+ * Fully graceful — returns empty Map on any failure. Never blocks calibration.
+ */
+export async function fetchAndReasonContextAdjustments(fixtureList) {
+  if (!fixtureList?.length) return new Map();
+
+  // Step 1: Gemini+Search — single call for all fixtures
+  const newsMap = await fetchTodayMatchNews(fixtureList).catch(err => {
+    console.warn('[ContextAdjust] News step skipped:', err.message);
+    return new Map();
+  });
+
+  if (newsMap.size === 0) {
+    console.log('[ContextAdjust] No confirmed news found — skipping parameter adjustments');
+    return new Map();
+  }
+
+  // Step 2: Groq — parallel reasoning, only for fixtures with news
+  const GROQ_SYS = `You are an Agent 47 V9 parameter adjustment specialist.
+Given CONFIRMED news about a football match, decide if and how to adjust specific V9 input parameters before analysis runs.
+RULES:
+- Only adjust based on confirmed facts in the news. Never guess or infer.
+- Numeric field changes: bounded at original value ±20, clamped 0-100.
+- homeKeyAbsencesAdd / awayKeyAbsencesAdd: only add players CONFIRMED absent or suspended.
+- Return null for any field you are NOT adjusting.
+- If the news contains nothing that warrants a parameter change, return null/empty for all fields.
+- Return ONLY valid JSON. No markdown. No explanation outside the JSON.`;
+
+  const tasks = [];
+  for (const fixture of fixtureList) {
+    const key = `${(fixture.home || '').toLowerCase().trim()}:${(fixture.away || '').toLowerCase().trim()}`;
+    const news = newsMap.get(key);
+    if (!news) continue;
+
+    tasks.push((async () => {
+      if (!GROQ_API_KEY) return [key, null];
+      try {
+        const userPrompt = `Match: ${fixture.home} vs ${fixture.away} (${fixture.league || ''})
+Current V9 inputs:
+  homeSquadIntegrity: ${fixture.homeSquadIntegrity ?? 85}
+  awaySquadIntegrity: ${fixture.awaySquadIntegrity ?? 85}
+  homeKeyAbsences: ${JSON.stringify(fixture.homeKeyAbsences || [])}
+  awayKeyAbsences: ${JSON.stringify(fixture.awayKeyAbsences || [])}
+Confirmed news: ${JSON.stringify(news)}
+
+Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsencesAdd":[],"awayKeyAbsencesAdd":[],"contextWarnings":[],"adjustmentReasoning":""}`;
+
+        const raw = await groqChat(GROQ_SYS, userPrompt, { maxTokens: 400, jsonMode: true });
+        if (!raw) return [key, null];
+        const parsed = JSON.parse(raw);
+        if (parsed.adjustmentReasoning) {
+          console.log(`[ContextAdjust] ${fixture.home} vs ${fixture.away}: ${parsed.adjustmentReasoning.slice(0, 100)}`);
+        }
+        return [key, parsed];
+      } catch (err) {
+        console.warn(`[ContextAdjust] Groq failed for ${fixture.home} vs ${fixture.away}: ${err.message.slice(0, 80)}`);
+        return [key, null];
+      }
+    })());
+  }
+
+  const settled = await Promise.allSettled(tasks);
+  const resultMap = new Map();
+  for (const r of settled) {
+    if (r.status === 'fulfilled' && r.value) {
+      const [key, adj] = r.value;
+      if (adj) resultMap.set(key, adj);
+    }
+  }
+
+  console.log(`[ContextAdjust] Groq reasoning complete: ${resultMap.size} fixtures adjusted`);
+  return resultMap;
+}
+
 /**
  * generateMatchNarrative(analysis, matchInfo)
  * Calls Groq to produce a 2-3 sentence analyst note explaining the top V9 recommendation.

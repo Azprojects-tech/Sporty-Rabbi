@@ -25,6 +25,7 @@ import {
   calibrateDay,
   enrichFixturesWithGemini,
   generateMatchNarrative,
+  fetchAndReasonContextAdjustments,
 } from './services/geminiService.js';
 import {
   calculateNextGoalProbability,
@@ -1893,6 +1894,41 @@ app.post('/api/analyze', async (req, res) => {
       }
     }
 
+    // ── Gemini calibration fallback — restore enriched inputs when API-Football is offline ──
+    // When calibration ran with Gemini-sourced stats (no API-Football key / quota guard),
+    // those values are stored in calMatch.calibratedInputs. Apply them here only for fields
+    // that the API-Football enrichment above could not populate — API-Football always wins.
+    const _calNorm = (s) => (s || '').toLowerCase().trim();
+    const calFb = calibrationStore.matches.find(m =>
+      _calNorm(m.home) === _calNorm(enriched.home) && _calNorm(m.away) === _calNorm(enriched.away)
+    );
+    if (calFb?.calibratedInputs) {
+      const ci = calFb.calibratedInputs;
+      if (!enriched.homeForm)                  enriched.homeForm            = ci.homeForm;
+      if (!enriched.awayForm)                  enriched.awayForm            = ci.awayForm;
+      if (enriched.homeXgAvg           == null) enriched.homeXgAvg           = ci.homeXgAvg;
+      if (enriched.awayXgAvg           == null) enriched.awayXgAvg           = ci.awayXgAvg;
+      if (enriched.homeXgaAvg          == null) enriched.homeXgaAvg          = ci.homeXgaAvg;
+      if (enriched.awayXgaAvg          == null) enriched.awayXgaAvg          = ci.awayXgaAvg;
+      if (enriched.homeGoalsAvgFor     == null) enriched.homeGoalsAvgFor     = ci.homeGoalsAvgFor;
+      if (enriched.awayGoalsAvgFor     == null) enriched.awayGoalsAvgFor     = ci.awayGoalsAvgFor;
+      if (enriched.homeGoalsAvgAgainst == null) enriched.homeGoalsAvgAgainst = ci.homeGoalsAvgAgainst;
+      if (enriched.awayGoalsAvgAgainst == null) enriched.awayGoalsAvgAgainst = ci.awayGoalsAvgAgainst;
+      if (!enriched.homePosition)              enriched.homePosition        = ci.homePosition;
+      if (!enriched.awayPosition)              enriched.awayPosition        = ci.awayPosition;
+      if (!enriched.homePoints)                enriched.homePoints          = ci.homePoints;
+      if (!enriched.awayPoints)                enriched.awayPoints          = ci.awayPoints;
+      if (!enriched.totalTeams)                enriched.totalTeams          = ci.totalTeams;
+      if (!enriched.gameWeek)                  enriched.gameWeek            = ci.gameWeek;
+      if (enriched.homeSquadIntegrity  == null) enriched.homeSquadIntegrity  = ci.homeSquadIntegrity;
+      if (enriched.awaySquadIntegrity  == null) enriched.awaySquadIntegrity  = ci.awaySquadIntegrity;
+      if (enriched.homeConversionPct   == null) enriched.homeConversionPct   = ci.homeConversionPct;
+      if (enriched.awayConversionPct   == null) enriched.awayConversionPct   = ci.awayConversionPct;
+      if (!enriched.homeShotsPerGame)           enriched.homeShotsPerGame    = ci.homeShotsPerGame;
+      if (!enriched.awayShotsPerGame)           enriched.awayShotsPerGame    = ci.awayShotsPerGame;
+      if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
+    }
+
     // ── Step 2: Live xG projection ───────────────────────────────────────────
     // Only runs when ACTUAL in-match accumulated xG was available (hasLiveXg=true).
     // Never runs on season-average fallback defaults — those would be squashed by
@@ -2247,6 +2283,28 @@ async function runCalibration() {
 
   console.log(`[Calibrate] Processing ${raw.length} fixtures from ${dataSource}`);
 
+  // ── Context adjustments: Gemini+Search news + Groq parameter reasoning ──────
+  // ONE Gemini call gets confirmed today's news for all fixtures (injuries,
+  // suspensions, manager changes). Then Groq runs per-fixture IN PARALLEL to
+  // reason about which V9 inputs to adjust. Applied to matchData BEFORE V9 runs.
+  // Fully graceful — calibration continues normally if this step errors.
+  const _ctxKey = (h, a) => `${(h || '').toLowerCase().trim()}:${(a || '').toLowerCase().trim()}`;
+  let contextAdjMap = new Map();
+  try {
+    const fixturesForCtx = raw.map(f => ({
+      home:               (f.match?.home  || (typeof f.home  === 'string' ? f.home  : null)) || 'Unknown',
+      away:               (f.match?.away  || (typeof f.away  === 'string' ? f.away  : null)) || 'Unknown',
+      league:             f.match?.league || '',
+      homeSquadIntegrity: f.home?.squadIntegrity ?? null,
+      awaySquadIntegrity: f.away?.squadIntegrity ?? null,
+      homeKeyAbsences:    [],
+      awayKeyAbsences:    [],
+    }));
+    contextAdjMap = await fetchAndReasonContextAdjustments(fixturesForCtx);
+  } catch (err) {
+    console.warn('[Calibrate] Context adjustment step failed (non-fatal):', err.message);
+  }
+
   const analyzed = [];
   for (const f of raw) {
     try {
@@ -2306,6 +2364,15 @@ async function runCalibration() {
         context: f.context,
       };
 
+      // Apply Gemini+Groq context adjustments (confirmed facts only, bounded ±20)
+      const ctxAdj = contextAdjMap.get(_ctxKey(homeName, awayName));
+      if (ctxAdj) {
+        if (ctxAdj.homeSquadIntegrity != null)  matchData.homeSquadIntegrity = Math.max(0, Math.min(100, ctxAdj.homeSquadIntegrity));
+        if (ctxAdj.awaySquadIntegrity != null)  matchData.awaySquadIntegrity = Math.max(0, Math.min(100, ctxAdj.awaySquadIntegrity));
+        if (ctxAdj.homeKeyAbsencesAdd?.length)  matchData.homeKeyAbsences    = [...(matchData.homeKeyAbsences || []), ...ctxAdj.homeKeyAbsencesAdd];
+        if (ctxAdj.awayKeyAbsencesAdd?.length)  matchData.awayKeyAbsences    = [...(matchData.awayKeyAbsences || []), ...ctxAdj.awayKeyAbsencesAdd];
+      }
+
       const analysis = analyzeV9(matchData);
       const matchObj = sanitizeMatch({
         id: `cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50),
@@ -2328,6 +2395,41 @@ async function runCalibration() {
       matchObj.round = matchMeta.round || null;
       matchObj.notes = matchMeta.notes || null;
       matchObj.analysis = analysis;
+      // Preserve V9 inputs so they survive as fallbacks when the user clicks and API-Football is offline.
+      // API-Football wins when available; these values are only used to fill gaps.
+      matchObj.calibratedInputs = {
+        homeForm:            matchData.homeForm            ?? null,
+        awayForm:            matchData.awayForm            ?? null,
+        homeXgAvg:           matchData.homeXgAvg           ?? null,
+        awayXgAvg:           matchData.awayXgAvg           ?? null,
+        homeXgaAvg:          matchData.homeXgaAvg          ?? null,
+        awayXgaAvg:          matchData.awayXgaAvg          ?? null,
+        homeGoalsAvgFor:     matchData.homeGoalsAvgFor     ?? null,
+        awayGoalsAvgFor:     matchData.awayGoalsAvgFor     ?? null,
+        homeGoalsAvgAgainst: matchData.homeGoalsAvgAgainst ?? null,
+        awayGoalsAvgAgainst: matchData.awayGoalsAvgAgainst ?? null,
+        homePosition:        matchData.homePosition        ?? 10,
+        awayPosition:        matchData.awayPosition        ?? 10,
+        homePoints:          matchData.homePoints          ?? 40,
+        awayPoints:          matchData.awayPoints          ?? 40,
+        totalTeams:          matchData.totalTeams          ?? 20,
+        gameWeek:            matchData.gameWeek            ?? 30,
+        homeSquadIntegrity:  matchData.homeSquadIntegrity  ?? 85,
+        awaySquadIntegrity:  matchData.awaySquadIntegrity  ?? 85,
+        homeConversionPct:   matchData.homeConversionPct   ?? null,
+        awayConversionPct:   matchData.awayConversionPct   ?? null,
+        homeShotsPerGame:    matchData.homeShotsPerGame    ?? null,
+        awayShotsPerGame:    matchData.awayShotsPerGame    ?? null,
+        h2hHistory:          matchData.h2hHistory          ?? [],
+        homeLateGoalPct:     matchData.homeLateGoalPct     ?? null,
+        awayLateGoalPct:     matchData.awayLateGoalPct     ?? null,
+        homeGoalDrought:     matchData.homeGoalDrought     ?? 0,
+        awayGoalDrought:     matchData.awayGoalDrought     ?? 0,
+        homeRecentLosses:    matchData.homeRecentLosses    ?? 0,
+        awayRecentLosses:    matchData.awayRecentLosses    ?? 0,
+      };
+      // Store context adjustments for transparency (null if none applied this cycle)
+      matchObj.contextAdjustments = ctxAdj || null;
       // Calibration is for scheduled fixtures only — no real-time scores available.
       // Force NS so fabricated live states never reach the UI.
       matchObj.status = 'NS';
