@@ -657,9 +657,11 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
       const awayRed      = matchData.awayCards?.red || 0;
       const homeCardMult = homeRed > 0 ? 0.62 : 1.0;
       const awayCardMult = awayRed  > 0 ? 0.62 : 1.0;
-      // A team leading by 2+ goals manages the game; the trailer pushes harder.
-      const leaderMotiveMult  = diff >= 2 ? 0.80 : 1.0;
-      const trailerMotiveMult = diff >= 2 ? 1.18 : 1.12;
+      // Dixon & Robinson (1998): urgency scales linearly with time into the match.
+      // Leading team: game management increases as time passes. Trailing: desperation grows.
+      const timeUrgency = Math.min(effectiveMins / 90, 1.0);
+      const leaderMotiveMult  = Math.max(1.0 - (diff >= 2 ? 0.15 : 0.05) - 0.20 * timeUrgency, 0.62);
+      const trailerMotiveMult = Math.min(1.0 + (diff >= 2 ? 0.18 : 0.12) + 0.25 * timeUrgency, 1.50);
       const lLeader_rem  = leaderIsHome
         ? Math.max(poisson.homeLambda * remainFrac * leaderMotiveMult * homeCardMult, 0.01)
         : Math.max(poisson.awayLambda * remainFrac * leaderMotiveMult * awayCardMult, 0.01);
@@ -700,10 +702,20 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     const homeCardMult = homeRed > 0 ? 0.62 : 1.0;
     const awayCardMult = awayRed  > 0 ? 0.62 : 1.0;
 
-    // Score-state motivation: losing team pushes (more remaining goals expected);
-    // winning by 2+ may sit back and time-waste (fewer remaining goals expected).
-    const hMotiveMult = scoreDiff < -1 ? 1.18 : scoreDiff === -1 ? 1.12 : scoreDiff > 1 ? 0.80 : 1.0;
-    const aMotiveMult = scoreDiff >  1 ? 1.18 : scoreDiff ===  1 ? 1.12 : scoreDiff < -1 ? 0.80 : 1.0;
+    // Dixon & Robinson (1998): motivation urgency grows linearly with time into the match.
+    // Trailing: base urgency + time-growing desperation (capped at 1.50).
+    // Leading: base game management + growing conservatism (floored at 0.62).
+    const timeUrgency = Math.min(effectiveMins / 90, 1.0);
+    const hMotiveMult = scoreDiff < 0
+      ? Math.min(1.0 + (scoreDiff < -1 ? 0.18 : 0.12) + 0.25 * timeUrgency, 1.50)
+      : scoreDiff > 0
+      ? Math.max(1.0 - (scoreDiff > 1 ? 0.15 : 0.05) - 0.20 * timeUrgency, 0.62)
+      : 1.0;
+    const aMotiveMult = scoreDiff > 0
+      ? Math.min(1.0 + (scoreDiff > 1 ? 0.18 : 0.12) + 0.25 * timeUrgency, 1.50)
+      : scoreDiff < 0
+      ? Math.max(1.0 - (scoreDiff < -1 ? 0.15 : 0.05) - 0.20 * timeUrgency, 0.62)
+      : 1.0;
 
     // Remaining expected goals per team (season lambda × time fraction × adjustments)
     const lH_rem = Math.max(poisson.homeLambda * remainFrac * hMotiveMult * homeCardMult, 0.01);

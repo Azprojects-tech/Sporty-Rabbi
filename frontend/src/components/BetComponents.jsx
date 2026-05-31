@@ -9,15 +9,18 @@ export function BetLogger() {
     selection: '',
     odds: '',
     stake: '',
+    confidence: '',
+    leagueName: '',
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    const numericFields = ['odds', 'stake', 'confidence'];
     setFormData((prev) => ({
       ...prev,
-      [name]: name === 'odds' || name === 'stake' ? parseFloat(value) || '' : value,
+      [name]: numericFields.includes(name) ? parseFloat(value) || '' : value,
     }));
   };
 
@@ -34,6 +37,8 @@ export function BetLogger() {
         selection: '',
         odds: '',
         stake: '',
+        confidence: '',
+        leagueName: '',
       });
       setTimeout(() => {
         setShowForm(false);
@@ -89,6 +94,15 @@ export function BetLogger() {
             className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
           />
 
+          <input
+            type="text"
+            name="leagueName"
+            placeholder="League (e.g., Premier League)"
+            value={formData.leagueName}
+            onChange={handleChange}
+            className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
+          />
+
           <div className="grid grid-cols-2 gap-2">
             <input
               type="number"
@@ -111,6 +125,17 @@ export function BetLogger() {
               required
             />
           </div>
+
+          <input
+            type="number"
+            name="confidence"
+            placeholder="Model confidence % (optional)"
+            min="1"
+            max="100"
+            value={formData.confidence}
+            onChange={handleChange}
+            className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
+          />
 
           {message && <p className={`text-sm ${message.includes('✓') ? 'text-green-400' : 'text-red-400'}`}>{message}</p>}
 

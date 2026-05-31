@@ -362,7 +362,7 @@ let calibrationStore = {
 ### Groq (Meta Llama)
 - **Used for**: NL match analysis (primary), enrichment fallback (no search)
 - **Model**: `llama-3.3-70b-versatile` primary, fallback: `llama-3.1-8b-instant → mixtral-8x7b-32768`
-- **Free tier**: ~14,400 requests/day
+- **Pro plan**: higher rate limits — see [api-football.com/pricing](https://www.api-football.com/pricing)
 - **Limitation**: No web search access — estimates from training data only
 
 ### Provider priority

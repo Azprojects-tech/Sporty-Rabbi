@@ -227,7 +227,7 @@ export default function BetSlips() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>
-            V8 Bet Slips
+            V9 Bet Slips
           </div>
           <div style={{ fontSize: 11, color: '#4a5568', marginTop: 2 }}>
             AI-generated from today's calibrated fixtures

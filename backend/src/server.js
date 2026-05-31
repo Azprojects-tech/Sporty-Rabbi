@@ -1350,9 +1350,15 @@ app.get('/api/bets/slips', (req, res) => {
 });
 
 app.post('/api/bets', async (req, res) => {
+  // Normalize manual bet type labels to engine categories for pattern analysis
+  const BET_TYPE_MAP = {
+    home_win: 'WINS_ONLY', away_win: 'WINS_ONLY', draw: 'NEUTRAL',
+    over: 'GOALS_ONLY', under: 'GOALS_ONLY', btts: 'GOALS_ONLY',
+  };
   const bet = {
     id: Date.now(),
     ...req.body,
+    betType: BET_TYPE_MAP[req.body.betType] || req.body.betType || 'UNKNOWN',
     createdAt: new Date().toISOString(),
   };
 
@@ -1425,6 +1431,160 @@ app.get('/api/stats', async (req, res) => {
     losses,
     winRate: `${winRate}%`,
     liveBetsAvailable: liveMatches.length,
+  });
+});
+
+// ── Bet pattern analysis ─────────────────────────────────────────────────────
+app.get('/api/bets/patterns', async (req, res) => {
+  const db = getDb();
+  let allBets = bets;
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets').get();
+      allBets = snapshot.docs.map(d => d.data());
+    } catch (err) {
+      console.error('Firestore bets patterns error:', err.message);
+    }
+  }
+
+  const settled = allBets.filter(b => b.result === 'won' || b.result === 'lost');
+  if (settled.length === 0) {
+    return res.json({
+      summary: { totalSettled: 0, message: 'No settled bets yet. Patterns will appear after results are recorded.' },
+      byBetType: [], byConfidenceBand: [], byLeague: [], byHour: [], flags: [],
+    });
+  }
+
+  const MIN_SAMPLE = 5;
+
+  function groupStats(items) {
+    const won = items.filter(b => b.result === 'won').length;
+    const total = won + items.filter(b => b.result === 'lost').length;
+    const winRate = total > 0 ? +((won / total) * 100).toFixed(1) : null;
+    const withConf = items.filter(b => b.confidence != null);
+    const avgConf = withConf.length > 0
+      ? +(withConf.reduce((s, b) => s + Number(b.confidence), 0) / withConf.length).toFixed(1)
+      : null;
+    const calibrationGap = (winRate != null && avgConf != null)
+      ? +(winRate - avgConf).toFixed(1) : null;
+    return { settled: total, won, lost: total - won, winRate, avgConf, calibrationGap };
+  }
+
+  function detectFlag(stats, label) {
+    if (stats.settled < MIN_SAMPLE) return null;
+    if (stats.calibrationGap != null && stats.calibrationGap < -20)
+      return { severity: 'HIGH', type: 'OVERCONFIDENT', label,
+        message: `${label}: winning ${stats.winRate}% but avg stated confidence ${stats.avgConf}%. Overconfident by ${Math.abs(stats.calibrationGap)}pp.` };
+    if (stats.calibrationGap != null && stats.calibrationGap > 20)
+      return { severity: 'MEDIUM', type: 'UNDERCONFIDENT', label,
+        message: `${label}: winning ${stats.winRate}% vs ${stats.avgConf}% stated. Consider increasing stake here.` };
+    if (stats.winRate < 35)
+      return { severity: 'HIGH', type: 'LOW_HIT_RATE', label,
+        message: `${label}: only ${stats.winRate}% win rate over ${stats.settled} bets. Review selection criteria.` };
+    if (stats.winRate > 80 && stats.settled >= 8)
+      return { severity: 'LOW', type: 'HIGH_HIT_RATE', label,
+        message: `${label}: strong ${stats.winRate}% win rate. This category is outperforming — consider increasing allocation.` };
+    return null;
+  }
+
+  // 1. By bet type (engine category)
+  const betTypeKeys = [...new Set(settled.map(b => b.betType || b.type || 'UNKNOWN'))];
+  const byBetType = betTypeKeys.map(type => {
+    const items = settled.filter(b => (b.betType || b.type || 'UNKNOWN') === type);
+    const stats = groupStats(items);
+    return { type, ...stats, flag: detectFlag(stats, `Bet type: ${type}`) };
+  }).sort((a, b) => b.settled - a.settled);
+
+  // 2. By confidence band (10-point buckets)
+  const BANDS = [
+    { label: '90-100%', min: 90, max: 100, mid: 95 },
+    { label: '80-89%',  min: 80, max: 89,  mid: 85 },
+    { label: '70-79%',  min: 70, max: 79,  mid: 75 },
+    { label: '60-69%',  min: 60, max: 69,  mid: 65 },
+    { label: '50-59%',  min: 50, max: 59,  mid: 55 },
+    { label: '<50%',    min: 0,  max: 49,  mid: 40 },
+  ];
+  const betsWithConf = settled.filter(b => b.confidence != null);
+  const byConfidenceBand = BANDS.map(({ label, min, max, mid }) => {
+    const items = betsWithConf.filter(b => Number(b.confidence) >= min && Number(b.confidence) <= max);
+    if (items.length === 0) return null;
+    const stats = groupStats(items);
+    const calibGap = stats.winRate != null ? +(stats.winRate - mid).toFixed(1) : null;
+    const flag = items.length >= MIN_SAMPLE && calibGap != null
+      ? (calibGap < -20
+          ? { severity: 'HIGH', type: 'OVERCONFIDENT', label: `Band ${label}`,
+              message: `At ${label} confidence: winning only ${stats.winRate}%. Model overestimates by ${Math.abs(calibGap)}pp.` }
+          : calibGap > 20
+          ? { severity: 'MEDIUM', type: 'UNDERCONFIDENT', label: `Band ${label}`,
+              message: `At ${label} confidence: winning ${stats.winRate}% — better than stated. Increase stake here.` }
+          : null)
+      : null;
+    return { band: label, midConf: mid, ...stats, calibrationGapFromBand: calibGap, flag };
+  }).filter(Boolean);
+
+  // 3. By league (top 15 by volume)
+  const leagueKeys = [...new Set(settled.map(b => b.leagueName || b.league || 'Unknown'))];
+  const byLeague = leagueKeys.map(league => {
+    const items = settled.filter(b => (b.leagueName || b.league || 'Unknown') === league);
+    const stats = groupStats(items);
+    return { league, ...stats, flag: detectFlag(stats, `League: ${league}`) };
+  }).sort((a, b) => b.settled - a.settled).slice(0, 15);
+
+  // 4. By UTC hour when bet was placed
+  const byHour = [];
+  for (let h = 0; h < 24; h++) {
+    const items = settled.filter(b => {
+      try { return new Date(b.createdAt).getUTCHours() === h; } catch { return false; }
+    });
+    if (items.length === 0) continue;
+    const stats = groupStats(items);
+    byHour.push({ hour: h, label: `${String(h).padStart(2, '0')}:00 UTC`, ...stats,
+      flag: detectFlag(stats, `Hour ${h}:00 UTC`) });
+  }
+
+  // Aggregate all flags sorted by severity
+  const allFlags = [
+    ...byBetType.map(g => g.flag),
+    ...byConfidenceBand.map(g => g.flag),
+    ...byLeague.map(g => g.flag),
+    ...byHour.map(g => g.flag),
+  ].filter(Boolean).sort((a, b) =>
+    ['HIGH', 'MEDIUM', 'LOW'].indexOf(a.severity) - ['HIGH', 'MEDIUM', 'LOW'].indexOf(b.severity)
+  );
+
+  const totalWon = settled.filter(b => b.result === 'won').length;
+  const overallWinRate = +((totalWon / settled.length) * 100).toFixed(1);
+  const allAvgConf = betsWithConf.length > 0
+    ? +(betsWithConf.reduce((s, b) => s + Number(b.confidence), 0) / betsWithConf.length).toFixed(1)
+    : null;
+  const overallCalGap = allAvgConf != null ? +(overallWinRate - allAvgConf).toFixed(1) : null;
+
+  res.json({
+    summary: {
+      totalSettled: settled.length,
+      totalWon,
+      totalLost: settled.length - totalWon,
+      overallWinRate,
+      avgStatedConfidence: allAvgConf,
+      overallCalibrationGap: overallCalGap,
+      calibrationStatus: overallCalGap == null ? 'No confidence data'
+        : overallCalGap < -20 ? '🔴 OVERCONFIDENT — model overstates probability'
+        : overallCalGap > 20  ? '🟡 UNDERCONFIDENT — model understates probability'
+        : '🟢 WELL CALIBRATED',
+      lastUpdated: new Date().toISOString(),
+    },
+    byBetType,
+    byConfidenceBand,
+    byLeague,
+    byHour,
+    flags: allFlags,
+    dataQuality: {
+      betsWithConfidence: betsWithConf.length,
+      betsWithLeague: settled.filter(b => b.leagueName || b.league).length,
+      note: betsWithConf.length < 10
+        ? 'Calibration improves with more data. Log at least 10 settled bets with confidence scores for meaningful patterns.'
+        : null,
+    },
   });
 });
 

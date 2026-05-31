@@ -67,7 +67,7 @@ SportyRabbi/
 
 ### Prerequisites
 - Node.js 18+
-- API-Football key (free tier at [api-football.com](https://www.api-football.com))
+- API-Football key (Pro plan at [api-football.com](https://www.api-football.com))
 - Firebase project with Firestore enabled (service account JSON)
 - Twilio account (optional — WhatsApp alerts)
 

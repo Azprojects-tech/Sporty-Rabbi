@@ -160,7 +160,7 @@ firebase.firestore().collection('bets').get()
 
 ## Performance Considerations
 
-1. **API-Football**: Free tier rate limits — monitor in `analyticsService.js` (1 h / 6 h caches)
+1. **API-Football**: Pro plan — monitor quota in `analyticsService.js` (1 h / 6 h caches)
 2. **Calibration**: Runs every 6 h; manual trigger via POST `/api/calibrate`
 3. **Frontend**: useMemo/useCallback/React.memo applied throughout
 4. **Polling**: 30 s live match sync — adjust in `server.js` cron schedule
@@ -171,7 +171,7 @@ firebase.firestore().collection('bets').get()
 |-------|----------|
 | All matches show identical parameters | `homeTeamId`/`awayTeamId` missing in request — check `sanitizeMatch()` output |
 | No analyst note on match | Groq/Gemini keys missing in `.env` or quota exhausted |
-| No live matches showing | Check `API_FOOTBALL_KEY` validity; free tier may be rate-limited |
+| No live matches showing | Check `API_FOOTBALL_KEY` validity; quota guard may be active |
 | CORS errors in browser | Check `CORS_ORIGIN` in `server.js` or Railway env |
 | Firebase errors | Verify `firebase-service-account.json` path and project ID |
 
