@@ -134,6 +134,11 @@ STEP 5 — Store + Broadcast
     → High-confidence matches (≥65%) trigger WhatsApp alert
 ```
 
+Live match fallback note:
+- Live fixtures are fetched first, then enriched by V9.
+- If enrichment or V9 fails for one live fixture, the backend keeps a minimal fallback row instead of dropping that match from the feed.
+- WhatsApp alerting is still threshold-based: `<65%` silent, `65–79%` standard alert, `80%+` premium alert.
+
 ---
 
 ### 5b. Live Polling (every 30 seconds)

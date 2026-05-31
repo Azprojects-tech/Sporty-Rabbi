@@ -1018,7 +1018,38 @@ async function analyzeMatch(match) {
     return result;
   } catch (error) {
     console.error('❌ Error analyzing match:', error.message);
-    return null; // Skip this match
+    const fixture = match.fixture || {};
+    const goals = match.goals || {};
+    const teams = match.teams || {};
+    const league = match.league || {};
+    const statusStr = typeof fixture.status === 'object' && fixture.status?.short
+      ? fixture.status.short
+      : String(fixture.status || 'NS');
+
+    // Fail open for live fixtures: keep the match visible even if enrichment/V9 fails.
+    return sanitizeMatch({
+      id: fixture.id || `${teams.home?.id || ''}-${teams.away?.id || ''}-${(fixture.date || '').slice(0, 10)}`,
+      homeTeamId: teams.home?.id || null,
+      awayTeamId: teams.away?.id || null,
+      home: teams.home?.name || 'Unknown',
+      away: teams.away?.name || 'Unknown',
+      score: `${goals.home || 0}-${goals.away || 0}`,
+      possession: { home: 0, away: 0 },
+      shots: { home: 0, away: 0 },
+      xg: { home: 0, away: 0 },
+      status: statusStr,
+      matchMinutes: typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0,
+      confidence: 50,
+      opportunities: [],
+      league: league.name || 'Unknown',
+      leagueId: league.id || 0,
+      matchType: 'League',
+      leagueCountry: league.country || '',
+      cards: {
+        home: { yellow: 0, red: 0 },
+        away: { yellow: 0, red: 0 },
+      },
+    });
   }
 }
 
