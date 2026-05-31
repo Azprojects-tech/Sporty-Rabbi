@@ -137,6 +137,29 @@ export default function App() {
  return () => clearInterval(t);
  }, []);
 
+ // ── Refresh (pull-to-refresh) ────────────────────────────────────────────────
+ const handleRefresh = useCallback(async () => {
+   try {
+     const [liveRes, upRes] = await Promise.all([
+       apiService.getLiveMatches().catch(() => ({ data: { matches: [] } })),
+       apiService.getUpcoming().catch(() => ({ data: { matches: [] } })),
+     ]);
+     const live = liveRes?.data?.matches || [];
+     const upcoming = upRes?.data?.matches || [];
+     const liveIds = new Set(live.map(m => m.id));
+     setAllMatches(prev => {
+       const calMatches = prev.filter(m => m._calibrated);
+       return [
+         ...live.map(m => ({ ...m, _source: 'live' })),
+         ...upcoming.filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' })),
+         ...calMatches.filter(m => !liveIds.has(m.id)),
+       ];
+     });
+   } catch (e) {
+     console.warn('Pull-refresh failed:', e.message);
+   }
+ }, []);
+
  // â”€â”€ Recalibrate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  const handleCalibrate = useCallback(async () => {
    setCalibrating(true);
@@ -444,6 +467,7 @@ export default function App() {
  matches={displayedMatches}
  selectedMatch={selectedMatch}
  onSelectMatch={handleSelectMatch}
+ onRefresh={handleRefresh}
  />
  </div>
  )}

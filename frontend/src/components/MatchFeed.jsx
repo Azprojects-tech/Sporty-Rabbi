@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from 'react';
+import React, { memo, useMemo, useState, useCallback, useRef } from 'react';
 
 const LEAGUE_FLAGS = {
   39: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 140: '🇪🇸', 78: '🇩🇪', 135: '🇮🇹', 61: '🇫🇷',
@@ -156,7 +156,42 @@ const MatchRowMemo = memo(MatchRow, (prev, next) =>
   prev.match === next.match && prev.isSelected === next.isSelected
 );
 
-function MatchFeedInner({ matches, selectedMatch, onSelectMatch }) {
+const PULL_THRESHOLD = 70;
+
+function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [pullDist, setPullDist] = useState(0);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [refreshing, setRefreshing] = useState(false);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const touchStartY = useRef(0);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const scrollRef = useRef(null);
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const handleTouchStart = useCallback((e) => {
+    touchStartY.current = e.touches[0].clientY;
+  }, []);
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const handleTouchMove = useCallback((e) => {
+    if (refreshing || !scrollRef.current) return;
+    if (scrollRef.current.scrollTop > 0) return;
+    const dist = e.touches[0].clientY - touchStartY.current;
+    if (dist > 0) setPullDist(Math.min(dist, PULL_THRESHOLD * 1.5));
+  }, [refreshing]);
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const handleTouchEnd = useCallback(async () => {
+    if (pullDist >= PULL_THRESHOLD && onRefresh && !refreshing) {
+      setPullDist(0);
+      setRefreshing(true);
+      try { await onRefresh(); } finally { setRefreshing(false); }
+    } else {
+      setPullDist(0);
+    }
+  }, [pullDist, onRefresh, refreshing]);
+
   if (!matches || matches.length === 0) {
     return (
       <div style={{
@@ -184,8 +219,37 @@ function MatchFeedInner({ matches, selectedMatch, onSelectMatch }) {
     return g;
   }, [matches]);
 
+  const pullProgress = Math.min(pullDist / PULL_THRESHOLD, 1);
+  const showIndicator = refreshing || pullDist > 8;
+
   return (
-    <div style={{ flex: 1, overflowY: 'auto' }}>
+    <div
+      ref={scrollRef}
+      style={{ flex: 1, overflowY: 'auto' }}
+      onTouchStart={onRefresh ? handleTouchStart : undefined}
+      onTouchMove={onRefresh ? handleTouchMove : undefined}
+      onTouchEnd={onRefresh ? handleTouchEnd : undefined}
+    >
+      {/* Pull-to-refresh indicator */}
+      {showIndicator && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          padding: '10px 0', background: '#0a0d15',
+          borderBottom: '1px solid #1e2535',
+          transition: 'opacity 0.15s',
+        }}>
+          <span style={{
+            display: 'inline-block', fontSize: 15,
+            color: pullProgress >= 1 || refreshing ? '#00b859' : '#4a5568',
+            animation: refreshing ? 'spin 0.7s linear infinite' : 'none',
+            transform: refreshing ? 'none' : `rotate(${pullProgress * 180}deg)`,
+            transition: 'color 0.2s, transform 0.1s',
+          }}>↻</span>
+          <span style={{ fontSize: 11, color: pullProgress >= 1 || refreshing ? '#00b859' : '#4a5568', transition: 'color 0.2s' }}>
+            {refreshing ? 'Refreshing...' : pullProgress >= 1 ? 'Release to refresh' : 'Pull to refresh'}
+          </span>
+        </div>
+      )}
       {Array.from(groups.values()).map(group => (
         <div key={`${group.id}_${group.name}`}>
           {/* League section header */}
