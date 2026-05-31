@@ -847,16 +847,14 @@ async function analyzeMatch(match) {
         confidence       = analysisObj.overallScore || 50;
         opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
       } catch (v9Err) {
-        console.warn(`[analyzeMatch] V9 error for ${teams.home?.name} vs ${teams.away?.name}: ${v9Err.message}`);
-        confidence = 50;
-        opportunitiesArr = [];
-        analysisObj = null;
+        console.warn(`[analyzeMatch] V9 error for ${teams.home?.name} vs ${teams.away?.name}: ${v9Err.message} — dropping match`);
+        return null; // Unanalyzable match must not enter the pool with a fake confidence
       }
       kickoffUTC = fixture.date || null;
     }
 
     const analyzed = {
-      id: fixture.id || Math.random(),
+      id: fixture.id || `${teams.home?.id || ''}-${teams.away?.id || ''}-${(fixture.date || '').slice(0, 10)}`,
       homeTeamId: teams.home?.id || null,
       awayTeamId: teams.away?.id || null,
       home: teams.home?.name || 'Unknown',
@@ -1922,52 +1920,85 @@ app.post('/api/analyze', async (req, res) => {
 /**
  * GET /api/analyze/live/:matchId
  * Runs V9 analysis on a live match already in the in-memory store.
- * Auto-populates what it can from live stats; pass ?gameWeek=35&totalGW=38 etc via query.
+ * If the polling cycle already computed a V9 analysis for this match, returns it directly.
+ * Otherwise fetches real standings + team stats from API-Football (all cached 1–6 h) and runs V9.
  */
-app.get('/api/analyze/live/:matchId', (req, res) => {
+app.get('/api/analyze/live/:matchId', async (req, res) => {
   try {
     const { matchId } = req.params;
     const match = liveMatches.find((m) => m.id == matchId || m.id === parseInt(matchId));
+    if (!match) return res.status(404).json({ error: 'Match not found in live matches' });
 
-    if (!match) {
-      return res.status(404).json({ error: 'Match not found in live matches' });
+    // Fast path: polling already ran V9 with real data for this match
+    if (match.analysis) return res.json(match.analysis);
+
+    // Slow path: match exists but V9 was skipped — fetch real context and re-run
+    const homeTeamId = match.homeTeamId;
+    const awayTeamId = match.awayTeamId;
+    const leagueId   = match.leagueId;
+
+    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
+      getStandings(leagueId),
+      getTeamStatistics(homeTeamId, leagueId),
+      getTeamStatistics(awayTeamId, leagueId),
+      getTeamInjuries(homeTeamId, leagueId),
+      getTeamInjuries(awayTeamId, leagueId),
+    ]);
+
+    let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20, gameWeek = 30;
+    if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+      const tms = standingsRes.value.teams;
+      totalTeams = standingsRes.value.totalTeams || 20;
+      if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position; homePoints = tms[homeTeamId].points; }
+      if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position; awayPoints = tms[awayTeamId].points; }
+      const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
+      if (played > 0) gameWeek = played;
     }
 
-    // Build matchData from live state + optional query overrides
-    const q = req.query;
+    let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
+    let homeConversionPct = null, awayConversionPct = null;
+    let homeSeasonShots = null, awaySeasonShots = null, homeSeasonPossession = null;
+    if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
+      const s = hStatsRes.value.stats;
+      if (s.conversionPct != null) homeConversionPct    = s.conversionPct;
+      if (s.avgShotsTotal  >  0)   homeSeasonShots      = s.avgShotsTotal;
+      if (s.avgPossession != null) homeSeasonPossession = s.avgPossession;
+    }
+    if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
+      const s = aStatsRes.value.stats;
+      if (s.conversionPct != null) awayConversionPct = s.conversionPct;
+      if (s.avgShotsTotal  >  0)   awaySeasonShots   = s.avgShotsTotal;
+    }
+    if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
+    if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) awaySquadIntegrity = aInjRes.value.squadIntegrity;
+
+    const liveMin       = match.matchMinutes || 0;
+    const isLive        = match.isLive && liveMin > 0;
+    const livePoss      = match.possession?.home || 0;
+    const liveShotsHome = match.shots?.home || 0;
+    const liveShotsAway = match.shots?.away || 0;
+    const liveXgHome    = match.xg?.home || 0;
+    const liveXgAway    = match.xg?.away || 0;
+
     const matchData = {
-      home:                 match.home,
-      away:                 match.away,
-      league:               match.league,
-      leagueId:             match.leagueId,
-      status:               'LIVE',
-      matchMinutes:         match.matchMinutes || 0,
-      score:                match.score || '0-0',
-      // League context — caller should pass these for accurate analysis
-      gameWeek:             parseInt(q.gameWeek)     || 30,
-      totalGW:              parseInt(q.totalGW)      || 38,
-      totalTeams:           parseInt(q.totalTeams)   || 20,
-      homePosition:         parseInt(q.homePos)      || 10,
-      awayPosition:         parseInt(q.awayPos)      || 10,
-      homePoints:           parseInt(q.homePts)      || 40,
-      awayPoints:           parseInt(q.awayPts)      || 40,
-      // Live stats — use actual xG when available, else league-appropriate defaults
-      homeXgAvg:            match.xg?.home  || ([2,3,848].includes(match.leagueId) ? 1.55 : [39,140,78,61,135].includes(match.leagueId) ? 1.45 : 1.30),
-      awayXgAvg:            match.xg?.away  || ([2,3,848].includes(match.leagueId) ? 1.35 : [39,140,78,61,135].includes(match.leagueId) ? 1.25 : 1.15),
-      homeXgaAvg:           match.xg?.away  || ([2,3,848].includes(match.leagueId) ? 1.35 : [39,140,78,61,135].includes(match.leagueId) ? 1.25 : 1.15),
-      awayXgaAvg:           match.xg?.home  || ([2,3,848].includes(match.leagueId) ? 1.55 : [39,140,78,61,135].includes(match.leagueId) ? 1.45 : 1.30),
-      homePossession:       match.possession?.home || 50,
-      homeShotsPerGame:     match.shots?.home || 5,
-      awayShotsPerGame:     match.shots?.away || 4,
-      // Defaults — caller can override via POST /api/analyze for full analysis
-      homeSquadIntegrity:   parseInt(q.homeSquad) || 90,
-      awaySquadIntegrity:   parseInt(q.awaySquad) || 90,
-      referee:              q.referee || null,
-      venue:                q.venue   || null,
+      home: match.home, away: match.away, league: match.league, leagueId,
+      status: 'LIVE', matchMinutes: liveMin, score: match.score || '0-0',
+      gameWeek, totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38, totalTeams,
+      homePosition, awayPosition, homePoints, awayPoints,
+      homeSquadIntegrity, awaySquadIntegrity,
+      homeConversionPct, awayConversionPct,
+      homePossession:   isLive && livePoss > 0       ? blendPctStat(homeSeasonPossession  || 50, livePoss,       liveMin, 360) : (homeSeasonPossession  || 50),
+      homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(homeSeasonShots || 11, liveShotsHome, liveMin, 180) : (homeSeasonShots || 11),
+      awayShotsPerGame: isLive && liveShotsAway > 0  ? blendCountStat(awaySeasonShots || 11, liveShotsAway, liveMin, 180) : (awaySeasonShots || 11),
+      // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
+      homeXgAvg:  liveXgHome > 0 ? liveXgHome : null,
+      awayXgAvg:  liveXgAway > 0 ? liveXgAway : null,
+      homeXgaAvg: liveXgAway > 0 ? liveXgAway : null,
+      awayXgaAvg: liveXgHome > 0 ? liveXgHome : null,
+      cards: match.cards,
     };
 
-    const analysis = analyzeV9(matchData);
-    res.json(analysis);
+    res.json(analyzeV9(matchData));
   } catch (error) {
     console.error('V9 live analysis error:', error.message);
     res.status(500).json({ error: 'Live analysis failed', detail: error.message });

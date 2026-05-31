@@ -356,8 +356,8 @@ Return a JSON array (may be empty []) where each object has EXACTLY these fields
 
   const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
   if (matches === null) {
-    console.log('[Gemini Sports] Using static live fallback (quota exhausted)');
-    return STATIC_LIVE_FIXTURES;
+    console.warn('[Gemini Sports] Quota exhausted — returning empty live match list (no fabricated data shown to users)');
+    return [];
   }
   console.log(`[Gemini Sports] Generated ${matches.length} live matches (AI-estimated)`);
   return matches;
@@ -639,8 +639,8 @@ Return a JSON array where each object has EXACTLY these fields:
 
   const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
   if (matches === null) {
-    console.log('[Gemini Sports] Using static upcoming fallback (quota exhausted)');
-    return STATIC_UPCOMING_FIXTURES;
+    console.warn('[Gemini Sports] Quota exhausted — returning empty upcoming match list (no fabricated data shown to users)');
+    return [];
   }
   console.log(`[Gemini Sports] Generated ${matches.length} upcoming matches (AI-estimated)`);
   return matches;
