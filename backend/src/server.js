@@ -334,8 +334,13 @@ async function fetchLiveMatches() {
     }
     // Check if rate limited
     if (error.response?.status === 429) {
-      setQuotaPause('Received 429 from API-Football', getNextUtcMidnightIso());
-      console.error('⚠️  API RATE LIMIT EXCEEDED - quota guard enabled until UTC reset');
+      // Distinguish minute-rate-limit 429 (short pause) from daily-exhaustion 429 (midnight)
+      const dailyOk = quotaState.dailyRemaining === null || quotaState.dailyRemaining > API_DAILY_SOFT_STOP;
+      const resumeAt = dailyOk
+        ? new Date(Date.now() + 2 * 60 * 1000).toISOString()  // 2-min cooldown
+        : getNextUtcMidnightIso();                              // truly exhausted → midnight
+      setQuotaPause('Received 429 from API-Football', resumeAt);
+      console.error(`⚠️  API 429 — pause until ${resumeAt} (daily remaining: ${quotaState.dailyRemaining ?? 'unknown'})`);
     }
     return [];
   }
@@ -363,7 +368,11 @@ async function fetchTodayFixturesFromApi() {
     console.warn(`[Calibrate] API-Football today fetch failed: ${err.message}`);
     if (err.response?.headers) updateQuotaFromHeaders(err.response.headers);
     if (err.response?.status === 429 || err.response?.status === 402) {
-      setQuotaPause('API-Football suspended/rate-limited', getNextUtcMidnightIso());
+      const dailyOk = quotaState.dailyRemaining === null || quotaState.dailyRemaining > API_DAILY_SOFT_STOP;
+      const resumeAt = (err.response?.status === 402 || !dailyOk)
+        ? getNextUtcMidnightIso()
+        : new Date(Date.now() + 2 * 60 * 1000).toISOString();
+      setQuotaPause('API-Football suspended/rate-limited', resumeAt);
     }
     return [];
   }
@@ -518,7 +527,11 @@ async function fetchUpcomingMatches() {
       updateQuotaFromHeaders(error.response.headers);
     }
     if (error.response?.status === 429) {
-      setQuotaPause('Received 429 from API-Football', getNextUtcMidnightIso());
+      const dailyOk = quotaState.dailyRemaining === null || quotaState.dailyRemaining > API_DAILY_SOFT_STOP;
+      const resumeAt = dailyOk
+        ? new Date(Date.now() + 2 * 60 * 1000).toISOString()
+        : getNextUtcMidnightIso();
+      setQuotaPause('Received 429 from API-Football', resumeAt);
     }
     return [];
   }
@@ -1319,6 +1332,18 @@ function generateBetSlips(bankroll = BANKROLL) {
 }
 
 // ─── REST API ENDPOINTS ────────────────────────────────────────────────────
+
+// ── Manual quota guard reset ─────────────────────────────────────────────
+app.post('/api/quota/reset', (req, res) => {
+  const wasPaused = quotaState.isPaused;
+  clearQuotaPause();
+  console.log('[Admin] Quota guard manually reset via POST /api/quota/reset');
+  res.json({
+    ok: true,
+    wasPaused,
+    message: wasPaused ? 'Quota guard cleared. API polling will resume on next poll cycle.' : 'Quota guard was not active.',
+  });
+});
 
 app.get('/api/health', (req, res) => {
   res.json({
