@@ -1,13 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
-function getPhaseConfidencePolicy(match) {
-  const status = match?.status || 'NS';
-  const matchMinutes = match?.matchMinutes || 0;
-  const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
-  if (!isLive) return { phase: 'PRE_MATCH', standardThreshold: 65, premiumThreshold: 80 };
-  if (matchMinutes < 25) return { phase: 'EARLY_LIVE', standardThreshold: 68, premiumThreshold: 83 };
-  if (matchMinutes < 70) return { phase: 'MID_LIVE', standardThreshold: 64, premiumThreshold: 78 };
-  return { phase: 'LATE_LIVE', standardThreshold: 60, premiumThreshold: 72 };
-}
+import { getPhaseConfidencePolicyFromMatch } from '../../shared/confidencePolicy.js';
 
 import { connectWebSocket, on, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
@@ -260,7 +252,7 @@ export default function App() {
  // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  const displayedMatches = useMemo(() => allMatches.filter(m => {
    if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
-   if (filter === 'high' && (m.confidence || 0) < getPhaseConfidencePolicy(m).premiumThreshold) return false;
+  if (filter === 'high' && (m.confidence || 0) < getPhaseConfidencePolicyFromMatch(m).premiumThreshold) return false;
    if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
    if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
    if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;

@@ -139,7 +139,7 @@ function MatchRow({ match, isSelected, onSelect }) {
         {match.away}
       </div>
 
-      {/* Confidence badge — only shown when real V8 analysis ran (hides the 50% NS placeholder) */}
+      {/* Confidence badge — shown only when analysis has meaningful confidence context */}
       {(isLive || match.status === 'FT' || (match.confidence || 0) >= 55) && (
         <div style={{ marginLeft: 12 }}>
           <ConfBadge score={match.confidence || 0} />

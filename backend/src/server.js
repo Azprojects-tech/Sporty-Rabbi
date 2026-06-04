@@ -33,6 +33,8 @@ import {
   calculateBetValue,
   generateBettingAlert,
 } from './services/liveAnalyticsService.js';
+import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
+import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -42,7 +44,7 @@ const PORT = process.env.PORT || 3000;
 // ─── WHITELIST CONFIG ──────────────────────────────────────────────────────
 // Only track these specific leagues (ID-based for maximum control)
 // All regulated leagues are shown — no whitelist restriction.
-// V9 confidence filtering (>=80%) is done on the frontend "80%+ Picks" tab.
+// Confidence filtering is phase-aware (PRE/EARLY/MID/LATE live) in backend and frontend.
 // The constant below is kept only for the TheSportsDB league-ID lookup helper.
 const WHITELISTED_LEAGUE_IDS = null; // null = accept all leagues
 
@@ -83,20 +85,6 @@ let alerts = [];
 let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
 let calibrationRunning = false;
-
-function getPhaseConfidencePolicy(status = 'NS', matchMinutes = 0) {
-  const isLive = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
-  if (!isLive) {
-    return { phase: 'PRE_MATCH', standardThreshold: 65, premiumThreshold: 80, baselineWeight: 0.8, liveWeight: 0.2 };
-  }
-  if (matchMinutes < 25) {
-    return { phase: 'EARLY_LIVE', standardThreshold: 68, premiumThreshold: 83, baselineWeight: 0.65, liveWeight: 0.35 };
-  }
-  if (matchMinutes < 70) {
-    return { phase: 'MID_LIVE', standardThreshold: 64, premiumThreshold: 78, baselineWeight: 0.45, liveWeight: 0.55 };
-  }
-  return { phase: 'LATE_LIVE', standardThreshold: 60, premiumThreshold: 72, baselineWeight: 0.2, liveWeight: 0.8 };
-}
 
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
@@ -940,6 +928,7 @@ async function analyzeMatch(match) {
         // See blendCountStat / blendPctStat for derivation and prior-strength rationale.
         ...(() => {
           const isLive = normalizedStatus === 'LIVE' && liveMin > 0;
+          const leagueDefaults = getLeagueStatDefaults(league.id || 0);
           // xG / attack quality — N=90 (fast convergence; xG reflects live tactics)
           const hXgAvg  = isLive && xg.home > 0 && homeAvgGF ? blendCountStat(homeAvgGF, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : homeAvgGF);
           const aXgAvg  = isLive && xg.away > 0 && awayAvgGF ? blendCountStat(awayAvgGF, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : awayAvgGF);
@@ -947,8 +936,10 @@ async function analyzeMatch(match) {
           const hXgaAvg = isLive && xg.away > 0 && homeAvgGA ? blendCountStat(homeAvgGA, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : homeAvgGA);
           const aXgaAvg = isLive && xg.home > 0 && awayAvgGA ? blendCountStat(awayAvgGA, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : awayAvgGA);
           // Shots per game — N=180 (moderately stable; tactical changes take time)
-          const hShots  = isLive && totalShots.home > 0 ? blendCountStat(homeSeasonShots || 11, totalShots.home, liveMin, 180) : (homeSeasonShots || 11);
-          const aShots  = isLive && totalShots.away > 0 ? blendCountStat(awaySeasonShots || 11, totalShots.away, liveMin, 180) : (awaySeasonShots || 11);
+          const baseHomeShots = homeSeasonShots || leagueDefaults.homeShotsPerGame;
+          const baseAwayShots = awaySeasonShots || leagueDefaults.awayShotsPerGame;
+          const hShots  = isLive && totalShots.home > 0 ? blendCountStat(baseHomeShots, totalShots.home, liveMin, 180) : baseHomeShots;
+          const aShots  = isLive && totalShots.away > 0 ? blendCountStat(baseAwayShots, totalShots.away, liveMin, 180) : baseAwayShots;
           // Possession — N=360 (very stable; a team's style rarely shifts mid-match)
           const hPoss   = isLive && possession.home > 0 ? blendPctStat(homeSeasonPossession || 50, possession.home, liveMin, 360) : (homeSeasonPossession || 50);
           return {
@@ -2289,6 +2280,9 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     const liveShotsAway = match.shots?.away || 0;
     const liveXgHome    = match.xg?.home || 0;
     const liveXgAway    = match.xg?.away || 0;
+    const leagueDefaults = getLeagueStatDefaults(leagueId);
+    const baseHomeShots = homeSeasonShots || leagueDefaults.homeShotsPerGame;
+    const baseAwayShots = awaySeasonShots || leagueDefaults.awayShotsPerGame;
 
     const matchData = {
       home: match.home, away: match.away, league: match.league, leagueId,
@@ -2299,8 +2293,8 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       homeKeyAbsences, awayKeyAbsences,
       homeConversionPct, awayConversionPct,
       homePossession:   isLive && livePoss > 0       ? blendPctStat(homeSeasonPossession  || 50, livePoss,       liveMin, 360) : (homeSeasonPossession  || 50),
-      homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(homeSeasonShots || 11, liveShotsHome, liveMin, 180) : (homeSeasonShots || 11),
-      awayShotsPerGame: isLive && liveShotsAway > 0  ? blendCountStat(awaySeasonShots || 11, liveShotsAway, liveMin, 180) : (awaySeasonShots || 11),
+      homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
+      awayShotsPerGame: isLive && liveShotsAway > 0  ? blendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
       homeLateGoalPct,
       awayLateGoalPct,
       // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
@@ -2761,10 +2755,10 @@ async function runCalibration() {
     }
   }
 
-  // ── Two-tier WhatsApp alerts ──────────────────────────────────────────────
-  // 80%+ → 🏆 HIGH CONFIDENCE (premium)
-  // 65–79% → 📊 CALIBRATION PICK (standard)
-  // <65%   → silent (stored + searchable, no alert)
+  // ── Two-tier WhatsApp alerts (phase-aware thresholds) ─────────────────────
+  // conf >= premiumThreshold  → 🏆 HIGH CONFIDENCE (premium)
+  // conf >= standardThreshold → 📊 CALIBRATION PICK (standard)
+  // conf < standardThreshold  → silent (stored + searchable, no alert)
   try {
     const today = new Date().toDateString();
     const alreadySentToday = new Set(

@@ -9,6 +9,7 @@
 
 import axios from 'axios';
 import { getLeagueGoalsAvg } from './agent47Service.js';
+import { getNarrativePhaseModel } from '../../../shared/confidencePolicy.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
@@ -847,40 +848,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     .slice(0, 5)
     .join('');
 
-  const getNarrativePhase = () => {
-    if (!isLive) {
-      return {
-        phase: 'PRE_MATCH',
-        baselineWeight: 0.8,
-        liveWeight: 0.2,
-        instruction: 'Lead with pre-match context: form, opponent quality, injuries, motivation, H2H and Poisson baseline. Mention live stats only if they exist as supporting color.',
-      };
-    }
-    if (matchMinutes < 25) {
-      return {
-        phase: 'EARLY_LIVE',
-        baselineWeight: 0.65,
-        liveWeight: 0.35,
-        instruction: 'Pre-match baseline still leads, but explain whether early possession, shots and xG support or weaken that baseline.',
-      };
-    }
-    if (matchMinutes < 70) {
-      return {
-        phase: 'MID_LIVE',
-        baselineWeight: 0.45,
-        liveWeight: 0.55,
-        instruction: 'Blend pre-match baseline with live match evidence evenly. State clearly whether the game is following or breaking the pre-match expectation.',
-      };
-    }
-    return {
-      phase: 'LATE_LIVE',
-      baselineWeight: 0.2,
-      liveWeight: 0.8,
-      instruction: 'Live state dominates now: scoreline, xG, shots, cards, momentum and time remaining matter more than older pre-match context.',
-    };
-  };
-
-  const phaseModel = getNarrativePhase();
+  const phaseModel = getNarrativePhaseModel(isLive ? 'LIVE' : 'NS', matchMinutes);
 
   const buildStructuredNarrative = (coreText = '') => {
     const baseline = isLive

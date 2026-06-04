@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../services/api';
+import { getLeagueStatDefaults } from '../../../shared/leagueDefaults.js';
 
 const TIER_COLORS = { 1: '#f59e0b', 2: '#00b859', 3: '#fbbf24', 4: '#f97316' };
 const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
@@ -226,19 +227,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     if (!analysis && !preloadedAnalysis) setLoading(true);
     setError(null);
     try {
-      // Per-league xG defaults (mirrors server.js LEAGUE_XG table — must stay in sync)
       const _lid = match.leagueId || 0;
-      const LEAGUE_XG_MAP = {
-        39:[1.55,1.35], 40:[1.45,1.35], 78:[1.70,1.50], 79:[1.55,1.40],
-        135:[1.15,1.05], 61:[1.15,1.05], 140:[1.30,1.20], 88:[1.65,1.45],
-        71:[1.45,1.30], 94:[1.30,1.20], 144:[1.40,1.30], 235:[1.25,1.15],
-        307:[1.20,1.10], 2:[1.35,1.25], 3:[1.30,1.25], 179:[1.40,1.30],
-        848:[1.25,1.15], 203:[1.20,1.10], 253:[1.30,1.20], 98:[1.25,1.15],
-        292:[1.20,1.10], 169:[1.30,1.20], 313:[1.25,1.15], 128:[1.40,1.30],
-      };
-      const [_defHXg, _defAXg] = LEAGUE_XG_MAP[_lid] || [1.30, 1.15];
-      const _defShH = [2,3,848,39,78,88].includes(_lid) ? 15 : [140,135,61,94].includes(_lid) ? 13 : 11;
-      const _defShA = [2,3,848,39,78,88].includes(_lid) ? 13 : [140,135,61,94].includes(_lid) ? 11 : 9;
+      const leagueDefaults = getLeagueStatDefaults(_lid);
       const matchData = {
         home:             match.home,
         away:             match.away,
@@ -251,12 +241,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         score:            match.score    || '0-0',
         homePossession:   match.possession?.home || 50,
         hasLiveXg:        !!(match.xg?.home > 0 || match.xg?.away > 0),
-        homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : _defHXg,
-        awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : _defAXg,
-        homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away  : _defAXg,
-        awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home  : _defHXg,
-        homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : _defShH,
-        awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : _defShA,
+        homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
+        awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : leagueDefaults.awayXgAvg,
+        homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away  : leagueDefaults.awayXgAvg,
+        awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
+        homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : leagueDefaults.homeShotsPerGame,
+        awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : leagueDefaults.awayShotsPerGame,
         matchType:        match.matchType || 'League',
         homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
         awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },
