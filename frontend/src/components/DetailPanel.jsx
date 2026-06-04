@@ -81,6 +81,52 @@ function FormBadges({ formStr }) {
   );
 }
 
+function DataSnapshot({ analysis, match }) {
+  const homeOpp = analysis?.dataContext?.homeRecentOpposition;
+  const awayOpp = analysis?.dataContext?.awayRecentOpposition;
+  const hasLiveStats = match?.possession || match?.shots || match?.xg;
+
+  if (!homeOpp && !awayOpp && !hasLiveStats) return null;
+
+  return (
+    <div style={{
+      padding: '11px 14px',
+      borderBottom: '1px solid #1e2535',
+      background: '#0d1421',
+    }}>
+      <div style={{ fontSize: 9, fontWeight: 800, color: '#8b9ab3', letterSpacing: '1px', marginBottom: 8 }}>
+        DATA SNAPSHOT
+      </div>
+      {hasLiveStats && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 10 }}>
+          <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
+            <div style={{ fontSize: 9, color: '#4a5568' }}>Possession</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.possession?.home ?? '-'}% / {match?.possession?.away ?? '-' }%</div>
+          </div>
+          <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
+            <div style={{ fontSize: 9, color: '#4a5568' }}>Shots</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.shots?.home ?? '-'} / {match?.shots?.away ?? '-'}</div>
+          </div>
+          <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
+            <div style={{ fontSize: 9, color: '#4a5568' }}>xG</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.xg?.home ?? '-'} / {match?.xg?.away ?? '-'}</div>
+          </div>
+        </div>
+      )}
+      {homeOpp?.summary && (
+        <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6, margin: '0 0 6px 0' }}>
+          <strong style={{ color: '#e2e8f0' }}>{match?.home}:</strong> {homeOpp.summary}
+        </p>
+      )}
+      {awayOpp?.summary && (
+        <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6, margin: 0 }}>
+          <strong style={{ color: '#e2e8f0' }}>{match?.away}:</strong> {awayOpp.summary}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ParamDetail({ paramKey, p, match }) {
   const assessment = Array.isArray(p.assessment)
     ? p.assessment.filter(Boolean).join('. ')
@@ -274,6 +320,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
 
   return (
     <div style={panelStyle}>
+      <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
       {/* Header */}
       <div style={{ padding: '13px 16px', borderBottom: '1px solid #1e2535', flexShrink: 0 }}>
@@ -386,8 +433,10 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         </div>
       )}
 
+      <DataSnapshot analysis={analysis} match={match} />
+
       {/* Section tabs */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #1e2535', flexShrink: 0 }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid #1e2535' }}>
         {[['params', 'Parameters'], ['poisson', 'Poisson'], ['chaos', 'Chaos'], ['edges', 'Edges']].map(([k, l]) => (
           <button key={k} onClick={() => setSection(k)} style={{
             flex: 1, background: 'none', border: 'none', cursor: 'pointer',
@@ -401,7 +450,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px 28px', WebkitOverflowScrolling: 'touch' }}>
+      <div style={{ padding: '10px 14px 28px' }}>
 
         {/* PARAMETERS */}
         {section === 'params' && (
@@ -558,6 +607,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
           </div>
         )}
 
+      </div>
       </div>
     </div>
   );

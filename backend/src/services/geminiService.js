@@ -831,6 +831,8 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const isLive = status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(status);
   const homeFormRaw = matchInfo?.homeForm || '';
   const awayFormRaw = matchInfo?.awayForm || '';
+  const homeOpposition = matchInfo?.homeRecentOpposition || analysis?.dataContext?.homeRecentOpposition || null;
+  const awayOpposition = matchInfo?.awayRecentOpposition || analysis?.dataContext?.awayRecentOpposition || null;
   const homePoss = matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null;
   const awayPoss = matchInfo?.possession?.away ?? (homePoss != null ? 100 - homePoss : null);
   const homeShots = matchInfo?.shots?.home ?? null;
@@ -848,6 +850,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const metricsBlock = [
     `LIVE METRICS: Possession ${home} ${homePoss ?? '-'}% vs ${away} ${awayPoss ?? '-'}%, Shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}, Score ${score}.`,
     `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'N/A'} | ${away} ${formCompact(awayFormRaw) || 'N/A'}.`,
+    `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
     `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,
   ].join('\n');
 
@@ -889,7 +892,7 @@ Recommendation logic: ${topRec?.logic || ''}`;
 Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
 ${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasing, cards, and what the remaining expected goals data means for live bettors. Do NOT just echo the Poisson numbers — reason about the SITUATION.' : ''}
 If the model says "Wins (Undecided)", say clearly that this is a tight game and winner is not certain yet.
-Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals).
+Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals, opponent quality).
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
 Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
 

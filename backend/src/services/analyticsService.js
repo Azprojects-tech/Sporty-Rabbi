@@ -52,6 +52,50 @@ function setCache(key, data) {
   statsCache.set(key, { data, timestamp: Date.now() });
 }
 
+function summarizeRecentOpposition(teamId, matches = [], standings = null) {
+  const teamMap = standings?.teams || null;
+  const ownPosition = teamMap?.[teamId]?.position || null;
+  if (!teamMap || !ownPosition || matches.length === 0) return null;
+
+  const recent = matches.slice(0, 5).map((match) => {
+    const isHome = match.teams.home.id === teamId;
+    const opponent = isHome ? match.teams.away : match.teams.home;
+    const opponentPosition = teamMap?.[opponent.id]?.position || null;
+    let tier = 'peer';
+    if (opponentPosition != null) {
+      if (opponentPosition <= ownPosition - 3) tier = 'stronger';
+      else if (opponentPosition >= ownPosition + 3) tier = 'weaker';
+    }
+    return {
+      opponentId: opponent.id,
+      opponent: opponent.name,
+      opponentPosition,
+      tier,
+      date: match.fixture.date,
+    };
+  });
+
+  const counts = recent.reduce((acc, item) => {
+    acc[item.tier] += 1;
+    return acc;
+  }, { stronger: 0, peer: 0, weaker: 0 });
+
+  const positioned = recent.filter((item) => item.opponentPosition != null);
+  const avgOpponentPosition = positioned.length
+    ? +(positioned.reduce((sum, item) => sum + item.opponentPosition, 0) / positioned.length).toFixed(1)
+    : null;
+
+  const summary = `Last 5 opponents: ${counts.stronger} stronger, ${counts.peer} peer, ${counts.weaker} weaker${avgOpponentPosition != null ? ` (avg opp position ${avgOpponentPosition})` : ''}.`;
+
+  return {
+    ownPosition,
+    avgOpponentPosition,
+    counts,
+    recent,
+    summary,
+  };
+}
+
 // API-Football squad position strings → scoreStarPower impactMap keys
 const SQUAD_POS_MAP = {
   'Goalkeeper': 'goalkeeper',
@@ -95,6 +139,7 @@ export async function getTeamForm(teamId, league = null) {
 
     const response = await axiosInstance.get('/fixtures', { params });
     const matches = response.data.response || [];
+    const standings = league ? await getStandings(league).catch(() => null) : null;
 
     if (matches.length === 0) {
       return {
@@ -183,6 +228,7 @@ export async function getTeamForm(teamId, league = null) {
         winRate: ((wins / matches.length) * 100).toFixed(1),
         goalDrought,
         recentLosses,
+        recentOpposition: summarizeRecentOpposition(teamId, matches, standings),
       },
     };
 

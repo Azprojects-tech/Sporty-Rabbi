@@ -1133,6 +1133,7 @@ export function analyzeV9(matchData = {}) {
     // P15 Crisis/Drought Mode inputs
     homeGoalDrought = 0, awayGoalDrought = 0,
     homeRecentLosses = 0, awayRecentLosses = 0,
+    homeRecentOpposition = null, awayRecentOpposition = null,
     homeCoach = {}, awayCoach = {},
     // xG trend (positive = improving, negative = declining, null = unknown)
     homeXgTrend = null, awayXgTrend = null,
@@ -1182,6 +1183,15 @@ export function analyzeV9(matchData = {}) {
   const p13 = scoreCompetitiveContext(leagueId, matchType);
   const p14 = scoreLifecycle(gameWeek, totalGW);
   const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
+
+  if (homeRecentOpposition || awayRecentOpposition) {
+    const formNotes = [];
+    if (homeRecentOpposition?.summary) formNotes.push(`${home}: ${homeRecentOpposition.summary}`);
+    if (awayRecentOpposition?.summary) formNotes.push(`${away}: ${awayRecentOpposition.summary}`);
+    p4.assessment = [p4.assessment, ...formNotes].filter(Boolean).join(' ');
+    p4.home = { ...p4.home, recentOpposition: homeRecentOpposition };
+    p4.away = { ...p4.away, recentOpposition: awayRecentOpposition };
+  }
 
   // ── Weighted composite score (V9: 15 parameters + league scalar) ──────────
   // Parameters with no data (null score) are excluded; remaining weights are
@@ -1233,6 +1243,10 @@ export function analyzeV9(matchData = {}) {
     chaosVariables: chaos,
     overallScore: overall,
     winCall,
+    dataContext: {
+      homeRecentOpposition,
+      awayRecentOpposition,
+    },
     leagueScalarApplied: scalar,
     bookieEdges,
     analysisVersion: 'V9-Calibrated',

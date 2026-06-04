@@ -855,6 +855,7 @@ async function analyzeMatch(match) {
           if (parseFloat(hs.avgGoalsAgainst) > 0) homeAvgGA        = parseFloat(hs.avgGoalsAgainst);
           if (hs.goalDrought  != null) homeGoalDrought  = hs.goalDrought;
           if (hs.recentLosses != null) homeRecentLosses = hs.recentLosses;
+          if (hs.recentOpposition) match.homeRecentOpposition = hs.recentOpposition;
         }
         if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
           const as = aRes.value.stats;
@@ -863,6 +864,7 @@ async function analyzeMatch(match) {
           if (parseFloat(as.avgGoalsAgainst) > 0) awayAvgGA        = parseFloat(as.avgGoalsAgainst);
           if (as.goalDrought  != null) awayGoalDrought  = as.goalDrought;
           if (as.recentLosses != null) awayRecentLosses = as.recentLosses;
+          if (as.recentOpposition) match.awayRecentOpposition = as.recentOpposition;
         }
         // Build h2h history from aggregate stats for scoreH2H()
         if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
@@ -972,6 +974,8 @@ async function analyzeMatch(match) {
         awayGoalDrought,
         homeRecentLosses,
         awayRecentLosses,
+        homeRecentOpposition: match.homeRecentOpposition || null,
+        awayRecentOpposition: match.awayRecentOpposition || null,
       };
       try {
         analysisObj      = analyzeV9(matchData);
@@ -2051,6 +2055,7 @@ app.post('/api/analyze', async (req, res) => {
         enriched.homeGoalsAvgAgainst  = parseFloat(hs.avgGoalsAgainst) || enriched.homeXgaAvg;
         if (hs.goalDrought  != null) enriched.homeGoalDrought  = hs.goalDrought;
         if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
+        if (hs.recentOpposition) enriched.homeRecentOpposition = hs.recentOpposition;
       }
       if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
         const as = aRes.value.stats;
@@ -2061,6 +2066,7 @@ app.post('/api/analyze', async (req, res) => {
         enriched.awayGoalsAvgAgainst  = parseFloat(as.avgGoalsAgainst) || enriched.awayXgaAvg;
         if (as.goalDrought  != null) enriched.awayGoalDrought  = as.goalDrought;
         if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
+        if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
       }
       if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
         const s = h2hRes.value.stats;
