@@ -817,8 +817,8 @@ Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsenc
  */
 export async function generateMatchNarrative(analysis, matchInfo) {
   const { home = '?', away = '?', league = '', leagueId = 0, status = 'NS', matchMinutes = 0, score = '0-0',
-          homeCards, awayCards } = matchInfo || {};
-  const { overallScore = 0, recommendations = [], parameters = {}, poisson } = analysis || {};
+    homeCards, awayCards } = matchInfo || {};
+  const { overallScore = 0, recommendations = [], parameters = {}, poisson, winCall } = analysis || {};
 
   const topRec = recommendations[0];
 
@@ -829,6 +829,27 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     .slice(0, 3);
 
   const isLive = status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(status);
+  const homeFormRaw = matchInfo?.homeForm || '';
+  const awayFormRaw = matchInfo?.awayForm || '';
+  const homePoss = matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null;
+  const awayPoss = matchInfo?.possession?.away ?? (homePoss != null ? 100 - homePoss : null);
+  const homeShots = matchInfo?.shots?.home ?? null;
+  const awayShots = matchInfo?.shots?.away ?? null;
+  const homeXg = matchInfo?.xg?.home ?? null;
+  const awayXg = matchInfo?.xg?.away ?? null;
+
+  const formCompact = (s) => String(s || '')
+    .toUpperCase()
+    .split(/[-,\s]+/)
+    .filter(Boolean)
+    .slice(0, 5)
+    .join('');
+
+  const metricsBlock = [
+    `LIVE METRICS: Possession ${home} ${homePoss ?? '-'}% vs ${away} ${awayPoss ?? '-'}%, Shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}, Score ${score}.`,
+    `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'N/A'} | ${away} ${formCompact(awayFormRaw) || 'N/A'}.`,
+    `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,
+  ].join('\n');
 
   // ── Build rich live-context block for the LLM ──
   let liveContext = '';
@@ -867,18 +888,22 @@ Recommendation logic: ${topRec?.logic || ''}`;
   const systemPrompt = `You are Agent 47, an elite football betting analyst.
 Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
 ${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasing, cards, and what the remaining expected goals data means for live bettors. Do NOT just echo the Poisson numbers — reason about the SITUATION.' : ''}
+If the model says "Wins (Undecided)", say clearly that this is a tight game and winner is not certain yet.
+Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals).
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
 Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
 
   const userText = topRec
     ? `Match: ${home} vs ${away} (${league}).
 ${isLive ? liveContext : `Pre-match analysis. Overall V9 Score: ${overallScore}/100`}
+${metricsBlock}
 Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
 Key signal 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
 Write 2-3 sentences explaining the live betting opportunity and WHY the top recommendation makes sense given the situation.`
     : `Match: ${home} vs ${away} (${league}).
 ${isLive ? liveContext : `Pre-match. Overall V9 Score: ${overallScore}/100`}
+${metricsBlock}
 Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
 No strong directional edge. Write 2-3 sentences describing what the data shows.`;
@@ -889,7 +914,7 @@ No strong directional edge. Write 2-3 sentences describing what the data shows.`
   if (!raw) {
     const fallback = topRec
       ? `${topRec.selection} carries ${topRec.confidence}% confidence. ${topRec.logic || ''} ${poisson?.assessment || ''}`.slice(0, 300).trim()
-      : `${home} vs ${away} shows a balanced match profile (V9 score: ${overallScore}/100). ${poisson?.assessment || 'No strong directional edge detected in the data.'}`;
+      : `${home} vs ${away}: ${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%. ${poisson?.assessment || 'No strong directional edge detected in the data.'}`;
     return { text: fallback, confidence: topRec?.confidence || overallScore };
   }
   try {

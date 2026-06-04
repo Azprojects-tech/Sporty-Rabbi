@@ -929,6 +929,56 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
   return recs.sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
 }
 
+function computeWinCall({ home, away, p1, p4, poisson, overallScore, recommendations = [] }) {
+  let homeVotes = 0;
+  let awayVotes = 0;
+  const reasons = [];
+
+  if (p1?.edge === 'HOME') { homeVotes += 2; reasons.push('Motivation leans HOME'); }
+  if (p1?.edge === 'AWAY') { awayVotes += 2; reasons.push('Motivation leans AWAY'); }
+  if (p4?.edge === 'HOME') { homeVotes += 2; reasons.push('Form leans HOME'); }
+  if (p4?.edge === 'AWAY') { awayVotes += 2; reasons.push('Form leans AWAY'); }
+
+  const lambdaH = poisson?.homeLambda;
+  const lambdaA = poisson?.awayLambda;
+  const drawProb = poisson?.probabilities?.draw ?? null;
+  if (lambdaH != null && lambdaA != null) {
+    const d = lambdaH - lambdaA;
+    if (d >= 0.18) { homeVotes += 1; reasons.push(`Poisson lambda edge HOME (${lambdaH} vs ${lambdaA})`); }
+    else if (d <= -0.18) { awayVotes += 1; reasons.push(`Poisson lambda edge AWAY (${lambdaA} vs ${lambdaH})`); }
+  }
+
+  const topWin = recommendations.find(r => r.type === 'WINS_ONLY');
+  if (topWin?.selection?.includes(home)) homeVotes += 2;
+  if (topWin?.selection?.includes(away)) awayVotes += 2;
+
+  const conflicting = homeVotes > 0 && awayVotes > 0;
+  const voteGap = Math.abs(homeVotes - awayVotes);
+  const lowConviction = (topWin?.confidence ?? overallScore ?? 50) < 62;
+  const tightByModel =
+    (drawProb != null && drawProb >= 30) ||
+    (lambdaH != null && lambdaA != null && Math.abs(lambdaH - lambdaA) <= 0.15);
+
+  if (conflicting || tightByModel || voteGap <= 1 || lowConviction) {
+    return {
+      outcome: 'UNDECIDED',
+      selection: 'Wins (Undecided)',
+      team: null,
+      confidence: Math.max(45, Math.min(64, Math.round(topWin?.confidence ?? overallScore ?? 50))),
+      rationale: reasons.length ? reasons.join('; ') : 'No clear directional edge across motivation, form and Poisson.',
+    };
+  }
+
+  const team = homeVotes > awayVotes ? home : away;
+  return {
+    outcome: team === home ? 'HOME' : 'AWAY',
+    selection: `${team} Win`,
+    team,
+    confidence: Math.min(96, Math.max(55, Math.round(topWin?.confidence ?? overallScore ?? 50))),
+    rationale: reasons.length ? reasons.join('; ') : 'Directional edge confirmed.',
+  };
+}
+
 // ─── BOOKIE EDGE DETECTOR ─────────────────────────────────────────────────────
 function detectBookieEdges(p1, p2, p4, chaos) {
   const edges = [];
@@ -1166,6 +1216,7 @@ export function analyzeV9(matchData = {}) {
 
   // ── Recommendations ────────────────────────────────────────────────────────
   const recommendations = generateRecommendations(overall, poi, p1, p4, chaos, matchData);
+  const winCall = computeWinCall({ home, away, p1, p4, poisson: poi, overallScore: overall, recommendations });
 
   // ── Bookie edge detection ──────────────────────────────────────────────────
   const bookieEdges = detectBookieEdges(p1, p2, p4, chaos);
@@ -1181,6 +1232,7 @@ export function analyzeV9(matchData = {}) {
     poisson: poi,
     chaosVariables: chaos,
     overallScore: overall,
+    winCall,
     leagueScalarApplied: scalar,
     bookieEdges,
     analysisVersion: 'V9-Calibrated',

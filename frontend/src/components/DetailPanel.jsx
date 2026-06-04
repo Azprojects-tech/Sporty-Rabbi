@@ -228,7 +228,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     width: 370, flexShrink: 0,
     background: '#0a0d15',
     borderLeft: '1px solid #1e2535',
-    height: 'calc(100vh - 56px)',
+    height: '100vh',
+    maxHeight: '100vh',
     display: 'flex', flexDirection: 'column',
     overflow: 'hidden',
   };
@@ -260,6 +261,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     recommendations = [], bookieEdges = [],
     overallScore = 0, tier = 4, tierName = '',
   } = analysis || {};
+  const winCall = analysis?.winCall || null;
   const probs = poisson?.probabilities || {};
 
   const topPicks = recommendations
@@ -289,6 +291,17 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               </span>
               <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(overallScore) }}>
                 {overallScore}%
+              </span>
+              <span style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: winCall?.outcome === 'UNDECIDED' ? '#fbbf24' : '#8b9ab3',
+                background: winCall?.outcome === 'UNDECIDED' ? '#1c1200' : '#0f1117',
+                border: `1px solid ${winCall?.outcome === 'UNDECIDED' ? '#78350f55' : '#1e2535'}`,
+                borderRadius: 4,
+                padding: '2px 6px',
+              }}>
+                {winCall?.selection || 'Wins (Undecided)'}
               </span>
               {analysis?.gemini && (
                 <span style={{ fontSize: 9, color: '#4a5568' }}>
@@ -388,7 +401,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px 28px', WebkitOverflowScrolling: 'touch' }}>
 
         {/* PARAMETERS */}
         {section === 'params' && (
@@ -446,19 +459,19 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         )}
 
         {/* POISSON */}
-        {section === 'poisson' && poisson && (
+        {section === 'poisson' && (
           <div>
-            {poisson.insufficientData ? (
+            {!poisson || poisson.insufficientData ? (
               <div style={{ padding: '32px 0', textAlign: 'center' }}>
-                <p style={{ fontSize: 13, color: '#4a5568', marginBottom: 8 }}>Insufficient data for Poisson projection.</p>
-                <p style={{ fontSize: 11, color: '#374151' }}>Real-time xG or team season stats required.</p>
+                <p style={{ fontSize: 13, color: '#4a5568', marginBottom: 8 }}>Poisson view unavailable for this fixture.</p>
+                <p style={{ fontSize: 11, color: '#374151' }}>Model inputs are incomplete right now. Stats refresh should restore this section.</p>
               </div>
             ) : (<>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>EXPECTED GOALS</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: '#00b859' }}>{poisson.expectedTotalGoals}</div>
-                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda} &middot; A:{poisson.awayLambda}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: '#00b859' }}>{poisson.expectedTotalGoals ?? '--'}</div>
+                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda ?? '--'} &middot; A:{poisson.awayLambda ?? '--'}</div>
               </div>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>
@@ -487,10 +500,10 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <div key={label} style={{ marginBottom: 9 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                   <span style={{ fontSize: 11, color: '#8b9ab3' }}>{label}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: hi ? '#00b859' : '#8b9ab3' }}>{val}%</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: hi ? '#00b859' : '#8b9ab3' }}>{val ?? '--'}{val != null ? '%' : ''}</span>
                 </div>
                 <div style={{ background: '#0f1117', borderRadius: 2, height: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${val}%`, height: '100%', background: hi ? '#00b859' : '#1e2535' }} />
+                  <div style={{ width: `${val ?? 0}%`, height: '100%', background: hi ? '#00b859' : '#1e2535' }} />
                 </div>
               </div>
             ))}
