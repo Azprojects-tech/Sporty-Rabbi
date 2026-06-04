@@ -1517,6 +1517,16 @@ function resolveSlipMode(mode = 'balanced') {
   return SLIP_MODES[key] || SLIP_MODES.balanced;
 }
 
+function normalizeSlipMode(mode) {
+  if (!mode) return null;
+  const key = String(mode).toLowerCase();
+  if (SLIP_MODES[key]) return key;
+  if (key === 'med' || key === 'normal') return 'balanced';
+  if (key === 'high' || key === 'risk') return 'aggressive';
+  if (key === 'low' || key === 'conservative') return 'safe';
+  return key;
+}
+
 function applyModeAllocation(base, modeProfile) {
   const weighted = {
     tier1: base.tier1 * modeProfile.allocationMultipliers.tier1,
@@ -1939,6 +1949,7 @@ app.post('/api/bets', async (req, res) => {
     id: Date.now(),
     ...req.body,
     betType: BET_TYPE_MAP[req.body.betType] || req.body.betType || 'UNKNOWN',
+    slipMode: normalizeSlipMode(req.body.slipMode || req.body.mode || req.body.riskMode),
     competitionFamily: req.body.competitionFamily || competitionContext.family,
     createdAt: new Date().toISOString(),
   };
@@ -2082,6 +2093,96 @@ app.get('/api/stats/competition', async (req, res) => {
   res.json({
     totalSettled: settled.length,
     families: rows,
+  });
+});
+
+app.get('/api/stats/mode', async (req, res) => {
+  const db = getDb();
+  let allBets = bets;
+
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets').get();
+      allBets = snapshot.docs.map(d => d.data());
+    } catch (err) {
+      console.error('Firestore mode stats read error:', err.message);
+    }
+  }
+
+  const settled = allBets.filter((b) => b.result === 'won' || b.result === 'lost');
+  const byMode = {};
+
+  const profitForBet = (bet) => {
+    const stake = Number(bet.stake || 0);
+    const odds = Number(bet.odds || 0);
+    const explicitProfit = Number(bet.profit);
+    const payout = Number(bet.payout || bet.returnAmount || 0);
+
+    if (bet.result === 'won') {
+      if (Number.isFinite(explicitProfit)) return explicitProfit;
+      if (Number.isFinite(payout) && payout > 0 && stake > 0) return payout - stake;
+      if (Number.isFinite(odds) && odds > 1 && stake > 0) return stake * (odds - 1);
+      return 0;
+    }
+
+    if (bet.result === 'lost') {
+      return stake > 0 ? -stake : 0;
+    }
+
+    return 0;
+  };
+
+  for (const bet of settled) {
+    const mode = normalizeSlipMode(bet.slipMode || bet.mode || bet.riskMode) || 'unassigned';
+    const stake = Number(bet.stake || 0);
+    const profit = profitForBet(bet);
+
+    if (!byMode[mode]) {
+      byMode[mode] = {
+        mode,
+        settled: 0,
+        won: 0,
+        lost: 0,
+        stakeTurnover: 0,
+        netProfit: 0,
+      };
+    }
+
+    byMode[mode].settled++;
+    if (bet.result === 'won') byMode[mode].won++;
+    else byMode[mode].lost++;
+    if (stake > 0) byMode[mode].stakeTurnover += stake;
+    byMode[mode].netProfit += profit;
+  }
+
+  const rows = Object.values(byMode)
+    .map((r) => {
+      const winRate = r.settled > 0 ? +((r.won / r.settled) * 100).toFixed(1) : 0;
+      const roi = r.stakeTurnover > 0 ? +((r.netProfit / r.stakeTurnover) * 100).toFixed(1) : null;
+      return {
+        mode: r.mode,
+        settled: r.settled,
+        won: r.won,
+        lost: r.lost,
+        winRate,
+        stakeTurnover: Math.round(r.stakeTurnover),
+        netProfit: Math.round(r.netProfit),
+        roi,
+      };
+    })
+    .sort((a, b) => b.settled - a.settled || (b.roi ?? -999) - (a.roi ?? -999));
+
+  const bestMode = rows
+    .filter((r) => r.settled >= 5 && r.roi != null)
+    .sort((a, b) => b.roi - a.roi)[0] || null;
+
+  res.json({
+    totalSettled: settled.length,
+    modes: rows,
+    bestMode,
+    note: rows.length === 0
+      ? 'No settled bets with mode tags yet. Start logging bets with slipMode to unlock tracking.'
+      : 'Best mode requires at least 5 settled bets with valid stake/odds inputs.',
   });
 });
 

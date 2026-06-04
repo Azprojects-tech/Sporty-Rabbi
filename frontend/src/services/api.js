@@ -77,6 +77,8 @@ export const apiService = {
 
   // Stats
   getStats: () => client.get('/stats'),
+  getModeStats: () => client.get('/stats/mode'),
+  getCompetitionStats: () => client.get('/stats/competition'),
 
   // Alerts
   getAlerts: () => client.get('/alerts'),
