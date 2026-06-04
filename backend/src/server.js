@@ -1482,6 +1482,57 @@ async function saveAlert(alertData) {
 const BANKROLL = 250000; // ₦ — adjust via env if needed later
 const DAILY_TARGET_PROFIT = Number(process.env.DAILY_TARGET_PROFIT || 100000); // ₦ target, e.g. 250k -> 350k
 
+const SLIP_MODES = {
+  safe: {
+    key: 'safe',
+    label: 'Safe',
+    confidenceFloorAdjustment: 3,
+    allocationMultipliers: { tier1: 1.12, tier2: 0.9, tier3: 0.75 },
+    maxTotalStakePct: 0.5,
+    stakeMultiplier: 0.85,
+    maxSingleStakePctMultiplier: 0.9,
+  },
+  balanced: {
+    key: 'balanced',
+    label: 'Balanced',
+    confidenceFloorAdjustment: 0,
+    allocationMultipliers: { tier1: 1.0, tier2: 1.0, tier3: 1.0 },
+    maxTotalStakePct: 0.7,
+    stakeMultiplier: 1.0,
+    maxSingleStakePctMultiplier: 1.0,
+  },
+  aggressive: {
+    key: 'aggressive',
+    label: 'Aggressive',
+    confidenceFloorAdjustment: -3,
+    allocationMultipliers: { tier1: 0.9, tier2: 1.2, tier3: 1.45 },
+    maxTotalStakePct: 0.85,
+    stakeMultiplier: 1.2,
+    maxSingleStakePctMultiplier: 1.18,
+  },
+};
+
+function resolveSlipMode(mode = 'balanced') {
+  const key = String(mode || 'balanced').toLowerCase();
+  return SLIP_MODES[key] || SLIP_MODES.balanced;
+}
+
+function applyModeAllocation(base, modeProfile) {
+  const weighted = {
+    tier1: base.tier1 * modeProfile.allocationMultipliers.tier1,
+    tier2: base.tier2 * modeProfile.allocationMultipliers.tier2,
+    tier3: base.tier3 * modeProfile.allocationMultipliers.tier3,
+  };
+  const sum = weighted.tier1 + weighted.tier2 + weighted.tier3;
+  if (sum <= 0) return { tier1: 0, tier2: 0, tier3: 0 };
+  const scale = Math.min(1, modeProfile.maxTotalStakePct / sum);
+  return {
+    tier1: +(weighted.tier1 * scale).toFixed(4),
+    tier2: +(weighted.tier2 * scale).toFixed(4),
+    tier3: +(weighted.tier3 * scale).toFixed(4),
+  };
+}
+
 function oddsForSelection(match, selType) {
   const o    = match.analysis?.odds || match.odds || {};
   const conf = match.confidence || 50;
@@ -1508,7 +1559,8 @@ function bestSelection(match) {
   return { label: `${match.home} Win`, type: 'home_win' };
 }
 
-function generateBetSlips(bankroll = BANKROLL) {
+function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
+  const modeProfile = resolveSlipMode(mode);
   const pool = calibrationStore.matches
     .map((m) => {
       const ctx = detectCompetitionContext({
@@ -1523,7 +1575,7 @@ function generateBetSlips(bankroll = BANKROLL) {
       const risk = getCompetitionRiskPolicy(ctx.family);
       return { ...m, _competitionFamily: ctx.family, _riskPolicy: risk };
     })
-    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(55, m._riskPolicy.confidenceFloor));
+    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(52, m._riskPolicy.confidenceFloor + modeProfile.confidenceFloorAdjustment));
 
   if (pool.length === 0) {
     return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
@@ -1548,6 +1600,10 @@ function generateBetSlips(bankroll = BANKROLL) {
   } else {
     t1Pct = 0.35; t2Pct = 0.25; t3Pct = 0.10;
   }
+  const modeAllocation = applyModeAllocation({ tier1: t1Pct, tier2: t2Pct, tier3: t3Pct }, modeProfile);
+  t1Pct = modeAllocation.tier1;
+  t2Pct = modeAllocation.tier2;
+  t3Pct = modeAllocation.tier3;
 
   // ── TIER 1: Singles ≥85% — fall back to top match if none qualify ─────────
   const tier1Candidates = (pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3).length > 0
@@ -1557,7 +1613,10 @@ function generateBetSlips(bankroll = BANKROLL) {
     const sel = bestSelection(m);
     const odds = oddsForSelection(m, sel.type);
     const rawStake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
-    const guardedStake = Math.round(Math.min(rawStake * m._riskPolicy.stakeMultiplier, bankroll * m._riskPolicy.maxSingleStakePct));
+    const guardedStake = Math.round(Math.min(
+      rawStake * m._riskPolicy.stakeMultiplier * modeProfile.stakeMultiplier,
+      bankroll * m._riskPolicy.maxSingleStakePct * modeProfile.maxSingleStakePctMultiplier
+    ));
     return {
       match: `${m.home} vs ${m.away}`,
       league: m.league,
@@ -1601,7 +1660,7 @@ function generateBetSlips(bankroll = BANKROLL) {
   const tier2RiskMultiplier = tier2Legs.length > 0
     ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier))
     : 1;
-  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier);
+  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier * modeProfile.stakeMultiplier);
   const tier2 = tier2Legs.length >= 2 ? {
     ...tier2Combined,
     stake: tier2Stake,
@@ -1642,7 +1701,7 @@ function generateBetSlips(bankroll = BANKROLL) {
   const tier3RiskMultiplier = tier3Candidates.length > 0
     ? Math.min(...tier3Candidates.map(m => m._riskPolicy.stakeMultiplier))
     : 1;
-  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier);
+  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier * modeProfile.stakeMultiplier);
   const tier3 = tier3Legs.length >= 2 ? {
     legs: tier3Legs,
     combinedOdds: tier3CombinedOdds,
@@ -1661,6 +1720,9 @@ function generateBetSlips(bankroll = BANKROLL) {
     tier2,
     tier3,
     summary: {
+      mode: modeProfile.key,
+      modeLabel: modeProfile.label,
+      availableModes: Object.keys(SLIP_MODES),
       bankroll,
       targetProfit: DAILY_TARGET_PROFIT,
       targetBankroll: bankroll + DAILY_TARGET_PROFIT,
@@ -1852,7 +1914,8 @@ app.get('/api/bets', async (req, res) => {
 // ── Bet slip tier suggestions ─────────────────────────────────────────────
 app.get('/api/bets/slips', (req, res) => {
   const bankroll = Number(req.query.bankroll) || BANKROLL;
-  const slips = generateBetSlips(bankroll);
+  const mode = req.query.mode || 'balanced';
+  const slips = generateBetSlips(bankroll, mode);
   res.json(slips);
 });
 

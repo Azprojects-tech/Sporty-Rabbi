@@ -187,26 +187,33 @@ function TierCard({ tier, data, type = 'single' }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function BetSlips() {
+  const MODE_META = {
+    safe: { label: 'Safe', color: '#38bdf8' },
+    balanced: { label: 'Balanced', color: '#fbbf24' },
+    aggressive: { label: 'Aggressive', color: '#f97316' },
+  };
+
   const [slips, setSlips] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [bankroll, setBankroll] = useState(250000);
   const [inputBankroll, setInputBankroll] = useState('250000');
+  const [mode, setMode] = useState('balanced');
 
-  const load = useCallback(async (br = bankroll) => {
+  const load = useCallback(async (br = bankroll, riskMode = mode) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiService.getBetSlips(br);
+      const res = await apiService.getBetSlips(br, riskMode);
       setSlips(res.data);
     } catch (e) {
       setError(e.response?.data?.error || e.message);
     } finally {
       setLoading(false);
     }
-  }, [bankroll]);
+  }, [bankroll, mode]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(bankroll, mode); }, [bankroll, mode, load]);
 
   function handleBankrollChange(e) {
     setInputBankroll(e.target.value);
@@ -216,7 +223,7 @@ export default function BetSlips() {
     const val = parseInt(inputBankroll.replace(/[^0-9]/g, ''), 10);
     if (val >= 1000) {
       setBankroll(val);
-      load(val);
+      load(val, mode);
     }
   }
 
@@ -234,7 +241,7 @@ export default function BetSlips() {
           </div>
         </div>
         <button
-          onClick={() => load(bankroll)}
+          onClick={() => load(bankroll, mode)}
           disabled={loading}
           style={{
             marginLeft: 'auto', background: '#001f0e', border: '1px solid #006833',
@@ -244,6 +251,33 @@ export default function BetSlips() {
         >
           {loading ? 'Loading...' : '↻ Refresh'}
         </button>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: '#8b9ab3' }}>Risk Mode</span>
+        {Object.entries(MODE_META).map(([k, meta]) => (
+          <button
+            key={k}
+            onClick={() => setMode(k)}
+            style={{
+              border: `1px solid ${mode === k ? meta.color : '#2d3748'}`,
+              background: mode === k ? `${meta.color}22` : '#131826',
+              color: mode === k ? meta.color : '#8b9ab3',
+              borderRadius: 5,
+              padding: '4px 10px',
+              cursor: 'pointer',
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            {meta.label}
+          </button>
+        ))}
+        {slips?.summary?.modeLabel && (
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: '#4a5568' }}>
+            Active: {slips.summary.modeLabel}
+          </span>
+        )}
       </div>
 
       {/* Bankroll input */}
@@ -279,7 +313,7 @@ export default function BetSlips() {
           Stake split: T1&nbsp;<strong style={{ color: '#00b859' }}>{slips.summary.allocation.tier1}%</strong>
           &nbsp;&middot;&nbsp;T2&nbsp;<strong style={{ color: '#fbbf24' }}>{slips.summary.allocation.tier2}%</strong>
           &nbsp;&middot;&nbsp;T3&nbsp;<strong style={{ color: '#f97316' }}>{slips.summary.allocation.tier3}%</strong>
-          &nbsp;— adjusted for your bankroll to minimise losses
+          &nbsp;— adjusted for bankroll and mode ({slips.summary.mode || mode})
         </div>
       )}
 
