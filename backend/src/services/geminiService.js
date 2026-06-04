@@ -882,6 +882,26 @@ export async function generateMatchNarrative(analysis, matchInfo) {
 
   const phaseModel = getNarrativePhase();
 
+  const buildStructuredNarrative = (coreText = '') => {
+    const baseline = isLive
+      ? `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, driven by ${topParams[0]?.name || 'the strongest V9 signal'} and ${topParams[1]?.name || 'supporting context'}.`
+      : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, with form ${formCompact(homeFormRaw) || 'N/A'} vs ${formCompact(awayFormRaw) || 'N/A'} and opponent quality setting the baseline.`;
+
+    const liveReality = isLive
+      ? `Possession is ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots are ${homeShots ?? '-'}-${awayShots ?? '-'}, xG is ${homeXg ?? '-'}-${awayXg ?? '-'}, and the score is ${score}.`
+      : `Poisson projects ${poisson?.expectedTotalGoals ?? '--'} total goals, with likely score ${poisson?.likelyScore?.score || '--'} and draw probability ${poisson?.probabilities?.draw ?? '--'}%.`;
+
+    const verdictCore = coreText
+      ? coreText.replace(/\s+/g, ' ').trim()
+      : (topRec?.logic || poisson?.assessment || `${winCall?.selection || 'Wins (Undecided)'} remains the current verdict.`);
+
+    return [
+      `Baseline: ${baseline}`,
+      `Live reality: ${liveReality}`,
+      `Verdict: ${verdictCore}`,
+    ].join(' ');
+  };
+
   const metricsBlock = [
     `PHASE MODEL: ${phaseModel.phase}. Baseline weight ${Math.round(phaseModel.baselineWeight * 100)}%, live weight ${Math.round(phaseModel.liveWeight * 100)}%.`,
     `LIVE METRICS: Possession ${home} ${homePoss ?? '-'}% vs ${away} ${awayPoss ?? '-'}%, Shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}, Score ${score}.`,
@@ -953,15 +973,13 @@ No strong directional edge. Write 2-3 sentences describing what the data shows.`
 
   // Deterministic fallback when Groq is unavailable — build from V9 data directly
   if (!raw) {
-    const fallback = topRec
-      ? `Baseline: ${winCall?.selection || topRec.selection} at ${topRec.confidence}% confidence. Live reality: possession ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}. Verdict: ${topRec.logic || poisson?.assessment || 'the current data supports the edge.'}`.slice(0, 320).trim()
-      : `Baseline: ${home} vs ${away} is tight. Live reality: possession ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}. Verdict: ${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}% confidence.`;
+    const fallback = buildStructuredNarrative(topRec?.logic || poisson?.assessment || 'The current data sets the edge.');
     return { text: fallback, confidence: topRec?.confidence || overallScore };
   }
   try {
     const parsed = JSON.parse(raw);
-    return { text: parsed.text || raw, confidence: parsed.confidence || topRec?.confidence || overallScore };
+    return { text: buildStructuredNarrative(parsed.text || raw), confidence: parsed.confidence || topRec?.confidence || overallScore };
   } catch {
-    return { text: raw, confidence: topRec?.confidence || overallScore };
+    return { text: buildStructuredNarrative(raw), confidence: topRec?.confidence || overallScore };
   }
 }
