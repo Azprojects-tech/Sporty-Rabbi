@@ -847,7 +847,43 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     .slice(0, 5)
     .join('');
 
+  const getNarrativePhase = () => {
+    if (!isLive) {
+      return {
+        phase: 'PRE_MATCH',
+        baselineWeight: 0.8,
+        liveWeight: 0.2,
+        instruction: 'Lead with pre-match context: form, opponent quality, injuries, motivation, H2H and Poisson baseline. Mention live stats only if they exist as supporting color.',
+      };
+    }
+    if (matchMinutes < 25) {
+      return {
+        phase: 'EARLY_LIVE',
+        baselineWeight: 0.65,
+        liveWeight: 0.35,
+        instruction: 'Pre-match baseline still leads, but explain whether early possession, shots and xG support or weaken that baseline.',
+      };
+    }
+    if (matchMinutes < 70) {
+      return {
+        phase: 'MID_LIVE',
+        baselineWeight: 0.45,
+        liveWeight: 0.55,
+        instruction: 'Blend pre-match baseline with live match evidence evenly. State clearly whether the game is following or breaking the pre-match expectation.',
+      };
+    }
+    return {
+      phase: 'LATE_LIVE',
+      baselineWeight: 0.2,
+      liveWeight: 0.8,
+      instruction: 'Live state dominates now: scoreline, xG, shots, cards, momentum and time remaining matter more than older pre-match context.',
+    };
+  };
+
+  const phaseModel = getNarrativePhase();
+
   const metricsBlock = [
+    `PHASE MODEL: ${phaseModel.phase}. Baseline weight ${Math.round(phaseModel.baselineWeight * 100)}%, live weight ${Math.round(phaseModel.liveWeight * 100)}%.`,
     `LIVE METRICS: Possession ${home} ${homePoss ?? '-'}% vs ${away} ${awayPoss ?? '-'}%, Shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}, Score ${score}.`,
     `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'N/A'} | ${away} ${formCompact(awayFormRaw) || 'N/A'}.`,
     `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
@@ -893,6 +929,8 @@ Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
 ${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasing, cards, and what the remaining expected goals data means for live bettors. Do NOT just echo the Poisson numbers — reason about the SITUATION.' : ''}
 If the model says "Wins (Undecided)", say clearly that this is a tight game and winner is not certain yet.
 Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals, opponent quality).
+Use this phase rule: ${phaseModel.instruction}
+Use this structure implicitly: 1) baseline expectation, 2) live reality, 3) verdict on whether live data confirms, weakens, or overturns the baseline.
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
 Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <integer 0-100>}`;
 
@@ -916,8 +954,8 @@ No strong directional edge. Write 2-3 sentences describing what the data shows.`
   // Deterministic fallback when Groq is unavailable — build from V9 data directly
   if (!raw) {
     const fallback = topRec
-      ? `${topRec.selection} carries ${topRec.confidence}% confidence. ${topRec.logic || ''} ${poisson?.assessment || ''}`.slice(0, 300).trim()
-      : `${home} vs ${away}: ${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%. ${poisson?.assessment || 'No strong directional edge detected in the data.'}`;
+      ? `Baseline: ${winCall?.selection || topRec.selection} at ${topRec.confidence}% confidence. Live reality: possession ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}. Verdict: ${topRec.logic || poisson?.assessment || 'the current data supports the edge.'}`.slice(0, 320).trim()
+      : `Baseline: ${home} vs ${away} is tight. Live reality: possession ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}. Verdict: ${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}% confidence.`;
     return { text: fallback, confidence: topRec?.confidence || overallScore };
   }
   try {

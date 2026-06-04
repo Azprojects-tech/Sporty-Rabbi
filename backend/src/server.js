@@ -84,6 +84,20 @@ let bets = [];
 let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
 let calibrationRunning = false;
 
+function getPhaseConfidencePolicy(status = 'NS', matchMinutes = 0) {
+  const isLive = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
+  if (!isLive) {
+    return { phase: 'PRE_MATCH', standardThreshold: 65, premiumThreshold: 80, baselineWeight: 0.8, liveWeight: 0.2 };
+  }
+  if (matchMinutes < 25) {
+    return { phase: 'EARLY_LIVE', standardThreshold: 68, premiumThreshold: 83, baselineWeight: 0.65, liveWeight: 0.35 };
+  }
+  if (matchMinutes < 70) {
+    return { phase: 'MID_LIVE', standardThreshold: 64, premiumThreshold: 78, baselineWeight: 0.45, liveWeight: 0.55 };
+  }
+  return { phase: 'LATE_LIVE', standardThreshold: 60, premiumThreshold: 72, baselineWeight: 0.2, liveWeight: 0.8 };
+}
+
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
 
@@ -1255,8 +1269,17 @@ const recentAlertKeys = new Map(); // key → timestamp
 const ALERT_DEDUP_MS = 30 * 60 * 1000; // 30 minutes
 
 async function saveAlert(alertData) {
+  const confidencePolicy = getPhaseConfidencePolicy(alertData.status || 'NS', alertData.matchMinutes || 0);
+  const alertPayload = {
+    ...alertData,
+    phase: alertData.phase || confidencePolicy.phase,
+    standardThreshold: alertData.standardThreshold || confidencePolicy.standardThreshold,
+    premiumThreshold: alertData.premiumThreshold || confidencePolicy.premiumThreshold,
+    confidenceTier: alertData.confidenceTier || ((alertData.confidence || 0) >= confidencePolicy.premiumThreshold ? 'PREMIUM' : (alertData.confidence || 0) >= confidencePolicy.standardThreshold ? 'STANDARD' : 'LOW'),
+  };
+
   // Dedup: skip if same match+type was sent within the last 30 minutes
-  const key = `${alertData.home}|${alertData.away}|${alertData.type || 'alert'}`;
+  const key = `${alertPayload.home}|${alertPayload.away}|${alertPayload.type || 'alert'}`;
   const lastSent = recentAlertKeys.get(key);
   if (lastSent && Date.now() - lastSent < ALERT_DEDUP_MS) return;
   recentAlertKeys.set(key, Date.now());
@@ -1265,33 +1288,33 @@ async function saveAlert(alertData) {
     if (Date.now() - ts > ALERT_DEDUP_MS) recentAlertKeys.delete(k);
   }
   // Always keep in memory (last 100)
-  alerts.unshift(alertData);
+  alerts.unshift(alertPayload);
   if (alerts.length > 100) alerts.pop();
 
   // Persist to Firestore if available
   const db = getDb();
   if (db) {
     try {
-      await db.collection('alerts').add(alertData);
+      await db.collection('alerts').add(alertPayload);
     } catch (err) {
       console.error('⚠️  Firestore alert save failed:', err.message);
     }
   }
 
   // Broadcast to portal
-  broadcast({ type: 'NEW_ALERT', payload: alertData });
+  broadcast({ type: 'NEW_ALERT', payload: alertPayload });
 
   // Send WhatsApp alert for high-confidence opportunities
-  const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
-  if ((alertData.confidence || 0) >= minConf) {
-    const confStr = alertData.confidence ? `${alertData.confidence}%` : '–';
+  if ((alertPayload.confidence || 0) >= confidencePolicy.standardThreshold) {
+    const confStr = alertPayload.confidence ? `${alertPayload.confidence}%` : '–';
     const msg = [
       `🐰 SportyRabbi Alert`,
-      `⚽ ${alertData.home} vs ${alertData.away}`,
-      `🏆 ${alertData.league || 'Match'}`,
+      `⚽ ${alertPayload.home} vs ${alertPayload.away}`,
+      `🏆 ${alertPayload.league || 'Match'}`,
       `📊 Confidence: ${confStr}`,
-      `💡 ${alertData.message || alertData.type}`,
-      `🕐 ${new Date(alertData.sentAt).toLocaleTimeString('en-NG', { timeZone: 'Africa/Lagos' })}`,
+      `💡 ${alertPayload.message || alertPayload.type}`,
+      `⏱ Phase: ${confidencePolicy.phase} (standard ${confidencePolicy.standardThreshold}%, premium ${confidencePolicy.premiumThreshold}%)`,
+      `🕐 ${new Date(alertPayload.sentAt).toLocaleTimeString('en-NG', { timeZone: 'Africa/Lagos' })}`,
     ].join('\n');
     sendWhatsApp(msg).catch(() => {});
   }
@@ -1962,10 +1985,11 @@ app.get('/api/live-analysis/:matchId', async (req, res) => {
     const matchAlerts = generateBettingAlert(match, nextGoalProb, momentum);
 
     // Persist high-confidence alerts
-    const minConf = Number(process.env.MIN_CONFIDENCE_ALERT) || 65;
     if (matchAlerts && matchAlerts.length > 0) {
       for (const alert of matchAlerts) {
-        if ((alert.confidence || match.confidence || 0) >= minConf) {
+        const alertConf = alert.confidence || match.confidence || 0;
+        const policy = getPhaseConfidencePolicy(match.status, match.matchMinutes || 0);
+        if (alertConf >= policy.standardThreshold) {
           await saveAlert({
             matchId: match.id,
             home: match.home,
@@ -1973,7 +1997,9 @@ app.get('/api/live-analysis/:matchId', async (req, res) => {
             league: match.league,
             type: alert.type || 'in-play',
             message: alert.message || alert,
-            confidence: alert.confidence || match.confidence,
+            confidence: alertConf,
+            status: match.status,
+            matchMinutes: match.matchMinutes || 0,
             sentAt: new Date().toISOString(),
           });
         }
@@ -2666,7 +2692,7 @@ async function runCalibration() {
     }
   }
 
-  const highConfidence = analyzed.filter(m => m.confidence >= 80);
+  const highConfidence = analyzed.filter(m => m.confidence >= getPhaseConfidencePolicy(m.status, m.matchMinutes || 0).premiumThreshold);
   // ── Compute calibration health from settled bets ─────────────────────────
   const _settledBets = bets.filter(b => b.result === 'won' || b.result === 'lost');
   const calibrationHealth = computeCalibrationHealth(_settledBets);
@@ -2747,13 +2773,14 @@ async function runCalibration() {
     );
     for (const m of analyzed) {
       const conf = m.confidence || 0;
-      if (conf < 65) continue; // silent threshold
+      const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);
+      if (conf < policy.standardThreshold) continue;
 
       const matchKey = `${m.home}|${m.away}`;
       if (alreadySentToday.has(matchKey)) continue;
       alreadySentToday.add(matchKey);
 
-      const isPremium = conf >= 80;
+      const isPremium = conf >= policy.premiumThreshold;
       const topRec    = m.analysis?.recommendations?.[0];
       const alertType = isPremium ? 'calibration_premium' : 'calibration';
       const message   = isPremium
@@ -2771,6 +2798,11 @@ async function runCalibration() {
         message,
         confidence: conf,
         confidenceTier: isPremium ? 'PREMIUM' : 'STANDARD',
+        status: m.status || 'NS',
+        matchMinutes: m.matchMinutes || 0,
+        phase: policy.phase,
+        standardThreshold: policy.standardThreshold,
+        premiumThreshold: policy.premiumThreshold,
         kickoffUTC: m.kickoffUTC || null,
         sentAt: new Date().toISOString(),
       }).catch(e => console.warn(`[Calibrate] Alert save failed: ${e.message}`));
@@ -2784,7 +2816,7 @@ async function runCalibration() {
     upcomingMatches = analyzed;
     setCache('upcomingMatches', analyzed);
     broadcast({ type: 'UPCOMING_MATCHES', payload: analyzed });
-    console.log(`[Calibrate] Done: ${analyzed.length} real fixtures loaded, ${highConfidence.length} high confidence (>=80%)`);
+    console.log(`[Calibrate] Done: ${analyzed.length} real fixtures loaded, ${highConfidence.length} premium picks (phase-aware threshold)`);
   } else {
     console.warn('[Calibrate] Done but 0 fixtures — upcomingMatches unchanged');
   }

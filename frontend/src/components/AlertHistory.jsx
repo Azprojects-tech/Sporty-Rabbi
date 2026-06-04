@@ -2,6 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from '../services/api';
 import { on } from '../services/api';
 
+function getAlertThresholds(alert) {
+  if (alert?.premiumThreshold && alert?.standardThreshold) {
+    return { premiumThreshold: alert.premiumThreshold, standardThreshold: alert.standardThreshold };
+  }
+  return { premiumThreshold: 80, standardThreshold: 65 };
+}
+
 const CONF_COLOR = (c) => {
   if (c >= 80) return '#00b859';
   if (c >= 65) return '#f59e0b';
@@ -52,14 +59,15 @@ export default function AlertHistory() {
 
   const filtered = alerts.filter((a) => {
     const c = a.confidence || 0;
-    if (filter === 'high') return c >= 80;
-    if (filter === 'medium') return c >= 65 && c < 80;
+    const thresholds = getAlertThresholds(a);
+    if (filter === 'high') return (a.confidenceTier === 'PREMIUM') || c >= thresholds.premiumThreshold;
+    if (filter === 'medium') return ((a.confidenceTier === 'STANDARD') || (c >= thresholds.standardThreshold && c < thresholds.premiumThreshold));
     return true;
   });
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Header */}
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Header */}
       <div style={{
         padding: '16px 20px 12px',
         borderBottom: '1px solid #1e2535',
@@ -92,8 +100,8 @@ export default function AlertHistory() {
       }}>
         {[
           { id: 'all', label: 'All' },
-          { id: 'high', label: '80%+ Confidence' },
-          { id: 'medium', label: '65–79%' },
+             { id: 'high', label: 'Premium' },
+             { id: 'medium', label: 'Standard' },
         ].map((f) => (
           <button
             key={f.id}

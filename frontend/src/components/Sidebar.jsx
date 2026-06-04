@@ -22,7 +22,7 @@ const LEAGUE_FLAGS = {
 const FILTERS = [
   { id: 'all',  label: 'All Matches',   icon: '⚽' },
   { id: 'live', label: 'Live Now',      icon: '🔴' },
-  { id: 'high', label: '80%+ Picks',   icon: '🔥' },
+  { id: 'high', label: 'Premium Picks',   icon: '🔥' },
 ];
 
 export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, selectedCountry, setSelectedCountry, selectedKeyword, setSelectedKeyword, leagueCounts, open, onClose, isMobile }) {
