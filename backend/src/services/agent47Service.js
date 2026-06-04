@@ -664,6 +664,7 @@ function evaluateChaos({ motivation, form, matchMinutes = 0, earlyGoalScored = f
 // ─── TIER RECOMMENDATIONS ─────────────────────────────────────────────────────
 function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData) {
   const { home, away, status, matchMinutes = 0, score = '0-0' } = matchData;
+  const recs = [];
   // All in-play statuses — API-Football also returns 1H, 2H, HT, ET, BT, P
   const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
   // Normalise elapsed time — HT is always at least 45' (API sometimes returns 0 or null)
@@ -717,8 +718,6 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     const probAny1   = Math.round((1 - p0r) * 100);               // P(>=1 more goal)
     const prob2more  = Math.round((1 - p0r - p1r) * 100);         // P(>=2 more goals)
     const prob3more  = Math.round((1 - p0r - p1r - p2r) * 100);   // P(>=3 more goals)
-
-    const recs = [];
 
     // ── WIN MARKET ────────────────────────────────────────────────────────────
     if (scoreDiff !== 0) {
