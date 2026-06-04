@@ -1108,6 +1108,7 @@ function scoreMarketSignal(odds = null, poissonProbs = null) {
  * @returns {Object} Full V9 analysis
  */
 export function analyzeV9(matchData = {}) {
+  // Deploy marker: keep backend service change detectable for Railway rebuild.
   const {
     home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0, matchType = 'League',
     gameWeek = 30, totalGW = 38, totalTeams = 20,
