@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { getPhaseConfidencePolicyFromMatch } from '../../shared/confidencePolicy.js';
 
-import { connectWebSocket, on, apiService } from './services/api';
+import { connectWebSocket, on, off, disconnectWebSocket, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
 import DetailPanel from './components/DetailPanel';
@@ -60,30 +60,35 @@ export default function App() {
  }
 
  useEffect(() => {
- connectWebSocket(() => {
- setConnected(true);
- setLoading(false);
- }).catch(() => setLoading(false));
-
- on('LIVE_MATCHES', (p) => {
+ const handleLiveMatches = (p) => {
  setAllMatches(prev => {
  const liveIds = new Set((p || []).map(m => m.id));
  const rest = prev.filter(m => !liveIds.has(m.id));
  return [...(p || []).map(m => ({ ...m, _source: 'live' })), ...rest];
  });
- });
+ };
 
- on('UPCOMING_MATCHES', (p) => {
+ const handleUpcomingMatches = (p) => {
  setAllMatches(prev => {
  const IN_PLAY = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
  const liveOnly = prev.filter(m => IN_PLAY.has(m.status) || m._calibrated);
  const liveIds = new Set(liveOnly.map(m => m.id));
  return [...liveOnly, ...(p || []).filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' }))];
  });
- });
+ };
 
- on('BET_LOGGED', (b) => setBets(p => [b, ...p]));
- on('BET_UPDATED', (b) => setBets(p => p.map(x => x.id === b.id ? b : x)));
+ const handleBetLogged = (b) => setBets(p => [b, ...p]);
+ const handleBetUpdated = (b) => setBets(p => p.map(x => x.id === b.id ? b : x));
+
+ connectWebSocket(() => {
+ setConnected(true);
+ setLoading(false);
+ }).catch(() => setLoading(false));
+
+ on('LIVE_MATCHES', handleLiveMatches);
+ on('UPCOMING_MATCHES', handleUpcomingMatches);
+ on('BET_LOGGED', handleBetLogged);
+ on('BET_UPDATED', handleBetUpdated);
 
  const fetchInitial = async () => {
  try {
@@ -136,7 +141,14 @@ export default function App() {
  }).catch(() => {});
  }, 30000);
 
- return () => clearInterval(t);
+ return () => {
+ clearInterval(t);
+ off('LIVE_MATCHES', handleLiveMatches);
+ off('UPCOMING_MATCHES', handleUpcomingMatches);
+ off('BET_LOGGED', handleBetLogged);
+ off('BET_UPDATED', handleBetUpdated);
+ disconnectWebSocket();
+ };
  }, []);
 
  // ── Refresh (pull-to-refresh) ────────────────────────────────────────────────

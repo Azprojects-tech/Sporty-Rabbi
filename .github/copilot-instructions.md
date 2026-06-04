@@ -90,7 +90,7 @@ cd frontend && npm run dev   # Frontend on :5173
 3. **Test**:
    ```bash
    curl http://localhost:3000/api/health        # Check backend
-   curl http://localhost:3000/api/matches/live  # Check data
+   curl http://localhost:3000/api/live          # Check data
    ```
 
 ## Key API Endpoints
@@ -98,16 +98,15 @@ cd frontend && npm run dev   # Frontend on :5173
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/matches` | All cached matches |
-| GET | `/api/matches/live` | Live matches only |
-| GET | `/api/matches/upcoming` | Upcoming (calibrated) fixtures |
+| GET | `/api/live` | Live matches only |
+| GET | `/api/upcoming` | Upcoming (calibrated) fixtures |
 | POST | `/api/analyze` | Run V9 analysis (body: matchData incl. homeTeamId, awayTeamId) |
 | POST | `/api/calibrate` | Trigger manual calibration |
 | GET | `/api/alerts` | Recent alerts from Firestore |
 | POST | `/api/bets` | Log a bet |
 | GET | `/api/bets` | Bet history |
 | PATCH | `/api/bets/:id` | Update bet result |
-| GET | `/api/bets/stats` | P&L, win rate, ROI |
+| GET | `/api/stats` | P&L, win rate, ROI |
 | GET | `/api/search?q=...` | NL match search |
 
 ## Configuration

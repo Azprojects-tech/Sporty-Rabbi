@@ -124,16 +124,20 @@ VITE_API_BASE_URL=http://localhost:3000/api
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/matches` | All cached matches (live + upcoming) |
-| GET | `/api/matches/live` | Live matches only |
-| GET | `/api/matches/upcoming` | Upcoming (calibrated) fixtures |
+| GET | `/api/live` | Live matches only |
+| GET | `/api/upcoming` | Upcoming (calibrated + parsed) fixtures |
+| GET | `/api/leagues` | League list for filters |
+| GET | `/api/matchTypes` | Match type list for filters |
 | POST | `/api/analyze` | Run V9 analysis on a match (body: matchData) |
+| GET | `/api/analyze/live/:matchId` | Run V9 analysis on a cached live match |
 | POST | `/api/calibrate` | Trigger manual calibration run |
+| GET | `/api/calibrate/results` | Read latest calibration results/status |
 | GET | `/api/alerts` | Recent alerts from Firestore |
 | POST | `/api/bets` | Log a bet |
 | GET | `/api/bets` | Bet history |
+| GET | `/api/bets/slips` | Tiered bet slip suggestions |
 | PATCH | `/api/bets/:id` | Update bet result |
-| GET | `/api/bets/stats` | P&L, win rate, ROI |
+| GET | `/api/stats` | P&L, win rate, ROI |
 | GET | `/api/search?q=...` | NL match search (Groq → Gemini fallback) |
 
 ---

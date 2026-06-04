@@ -82,10 +82,10 @@ Once backend is running, test these endpoints:
 curl http://localhost:3000/api/health
 
 # Get live matches
-curl http://localhost:3000/api/matches/live
+curl http://localhost:3000/api/live
 
 # Get bet stats
-curl http://localhost:3000/api/bets/stats
+curl http://localhost:3000/api/stats
 ```
 
 ## First Time Setup Checklist

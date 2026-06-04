@@ -94,21 +94,57 @@ let ws = null;
 let listeners = {};
 let reconnectAttempts = 0;
 const MAX_RETRIES = 5;
+let reconnectTimer = null;
+let activeConnectPromise = null;
+let manualDisconnect = false;
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect(onReady) {
+  if (manualDisconnect || reconnectAttempts >= MAX_RETRIES || reconnectTimer) return;
+  reconnectAttempts++;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectWebSocket(onReady).catch(() => {
+      // Next retry is scheduled by onclose/onerror paths if needed.
+    });
+  }, 3000);
+}
 
 export function connectWebSocket(onReady) {
+  if (activeConnectPromise) return activeConnectPromise;
+  if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(ws);
+
+  manualDisconnect = false;
+  clearReconnectTimer();
+
   // Derive WebSocket URL from the API base URL — avoids hardcoding deployment-specific URLs.
   // https://host/api → wss://host  |  http://host/api → ws://host
   const wsUrl = import.meta.env.VITE_WS_URL ||
     API_BASE.replace(/^\/api$/, '').replace(/\/api$/, '').replace(/^https/, 'wss').replace(/^http/, 'ws');
 
-  return new Promise((resolve, reject) => {
+  activeConnectPromise = new Promise((resolve, reject) => {
     ws = new WebSocket(wsUrl);
+    let settled = false;
+
+    const finish = (fn) => (arg) => {
+      if (settled) return;
+      settled = true;
+      activeConnectPromise = null;
+      fn(arg);
+    };
 
     ws.onopen = () => {
       console.log('✓ Connected to SportyRabbi');
       reconnectAttempts = 0;
+      clearReconnectTimer();
       if (onReady) onReady();
-      resolve(ws);
+      finish(resolve)(ws);
     };
 
     ws.onmessage = (event) => {
@@ -123,18 +159,38 @@ export function connectWebSocket(onReady) {
 
     ws.onerror = (error) => {
       console.error('❌ WebSocket error:', error);
-      reject(error);
+      finish(reject)(error);
     };
 
     ws.onclose = () => {
       console.log('⚠️  Disconnected from SportyRabbi');
-      // Auto-reconnect after 3 seconds
-      if (reconnectAttempts < MAX_RETRIES) {
-        reconnectAttempts++;
-        setTimeout(() => connectWebSocket(onReady), 3000);
-      }
+      activeConnectPromise = null;
+      scheduleReconnect(onReady);
     };
   });
+
+  return activeConnectPromise;
+}
+
+export function disconnectWebSocket() {
+  manualDisconnect = true;
+  clearReconnectTimer();
+  reconnectAttempts = 0;
+
+  if (ws) {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try {
+      ws.close();
+    } catch (_) {
+      // no-op
+    }
+    ws = null;
+  }
+
+  activeConnectPromise = null;
 }
 
 // Listen for specific message types
@@ -142,7 +198,9 @@ export function on(eventType, callback) {
   if (!listeners[eventType]) {
     listeners[eventType] = [];
   }
-  listeners[eventType].push(callback);
+  if (!listeners[eventType].includes(callback)) {
+    listeners[eventType].push(callback);
+  }
 }
 
 // Stop listening

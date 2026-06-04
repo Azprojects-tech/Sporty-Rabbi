@@ -217,7 +217,7 @@ App.jsx
     on('BET_LOGGED')       → add to bets[]
     on('BET_UPDATED')      → update in bets[]
 
-    Every 30s: GET /api/matches/live (HTTP fallback if WebSocket drops)
+    Every 30s: GET /api/live (HTTP fallback if WebSocket drops)
 ```
 
 ---
@@ -416,21 +416,23 @@ Computed separately from V9 inputs and displayed as an in-play overlay:
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/health` | Server status + quota state |
-| GET | `/api/matches/live` | Current live matches |
-| GET | `/api/matches/upcoming` | Upcoming (calibrated) fixtures |
-| GET | `/api/matches/all` | Both combined |
-| GET | `/api/matches/:id` | Single match by ID |
+| GET | `/api/live` | Current live matches |
+| GET | `/api/upcoming` | Upcoming (calibrated) fixtures |
+| GET | `/api/leagues` | Available leagues with counts |
+| GET | `/api/matchTypes` | Available match types with counts |
 | POST | `/api/analyze` | Full V9 analysis (body: matchData incl. homeTeamId, awayTeamId) |
+| GET | `/api/analyze/live/:matchId` | Full V9 analysis for a cached live match |
 | POST | `/api/calibrate` | Manual re-calibration trigger |
-| GET | `/api/calibration/status` | calibrationStore metadata |
+| GET | `/api/calibrate/results` | calibrationStore metadata + running flag |
 | GET | `/api/bets/slips` | Auto-generated Tier 1/2/3 bet slips |
 | POST | `/api/bets` | Log a manual bet |
 | GET | `/api/bets` | Bet history |
 | PATCH | `/api/bets/:id` | Update bet result (won/lost) |
-| GET | `/api/bets/stats` | P&L, win rate, ROI |
+| GET | `/api/stats` | P&L, win rate, ROI |
 | GET | `/api/alerts` | Alert history from Firestore |
 | GET | `/api/search?q=` | NL search → Groq/Gemini → V9 analysis |
-| GET | `/api/quota` | API-Football quota state |
+| POST | `/api/quota/reset` | Manually clear quota-guard pause |
+| GET | `/api/debug/live-raw` | Raw API-Football live fixture debug sample |
 | GET | `/api/test-whatsapp` | Test WhatsApp alert |
 
 ---

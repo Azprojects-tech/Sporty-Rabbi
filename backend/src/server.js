@@ -83,8 +83,56 @@ const liveAnalysisCache = new Map(); // matchId → { result, score, timestamp }
 const LIVE_ANALYSIS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 let alerts = [];
 let bets = [];
-let calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
+let calibrationStore = {
+  matches: [],
+  highConfidence: [],
+  calibratedAt: null,
+  totalScanned: 0,
+  lastTrigger: null,
+  lastStartedAt: null,
+  lastCompletedAt: null,
+};
 let calibrationRunning = false;
+let calibrationPromise = null;
+const calibrationRunMeta = {
+  runningTrigger: null,
+  runningSince: null,
+  lastTrigger: null,
+  lastStartedAt: null,
+  lastCompletedAt: null,
+};
+
+function runCalibrationSafely(trigger = 'manual') {
+  if (calibrationPromise) {
+    console.log(`[Calibrate] ${trigger} skipped: calibration already running`);
+    return calibrationPromise;
+  }
+
+  const startedAt = new Date().toISOString();
+  calibrationRunMeta.runningTrigger = trigger;
+  calibrationRunMeta.runningSince = startedAt;
+  calibrationRunMeta.lastTrigger = trigger;
+  calibrationRunMeta.lastStartedAt = startedAt;
+
+  calibrationRunning = true;
+  calibrationPromise = runCalibration()
+    .catch((err) => {
+      console.error(`[Calibrate] ${trigger} run error:`, err.message);
+      throw err;
+    })
+    .finally(() => {
+      const completedAt = new Date().toISOString();
+      calibrationRunMeta.lastCompletedAt = completedAt;
+      calibrationRunMeta.runningTrigger = null;
+      calibrationRunMeta.runningSince = null;
+      calibrationStore.lastCompletedAt = completedAt;
+
+      calibrationRunning = false;
+      calibrationPromise = null;
+    });
+
+  return calibrationPromise;
+}
 
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
@@ -255,11 +303,74 @@ function shouldSkipApiCalls() {
   return quotaState.isPaused;
 }
 
+// Heartbeat guarantees paused quota state self-recovers even during low traffic periods.
+const QUOTA_GUARD_HEARTBEAT_MS = Number(process.env.QUOTA_GUARD_HEARTBEAT_MS || 15000);
+if (QUOTA_GUARD_HEARTBEAT_MS > 0) {
+  setInterval(() => {
+    maybeAutoResumeQuotaGuard();
+  }, QUOTA_GUARD_HEARTBEAT_MS);
+  console.log(`⏱ Quota guard heartbeat enabled (${QUOTA_GUARD_HEARTBEAT_MS} ms)`);
+} else {
+  console.log('⏱ Quota guard heartbeat disabled (QUOTA_GUARD_HEARTBEAT_MS <= 0)');
+}
+
 // ─── RESPONSE CACHING (minimize API calls on paid plans) ──────────────────
 const cache = {
   liveMatches: { data: [], timestamp: 0 },
   upcomingMatches: { data: [], timestamp: 0 },
 };
+
+const livePollMetrics = {
+  lastStartedAt: null,
+  lastCompletedAt: null,
+  lastDurationMs: null,
+  lastSourceCount: 0,
+  lastAnalyzedCount: 0,
+  lastUsedCache: false,
+  lastError: null,
+};
+
+function toNumberWithMin(value, fallback, min) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
+}
+
+const LIVE_POLL_INTERVAL = toNumberWithMin(process.env.LIVE_POLL_INTERVAL, 30, 5);
+const ENABLE_ADAPTIVE_LIVE_POLL = String(process.env.ENABLE_ADAPTIVE_LIVE_POLL || 'false').toLowerCase() === 'true';
+const LIVE_POLL_INTERVAL_WHEN_LIVE = toNumberWithMin(
+  process.env.LIVE_POLL_INTERVAL_WHEN_LIVE,
+  Math.min(LIVE_POLL_INTERVAL, 12),
+  5,
+);
+const POLL_TICK_SECONDS = ENABLE_ADAPTIVE_LIVE_POLL
+  ? Math.min(LIVE_POLL_INTERVAL, LIVE_POLL_INTERVAL_WHEN_LIVE)
+  : LIVE_POLL_INTERVAL;
+let lastLivePollRunAt = 0;
+
+function getCurrentLivePollIntervalSeconds() {
+  if (!ENABLE_ADAPTIVE_LIVE_POLL) return LIVE_POLL_INTERVAL;
+  const hasLiveMatches = Array.isArray(liveMatches) && liveMatches.length > 0;
+  const quotaHealthy = !quotaState.isPaused;
+  return hasLiveMatches && quotaHealthy ? LIVE_POLL_INTERVAL_WHEN_LIVE : LIVE_POLL_INTERVAL;
+}
+
+function getLiveFreshnessMeta() {
+  const now = Date.now();
+  const lastDataTs = cache.liveMatches.timestamp || 0;
+  const ageMs = lastDataTs > 0 ? now - lastDataTs : null;
+  const currentInterval = getCurrentLivePollIntervalSeconds();
+  return {
+    currentIntervalSeconds: currentInterval,
+    baseIntervalSeconds: LIVE_POLL_INTERVAL,
+    adaptiveEnabled: ENABLE_ADAPTIVE_LIVE_POLL,
+    adaptiveLiveIntervalSeconds: LIVE_POLL_INTERVAL_WHEN_LIVE,
+    cacheTimestamp: lastDataTs > 0 ? new Date(lastDataTs).toISOString() : null,
+    cacheAgeMs: ageMs,
+    cacheAgeSeconds: ageMs == null ? null : +(ageMs / 1000).toFixed(1),
+    metrics: { ...livePollMetrics },
+  };
+}
 
 const CACHE_TTL = {
   live: API_KEY ? 2 * 60 * 1000 : 5 * 60 * 1000,      // 2 min (API-Football) or 5 min (no key)
@@ -298,7 +409,7 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   📌 API Key:    ${API_KEY ? '✅ API-Football configured' : '⚠️  API_FOOTBALL_KEY not set — live data unavailable'}
   🌐 API Base:   ${API_BASE}
-  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${process.env.LIVE_POLL_INTERVAL || 5}s` : 'No API key — set API_FOOTBALL_KEY in .env'}
+  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${LIVE_POLL_INTERVAL}s` : 'No API key — set API_FOOTBALL_KEY in .env'}
   🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
@@ -1086,10 +1197,21 @@ async function pollLiveMatches() {
     console.log('⏳ Polling already in progress, skipping...');
     return;
   }
+
+  const pollStarted = Date.now();
+  livePollMetrics.lastStartedAt = new Date(pollStarted).toISOString();
+  livePollMetrics.lastError = null;
+  livePollMetrics.lastSourceCount = 0;
+  livePollMetrics.lastAnalyzedCount = 0;
+  livePollMetrics.lastUsedCache = false;
   
   // Check cache first
   const cached = getCached('liveMatches');
   if (cached !== null) {
+    livePollMetrics.lastUsedCache = true;
+    livePollMetrics.lastAnalyzedCount = cached.length;
+    livePollMetrics.lastCompletedAt = new Date().toISOString();
+    livePollMetrics.lastDurationMs = Date.now() - pollStarted;
     if (cached.length > 0) {
       liveMatches = cached;
       broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
@@ -1106,7 +1228,9 @@ async function pollLiveMatches() {
       // ── API-Football mode only — no Gemini fallback for live scores ──────
       // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
+      livePollMetrics.lastSourceCount = Array.isArray(matches) ? matches.length : 0;
       processedMatches = matches ? await batchAnalyze(matches, 3) : [];
+      livePollMetrics.lastAnalyzedCount = processedMatches.length;
     }
     // If API-Football quota is exhausted or unavailable, live tab stays empty.
     // Real-time scores require a real-time source.
@@ -1124,7 +1248,10 @@ async function pollLiveMatches() {
     }
   } catch (error) {
     console.error('❌ Poll error:', error.message);
+    livePollMetrics.lastError = error.message;
   } finally {
+    livePollMetrics.lastCompletedAt = new Date().toISOString();
+    livePollMetrics.lastDurationMs = Date.now() - pollStarted;
     isPolling = false;
   }
 }
@@ -1195,12 +1322,16 @@ async function pollUpcomingMatches() {
 
 // Start polling — 30s default keeps well within API-Football's 300 req/min rate limit
 // even when 20+ live matches are being analyzed (1 fixture call + cached analysis).
-const pollInterval = process.env.LIVE_POLL_INTERVAL || 30;
-cron.schedule(`*/${pollInterval} * * * * *`, async () => {
+cron.schedule(`*/${POLL_TICK_SECONDS} * * * * *`, async () => {
   try {
     // Poll live matches
     try {
-      await pollLiveMatches();
+      const now = Date.now();
+      const targetIntervalMs = getCurrentLivePollIntervalSeconds() * 1000;
+      if (now - lastLivePollRunAt >= targetIntervalMs) {
+        lastLivePollRunAt = now;
+        await pollLiveMatches();
+      }
     } catch (err) {
       console.error('❌ Live poll failed:', err.message);
     }
@@ -1216,7 +1347,7 @@ cron.schedule(`*/${pollInterval} * * * * *`, async () => {
   }
 });
 
-console.log(`⏰ Polling started (cron every ${pollInterval}s)`);
+console.log(`⏰ Polling started (tick ${POLL_TICK_SECONDS}s, base ${LIVE_POLL_INTERVAL}s${ENABLE_ADAPTIVE_LIVE_POLL ? `, live ${LIVE_POLL_INTERVAL_WHEN_LIVE}s` : ''})`);
 console.log(`   Data source: ${API_KEY ? 'API-Football' : '🤖 Gemini 2.0 Flash + Google Search'}`);
 console.log(`   Live cache TTL:     ${CACHE_TTL.live / 1000}s`);
 console.log(`   Upcoming cache TTL: ${CACHE_TTL.upcoming / 1000}s`);
@@ -1227,13 +1358,13 @@ console.log(`   Upcoming cache TTL: ${CACHE_TTL.upcoming / 1000}s`);
 
 setTimeout(() => {
   console.log('[AutoCal] Startup calibration — fetching today\'s real fixtures via Gemini Search...');
-  runCalibration().then(store => {
+  runCalibrationSafely('startup').then(store => {
     if (!store || store.matches.length === 0) {
       // Retry once after 3 minutes if startup calibration produced nothing
       console.warn('[AutoCal] Startup produced 0 matches — scheduling retry in 3 minutes...');
       setTimeout(() => {
         console.log('[AutoCal] Retry calibration (first attempt yielded 0 matches)...');
-        runCalibration().catch(err => console.error('[AutoCal] Retry failed:', err.message));
+        runCalibrationSafely('startup-retry').catch(() => {});
       }, 3 * 60 * 1000);
     }
   }).catch(err => {
@@ -1241,7 +1372,7 @@ setTimeout(() => {
     // Retry once after 3 minutes on error too
     setTimeout(() => {
       console.log('[AutoCal] Retry calibration after startup error...');
-      runCalibration().catch(e => console.error('[AutoCal] Retry failed:', e.message));
+      runCalibrationSafely('startup-error-retry').catch(() => {});
     }, 3 * 60 * 1000);
   });
 }, 5000);
@@ -1249,7 +1380,7 @@ setTimeout(() => {
 // Re-calibrate at top of every 6th hour (00:00, 06:00, 12:00, 18:00 UTC)
 cron.schedule('0 0,6,12,18 * * *', () => {
   console.log('[AutoCal] Scheduled 6-hour recalibration starting...');
-  runCalibration().catch(err => console.error('[AutoCal] Scheduled failed:', err.message));
+  runCalibrationSafely('scheduled').catch(() => {});
   purgeOldPredictions().catch(err => console.warn('[AutoCal] Prediction purge failed:', err.message));
 });
 
@@ -1532,6 +1663,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: '✓ Online',
     timestamp: new Date().toISOString(),
+    liveFreshness: getLiveFreshnessMeta(),
     quotaGuard: {
       isPaused: quotaState.isPaused,
       pauseReason: quotaState.pauseReason,
@@ -1568,7 +1700,11 @@ app.get('/api/live', (req, res) => {
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
   
   let filtered = matchType ? liveMatches.filter(m => m.matchType === matchType) : liveMatches;
-  res.json({ count: filtered.length, matches: filtered });
+  res.json({
+    count: filtered.length,
+    matches: filtered,
+    freshness: getLiveFreshnessMeta(),
+  });
 });
 
 app.get('/api/upcoming', (req, res) => {
@@ -2702,6 +2838,9 @@ async function runCalibration() {
     calibratedAt: new Date().toISOString(),
     totalScanned: raw.length,
     calibrationHealth,
+    lastTrigger: calibrationRunMeta.lastTrigger,
+    lastStartedAt: calibrationRunMeta.lastStartedAt,
+    lastCompletedAt: calibrationRunMeta.lastCompletedAt,
   };
 
   // Persist to Firestore so calibration survives server restarts
@@ -2827,14 +2966,20 @@ async function runCalibration() {
  */
 app.post('/api/calibrate', (req, res) => {
   if (calibrationRunning) {
-    return res.json({ status: 'already_running', message: 'Calibration is already in progress.' });
+    return res.json({
+      status: 'already_running',
+      message: 'Calibration is already in progress.',
+      runningTrigger: calibrationRunMeta.runningTrigger,
+      runningSince: calibrationRunMeta.runningSince,
+    });
   }
-  calibrationRunning = true;
-  res.json({ status: 'started', message: 'Calibration started. Poll /api/calibrate/results for progress.' });
+  res.json({
+    status: 'started',
+    trigger: 'manual-background',
+    message: 'Calibration started. Poll /api/calibrate/results for progress.',
+  });
   // Run async in background — response already sent
-  runCalibration()
-    .catch(err => console.error('[Calibrate] Background run error:', err.message))
-    .finally(() => { calibrationRunning = false; });
+  runCalibrationSafely('manual-background').catch(() => {});
 });
 
 /**
@@ -2842,7 +2987,12 @@ app.post('/api/calibrate', (req, res) => {
  * Returns the last stored calibration results without re-running.
  */
 app.get('/api/calibrate/results', (req, res) => {
-  res.json({ ...calibrationStore, running: calibrationRunning });
+  res.json({
+    ...calibrationStore,
+    running: calibrationRunning,
+    runningTrigger: calibrationRunMeta.runningTrigger,
+    runningSince: calibrationRunMeta.runningSince,
+  });
 });
 
 /**
