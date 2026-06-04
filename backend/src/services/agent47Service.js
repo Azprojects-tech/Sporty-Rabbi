@@ -11,6 +11,12 @@
  * OUTPUT: tiered recommendations + full 15-parameter audit
  */
 
+import {
+  detectCompetitionContext,
+  getCompetitionModelProfile,
+  applyWeightProfile,
+} from '../../../shared/competitionModelProfile.js';
+
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
 export const TIERS = {
   1: { name: 'Capital Security',  minConfidence: 85, description: 'High-stake singles. Maximum reliability. 3–5% purse.' },
@@ -1111,6 +1117,7 @@ export function analyzeV9(matchData = {}) {
   // Deploy marker: keep backend service change detectable for Railway rebuild.
   const {
     home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0, matchType = 'League',
+    country = '', round = null, isKnockout = false, notes = null,
     gameWeek = 30, totalGW = 38, totalTeams = 20,
     homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40,
     status = 'NS', matchMinutes = 0, score = '0-0',
@@ -1139,7 +1146,20 @@ export function analyzeV9(matchData = {}) {
     homeXgTrend = null, awayXgTrend = null,
     // league scalar override (auto-resolved from leagueId if not provided)
     leagueScalar = null,
+    competitionContext = null,
   } = matchData;
+
+  const resolvedCompetitionContext = competitionContext || detectCompetitionContext({
+    leagueId,
+    league,
+    country,
+    matchType,
+    round,
+    isKnockout,
+    notes,
+  });
+  const competitionModelProfile = getCompetitionModelProfile(resolvedCompetitionContext);
+  const activeWeights = applyWeightProfile(W, competitionModelProfile.weightBias);
 
   // ── Run all 15 parameters ───────────────────────────────────────────
   const p1  = scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, totalTeams, gameWeek, totalGW });
@@ -1196,29 +1216,30 @@ export function analyzeV9(matchData = {}) {
   // ── Weighted composite score (V9: 15 parameters + league scalar) ──────────
   // Parameters with no data (null score) are excluded; remaining weights are
   // rescaled proportionally so the composite always sums to 100%.
-  const scalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 0.93;
+  const baseScalar = leagueScalar ?? LEAGUE_SCALARS[leagueId] ?? 0.93;
+  const scalar = Math.max(0.65, Math.min(1.1, baseScalar * (competitionModelProfile.scalarMultiplier ?? 1)));
   const paramScores = [
-    [p1.score,  W.p1_motivation],
-    [p2.score,  W.p2_starPower],
-    [p3.score,  W.p3_h2h],
-    [p4.score,  W.p4_form],
-    [p5.score,  W.p5_scoringTiming],
-    [p6.score,  W.p6_defensiveGap],
-    [p7.score,  W.p7_poisson],
-    [p8.score,  W.p8_xg],
-    [p9.score,  W.p9_xga],
-    [p10.score, W.p10_pace],
-    [p11.score, W.p11_homeAdvantage],
-    [p12.score, W.p12_market],
-    [p13.score, W.p13_squad],
-    [p14.score, W.p14_lifecycle],
-    [p15.score, W.p15_crisis],
+    [p1.score,  activeWeights.p1_motivation],
+    [p2.score,  activeWeights.p2_starPower],
+    [p3.score,  activeWeights.p3_h2h],
+    [p4.score,  activeWeights.p4_form],
+    [p5.score,  activeWeights.p5_scoringTiming],
+    [p6.score,  activeWeights.p6_defensiveGap],
+    [p7.score,  activeWeights.p7_poisson],
+    [p8.score,  activeWeights.p8_xg],
+    [p9.score,  activeWeights.p9_xga],
+    [p10.score, activeWeights.p10_pace],
+    [p11.score, activeWeights.p11_homeAdvantage],
+    [p12.score, activeWeights.p12_market],
+    [p13.score, activeWeights.p13_squad],
+    [p14.score, activeWeights.p14_lifecycle],
+    [p15.score, activeWeights.p15_crisis],
   ].filter(([s]) => s != null);
   const totalWeight = paramScores.reduce((acc, [, w]) => acc + w, 0);
   const rawScore = totalWeight > 0
     ? paramScores.reduce((acc, [s, w]) => acc + s * (w / totalWeight), 0)
     : 50;
-  const overall = Math.round(Math.min(rawScore * scalar, 100));
+  const overall = Math.round(Math.max(0, Math.min(rawScore * scalar + (competitionModelProfile.overallAdjustment ?? 0), 100)));
 
   // ── Chaos variables ────────────────────────────────────────────────────────
   const chaos = evaluateChaos({ motivation: p1, form: p4, matchMinutes, earlyGoalScored, earlyGoalMinute,
@@ -1232,7 +1253,20 @@ export function analyzeV9(matchData = {}) {
   const bookieEdges = detectBookieEdges(p1, p2, p4, chaos);
 
   return {
-    match:   { home, away, league, leagueId, status, matchMinutes, score, referee, venue, gameWeek, totalGW },
+    match:   {
+      home,
+      away,
+      league,
+      leagueId,
+      status,
+      matchMinutes,
+      score,
+      referee,
+      venue,
+      gameWeek,
+      totalGW,
+      competitionContext: resolvedCompetitionContext,
+    },
     recommendations,
     parameters: { p1_motivation: p1, p2_starPower: p2, p3_h2h: p3, p4_form: p4,
                   p5_scoringTiming: p5, p6_defensiveGap: p6, p7_poisson: p7,
@@ -1246,6 +1280,12 @@ export function analyzeV9(matchData = {}) {
     dataContext: {
       homeRecentOpposition,
       awayRecentOpposition,
+    },
+    modelRouting: {
+      profile: competitionModelProfile.name,
+      context: resolvedCompetitionContext,
+      overallAdjustment: competitionModelProfile.overallAdjustment ?? 0,
+      scalarMultiplier: competitionModelProfile.scalarMultiplier ?? 1,
     },
     leagueScalarApplied: scalar,
     bookieEdges,

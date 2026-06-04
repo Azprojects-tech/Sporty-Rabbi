@@ -35,6 +35,8 @@ import {
 } from './services/liveAnalyticsService.js';
 import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
 import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
+import { detectCompetitionContext } from '../../shared/competitionModelProfile.js';
+import { getCompetitionRiskPolicy } from '../../shared/competitionRiskPolicy.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -1031,6 +1033,11 @@ async function analyzeMatch(match) {
         away: teams.away?.name || 'Unknown',
         league: league.name || 'Unknown',
         leagueId: league.id || 0,
+        country: league.country || '',
+        round: league.round || '',
+        isKnockout: round.includes('knockout') || round.includes('round of') || round.includes('quarter') || round.includes('semi') || round.includes('final'),
+        notes: league.type || '',
+        matchType,
         status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
@@ -1392,12 +1399,25 @@ const ALERT_DEDUP_MS = 30 * 60 * 1000; // 30 minutes
 
 async function saveAlert(alertData) {
   const confidencePolicy = getPhaseConfidencePolicy(alertData.status || 'NS', alertData.matchMinutes || 0);
+  const competitionContext = detectCompetitionContext({
+    leagueId: alertData.leagueId || 0,
+    league: alertData.league || '',
+    country: alertData.country || '',
+    matchType: alertData.matchType || '',
+    round: alertData.round || '',
+    isKnockout: Boolean(alertData.isKnockout),
+    notes: alertData.notes || '',
+  });
+  const riskPolicy = getCompetitionRiskPolicy(competitionContext.family);
+  const standardThreshold = Math.min(95, (alertData.standardThreshold || confidencePolicy.standardThreshold) + riskPolicy.thresholdAdjustment);
+  const premiumThreshold = Math.min(99, (alertData.premiumThreshold || confidencePolicy.premiumThreshold) + riskPolicy.thresholdAdjustment);
   const alertPayload = {
     ...alertData,
     phase: alertData.phase || confidencePolicy.phase,
-    standardThreshold: alertData.standardThreshold || confidencePolicy.standardThreshold,
-    premiumThreshold: alertData.premiumThreshold || confidencePolicy.premiumThreshold,
-    confidenceTier: alertData.confidenceTier || ((alertData.confidence || 0) >= confidencePolicy.premiumThreshold ? 'PREMIUM' : (alertData.confidence || 0) >= confidencePolicy.standardThreshold ? 'STANDARD' : 'LOW'),
+    standardThreshold,
+    premiumThreshold,
+    competitionFamily: alertData.competitionFamily || competitionContext.family,
+    confidenceTier: alertData.confidenceTier || ((alertData.confidence || 0) >= premiumThreshold ? 'PREMIUM' : (alertData.confidence || 0) >= standardThreshold ? 'STANDARD' : 'LOW'),
   };
 
   // Dedup: skip if same match+type was sent within the last 30 minutes
@@ -1427,7 +1447,7 @@ async function saveAlert(alertData) {
   broadcast({ type: 'NEW_ALERT', payload: alertPayload });
 
   // Send WhatsApp alert for high-confidence opportunities
-  if ((alertPayload.confidence || 0) >= confidencePolicy.standardThreshold) {
+  if ((alertPayload.confidence || 0) >= alertPayload.standardThreshold) {
     const confStr = alertPayload.confidence ? `${alertPayload.confidence}%` : '–';
     const msg = [
       `🐰 SportyRabbi Alert`,
@@ -1435,7 +1455,8 @@ async function saveAlert(alertData) {
       `🏆 ${alertPayload.league || 'Match'}`,
       `📊 Confidence: ${confStr}`,
       `💡 ${alertPayload.message || alertPayload.type}`,
-      `⏱ Phase: ${confidencePolicy.phase} (standard ${confidencePolicy.standardThreshold}%, premium ${confidencePolicy.premiumThreshold}%)`,
+      `📚 Family: ${alertPayload.competitionFamily || 'UNKNOWN'}`,
+      `⏱ Phase: ${confidencePolicy.phase} (standard ${alertPayload.standardThreshold}%, premium ${alertPayload.premiumThreshold}%)`,
       `🕐 ${new Date(alertPayload.sentAt).toLocaleTimeString('en-NG', { timeZone: 'Africa/Lagos' })}`,
     ].join('\n');
     sendWhatsApp(msg).catch(() => {});
@@ -1487,9 +1508,21 @@ function bestSelection(match) {
 }
 
 function generateBetSlips(bankroll = BANKROLL) {
-  const pool = calibrationStore.matches.filter(m =>
-    m.status === 'NS' && (m.confidence || 0) >= 55
-  );
+  const pool = calibrationStore.matches
+    .map((m) => {
+      const ctx = detectCompetitionContext({
+        leagueId: m.leagueId,
+        league: m.league,
+        country: m.leagueCountry,
+        matchType: m.matchType,
+        round: m.round,
+        isKnockout: (m.round || '').toLowerCase().includes('knockout') || (m.round || '').toLowerCase().includes('round of') || (m.round || '').toLowerCase().includes('quarter') || (m.round || '').toLowerCase().includes('semi') || (m.round || '').toLowerCase().includes('final'),
+        notes: m.notes,
+      });
+      const risk = getCompetitionRiskPolicy(ctx.family);
+      return { ...m, _competitionFamily: ctx.family, _riskPolicy: risk };
+    })
+    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(55, m._riskPolicy.confidenceFloor));
 
   if (pool.length === 0) {
     return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
@@ -1522,19 +1555,21 @@ function generateBetSlips(bankroll = BANKROLL) {
   const tier1 = tier1Candidates.map(m => {
     const sel = bestSelection(m);
     const odds = oddsForSelection(m, sel.type);
-    const stake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
+    const rawStake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
+    const guardedStake = Math.round(Math.min(rawStake * m._riskPolicy.stakeMultiplier, bankroll * m._riskPolicy.maxSingleStakePct));
     return {
       match: `${m.home} vs ${m.away}`,
       league: m.league,
       leagueId: m.leagueId,
+      competitionFamily: m._competitionFamily,
       kickoffUTC: m.kickoffUTC,
       selection: sel.label,
       selectionType: sel.type,
       confidence: m.confidence,
       odds: +odds.toFixed(2),
-      stake,
-      potentialReturn: Math.round(stake * odds),
-      potentialProfit: Math.round(stake * (odds - 1)),
+      stake: guardedStake,
+      potentialReturn: Math.round(guardedStake * odds),
+      potentialProfit: Math.round(guardedStake * (odds - 1)),
     };
   });
 
@@ -1551,6 +1586,7 @@ function generateBetSlips(bankroll = BANKROLL) {
         match: `${m.home} vs ${m.away}`,
         league: m.league,
         leagueId: m.leagueId,
+        competitionFamily: m._competitionFamily,
         kickoffUTC: m.kickoffUTC,
         selection: sel.label,
         selectionType: sel.type,
@@ -1560,7 +1596,11 @@ function generateBetSlips(bankroll = BANKROLL) {
       combinedOdds: +(acc.combinedOdds * oddsForSelection(m, sel.type)).toFixed(2),
     };
   }, { legs: [], combinedOdds: 1.0 });
-  const tier2Stake = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
+  const tier2StakeRaw = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
+  const tier2RiskMultiplier = tier2Legs.length > 0
+    ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier))
+    : 1;
+  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier);
   const tier2 = tier2Legs.length >= 2 ? {
     ...tier2Combined,
     stake: tier2Stake,
@@ -1588,6 +1628,7 @@ function generateBetSlips(bankroll = BANKROLL) {
       match: `${m.home} vs ${m.away}`,
       league: m.league,
       leagueId: m.leagueId,
+      competitionFamily: m._competitionFamily,
       kickoffUTC: m.kickoffUTC,
       selection: sel.label,
       selectionType: sel.type,
@@ -1596,7 +1637,11 @@ function generateBetSlips(bankroll = BANKROLL) {
     };
   });
   const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
-  const tier3Stake = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
+  const tier3StakeRaw = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
+  const tier3RiskMultiplier = tier3Candidates.length > 0
+    ? Math.min(...tier3Candidates.map(m => m._riskPolicy.stakeMultiplier))
+    : 1;
+  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier);
   const tier3 = tier3Legs.length >= 2 ? {
     legs: tier3Legs,
     combinedOdds: tier3CombinedOdds,
@@ -1810,10 +1855,21 @@ app.post('/api/bets', async (req, res) => {
     home_win: 'WINS_ONLY', away_win: 'WINS_ONLY', draw: 'NEUTRAL',
     over: 'GOALS_ONLY', under: 'GOALS_ONLY', btts: 'GOALS_ONLY',
   };
+  const competitionContext = detectCompetitionContext({
+    leagueId: req.body.leagueId || req.body.matchLeagueId || 0,
+    league: req.body.leagueName || req.body.league || '',
+    country: req.body.leagueCountry || req.body.country || '',
+    matchType: req.body.matchType || req.body.fixtureType || '',
+    round: req.body.round || '',
+    isKnockout: Boolean(req.body.isKnockout),
+    notes: req.body.notes || '',
+  });
+
   const bet = {
     id: Date.now(),
     ...req.body,
     betType: BET_TYPE_MAP[req.body.betType] || req.body.betType || 'UNKNOWN',
+    competitionFamily: req.body.competitionFamily || competitionContext.family,
     createdAt: new Date().toISOString(),
   };
 
@@ -1886,6 +1942,76 @@ app.get('/api/stats', async (req, res) => {
     losses,
     winRate: `${winRate}%`,
     liveBetsAvailable: liveMatches.length,
+  });
+});
+
+app.get('/api/stats/competition', async (req, res) => {
+  const db = getDb();
+  let allBets = bets;
+
+  if (db) {
+    try {
+      const snapshot = await db.collection('bets').get();
+      allBets = snapshot.docs.map(d => d.data());
+    } catch (err) {
+      console.error('Firestore competition stats read error:', err.message);
+    }
+  }
+
+  const settled = allBets.filter((b) => b.result === 'won' || b.result === 'lost');
+  const byFamily = {};
+
+  for (const bet of settled) {
+    const family = bet.competitionFamily || detectCompetitionContext({
+      leagueId: bet.leagueId || 0,
+      league: bet.leagueName || bet.league || '',
+      country: bet.leagueCountry || bet.country || '',
+      matchType: bet.matchType || '',
+      round: bet.round || '',
+      isKnockout: Boolean(bet.isKnockout),
+      notes: bet.notes || '',
+    }).family;
+
+    if (!byFamily[family]) {
+      byFamily[family] = {
+        family,
+        settled: 0,
+        won: 0,
+        lost: 0,
+        avgConfidence: null,
+        confidenceCount: 0,
+        confidenceSum: 0,
+      };
+    }
+
+    byFamily[family].settled++;
+    if (bet.result === 'won') byFamily[family].won++;
+    else byFamily[family].lost++;
+    if (bet.confidence != null) {
+      byFamily[family].confidenceCount++;
+      byFamily[family].confidenceSum += Number(bet.confidence) || 0;
+    }
+  }
+
+  const rows = Object.values(byFamily).map((r) => {
+    const winRate = r.settled > 0 ? +((r.won / r.settled) * 100).toFixed(1) : 0;
+    const avgConfidence = r.confidenceCount > 0
+      ? +(r.confidenceSum / r.confidenceCount).toFixed(1)
+      : null;
+    return {
+      family: r.family,
+      settled: r.settled,
+      won: r.won,
+      lost: r.lost,
+      winRate,
+      avgConfidence,
+      calibrationGap: avgConfidence == null ? null : +(winRate - avgConfidence).toFixed(1),
+    };
+  }).sort((a, b) => b.settled - a.settled);
+
+  res.json({
+    totalSettled: settled.length,
+    families: rows,
   });
 });
 
@@ -2422,6 +2548,11 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
 
     const matchData = {
       home: match.home, away: match.away, league: match.league, leagueId,
+      country: match.leagueCountry || '',
+      round: match.round || '',
+      isKnockout: (match.round || '').toLowerCase().includes('knockout') || (match.round || '').toLowerCase().includes('round of') || (match.round || '').toLowerCase().includes('quarter') || (match.round || '').toLowerCase().includes('semi') || (match.round || '').toLowerCase().includes('final'),
+      notes: match.notes || '',
+      matchType: match.matchType || 'League',
       status: 'LIVE', matchMinutes: liveMin, score: match.score || '0-0',
       gameWeek, totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38, totalTeams,
       homePosition, awayPosition, homePoints, awayPoints,
@@ -2706,6 +2837,11 @@ async function runCalibration() {
         away: awayName,
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
+        country: matchMeta.country || '',
+        round: matchMeta.round || '',
+        isKnockout: Boolean(matchMeta.isKnockout) || String(matchMeta.round || '').toLowerCase().includes('knockout') || String(matchMeta.round || '').toLowerCase().includes('round of') || String(matchMeta.round || '').toLowerCase().includes('quarter') || String(matchMeta.round || '').toLowerCase().includes('semi') || String(matchMeta.round || '').toLowerCase().includes('final'),
+        notes: matchMeta.notes || '',
+        matchType: matchMeta.matchType || (matchMeta.isKnockout ? 'Cup' : 'League'),
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
@@ -2755,6 +2891,10 @@ async function runCalibration() {
       }
 
       const analysis = analyzeV9(matchData);
+      const resolvedMatchType = analysis?.match?.competitionContext?.family === 'DOMESTIC_CUP'
+        || analysis?.match?.competitionContext?.family?.includes('KNOCKOUT')
+        ? 'Cup'
+        : (matchData.matchType || 'League');
       const matchObj = sanitizeMatch({
         id: `cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50),
         home: matchMeta.home || 'Unknown',
@@ -2769,7 +2909,7 @@ async function runCalibration() {
         opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
-        matchType: 'League',
+        matchType: resolvedMatchType,
         leagueCountry: matchMeta.country || '',
       });
       matchObj.kickoffUTC = matchMeta.kickoffUTC || null;

@@ -38,6 +38,7 @@ Real-time football match analytics with a 15-parameter AI scoring engine (Agent 
 
 ```
 SportyRabbi/
+├── SESSION_CONTINUITY_LOG.md        ← Session decisions + recovery notes
 ├── backend/
 │   ├── src/
 │   │   ├── server.js                  ← All routes, polling, WebSocket, cron jobs
@@ -138,6 +139,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 | GET | `/api/bets/slips` | Tiered bet slip suggestions |
 | PATCH | `/api/bets/:id` | Update bet result |
 | GET | `/api/stats` | P&L, win rate, ROI |
+| GET | `/api/stats/competition` | Settled performance grouped by competition family |
 | GET | `/api/search?q=...` | NL match search (Groq → Gemini fallback) |
 
 ---
@@ -171,6 +173,8 @@ Both services auto-deploy on `git push origin main`:
 - **Frontend** → Netlify (builds `frontend/`, publishes `dist/`)
 
 See [SYSTEM_DOCUMENTATION.md](SYSTEM_DOCUMENTATION.md) for full technical reference including data flow diagrams, Firestore schema, and model improvement roadmap.
+
+For periodic session summaries and recovery notes, see [SESSION_CONTINUITY_LOG.md](SESSION_CONTINUITY_LOG.md).
 
 ---
 
