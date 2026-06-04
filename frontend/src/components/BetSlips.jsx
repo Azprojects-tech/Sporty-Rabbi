@@ -317,6 +317,20 @@ export default function BetSlips() {
             </div>
             <div style={{ fontSize: 9, color: '#4a5568' }}>qualifying games</div>
           </div>
+          {slips.summary.targetBankroll && (
+            <>
+              <div style={{ width: 1, background: '#1e2535' }} />
+              <div style={{ flex: 1, textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: '#4a5568', marginBottom: 2 }}>Target Day Plan</div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#22c55e' }}>
+                  ₦{fmt(slips.summary.targetBankroll)}
+                </div>
+                <div style={{ fontSize: 9, color: '#4a5568' }}>
+                  {slips.summary.progressToTargetPct ?? 0}% target cover
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

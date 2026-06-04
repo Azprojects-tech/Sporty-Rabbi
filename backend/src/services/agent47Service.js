@@ -934,6 +934,107 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
   return recs.sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
 }
 
+function tierFromConfidence(conf = 50) {
+  return conf >= 85 ? 1 : conf >= 72 ? 2 : conf >= 62 ? 3 : 4;
+}
+
+function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4 }) {
+  const probs = poisson?.probabilities || {};
+  const fallbackOptions = [
+    { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: probs.over15 ?? null, logic: `Fallback by Poisson O1.5 (${probs.over15 ?? 'N/A'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: probs.over25 ?? null, logic: `Fallback by Poisson O2.5 (${probs.over25 ?? 'N/A'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Under 2.5 Goals', confidence: probs.under25 ?? null, logic: `Fallback by Poisson U2.5 (${probs.under25 ?? 'N/A'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Both Teams to Score', confidence: probs.btts ?? null, logic: `Fallback by Poisson BTTS (${probs.btts ?? 'N/A'}%).` },
+  ].filter(x => x.confidence != null);
+
+  const directionalEdge = p1?.edge !== 'NEUTRAL' ? p1.edge : p4?.edge;
+  if (directionalEdge && directionalEdge !== 'NEUTRAL') {
+    const team = directionalEdge === 'HOME' ? home : away;
+    const conf = Math.max(55, Math.min(88, Math.round((overallScore || 50) * 0.9)));
+    fallbackOptions.push({
+      type: 'WINS_ONLY',
+      selection: `${team} Win`,
+      confidence: conf,
+      logic: `Fallback directional lean from motivation/form (${directionalEdge}).`,
+    });
+  }
+
+  if (fallbackOptions.length === 0) {
+    const conf = Math.max(52, Math.min(75, Math.round(overallScore || 55)));
+    return {
+      type: 'GOALS_ONLY',
+      selection: 'Over 1.5 Goals',
+      confidence: conf,
+      tier: tierFromConfidence(conf),
+      tierName: TIERS[tierFromConfidence(conf)].name,
+      logic: 'Fallback recommendation: limited signal, defaulting to the broadest goal line.',
+    };
+  }
+
+  const best = fallbackOptions.sort((a, b) => b.confidence - a.confidence)[0];
+  const tier = tierFromConfidence(best.confidence);
+  return {
+    ...best,
+    tier,
+    tierName: TIERS[tier].name,
+  };
+}
+
+function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {}) {
+  const {
+    p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
+    poisson,
+    resolvedCompetitionContext,
+    competitionModelProfile,
+    overall,
+    status,
+    matchMinutes,
+    score,
+  } = analysisCtx;
+
+  const factors = [
+    { key: 'p4_form', label: 'Form', score: p4?.score, note: p4?.assessment },
+    { key: 'p1_motivation', label: 'Motivation', score: p1?.score, note: p1?.assessment },
+    { key: 'p7_poisson', label: 'Poisson', score: p7?.score, note: p7?.assessment },
+    { key: 'p15_crisis', label: 'Crisis', score: p15?.score, note: p15?.assessment },
+    { key: 'p12_market', label: 'Market', score: p12?.score, note: p12?.assessment },
+    { key: 'p13_context', label: 'Competition Context', score: p13?.score, note: p13?.assessment },
+    { key: 'p2_starPower', label: 'Star Power', score: p2?.score, note: p2?.assessment },
+    { key: 'p6_defensiveGap', label: 'Defensive Gap', score: p6?.score, note: p6?.assessment },
+    { key: 'p8_xg', label: 'xG Edge', score: p8?.score, note: p8?.assessment },
+    { key: 'p10_pace', label: 'Pace', score: p10?.score, note: p10?.assessment },
+    { key: 'p11_homeAdv', label: 'Home Advantage', score: p11?.score, note: p11?.assessment },
+    { key: 'p3_h2h', label: 'H2H', score: p3?.score, note: p3?.assessment },
+    { key: 'p14_lifecycle', label: 'Lifecycle', score: p14?.score, note: p14?.assessment },
+    { key: 'p5_timing', label: 'Timing', score: p5?.score, note: p5?.assessment },
+    { key: 'p9_xga', label: 'Defensive Solidity', score: p9?.score, note: p9?.assessment },
+  ].filter(x => x.score != null).sort((a, b) => b.score - a.score);
+
+  const topFactors = factors.slice(0, 4).map(f => ({
+    key: f.key,
+    label: f.label,
+    score: Math.round(f.score),
+    note: String(f.note || '').slice(0, 120),
+  }));
+
+  return recommendations.map((r) => ({
+    ...r,
+    evidence: {
+      overallScore: overall,
+      competitionFamily: resolvedCompetitionContext?.family || 'UNKNOWN',
+      competitionProfile: competitionModelProfile?.name || 'Default',
+      liveState: { status, matchMinutes, score },
+      topFactors,
+      poisson: {
+        expectedGoals: poisson?.expectedTotalGoals ?? null,
+        over25: poisson?.probabilities?.over25 ?? null,
+        btts: poisson?.probabilities?.btts ?? null,
+        likelyScore: poisson?.likelyScore?.score || null,
+      },
+    },
+  }));
+}
+
 function computeWinCall({ home, away, p1, p4, poisson, overallScore, recommendations = [] }) {
   let homeVotes = 0;
   let awayVotes = 0;
@@ -1246,7 +1347,20 @@ export function analyzeV9(matchData = {}) {
                                  homeTacticalHighLine, awayCounterThreat, homePossession });
 
   // ── Recommendations ────────────────────────────────────────────────────────
-  const recommendations = generateRecommendations(overall, poi, p1, p4, chaos, matchData);
+  let recommendations = generateRecommendations(overall, poi, p1, p4, chaos, matchData);
+  if (!Array.isArray(recommendations) || recommendations.length === 0) {
+    recommendations = [fallbackRecommendation({ home, away, overallScore: overall, poisson: poi, p1, p4 })];
+  }
+  recommendations = attachEvidenceToRecommendations(recommendations, {
+    p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
+    poisson: poi,
+    resolvedCompetitionContext,
+    competitionModelProfile,
+    overall,
+    status,
+    matchMinutes,
+    score,
+  });
   const winCall = computeWinCall({ home, away, p1, p4, poisson: poi, overallScore: overall, recommendations });
 
   // ── Bookie edge detection ──────────────────────────────────────────────────

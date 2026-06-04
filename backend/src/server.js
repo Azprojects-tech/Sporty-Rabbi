@@ -1480,6 +1480,7 @@ async function saveAlert(alertData) {
  */
 
 const BANKROLL = 250000; // ₦ — adjust via env if needed later
+const DAILY_TARGET_PROFIT = Number(process.env.DAILY_TARGET_PROFIT || 100000); // ₦ target, e.g. 250k -> 350k
 
 function oddsForSelection(match, selType) {
   const o    = match.analysis?.odds || match.odds || {};
@@ -1661,10 +1662,16 @@ function generateBetSlips(bankroll = BANKROLL) {
     tier3,
     summary: {
       bankroll,
+      targetProfit: DAILY_TARGET_PROFIT,
+      targetBankroll: bankroll + DAILY_TARGET_PROFIT,
       totalStake,
       totalStakePercent: +((totalStake / bankroll) * 100).toFixed(1),
       bestCaseProfit,
       bestCaseProfitPercent: +((bestCaseProfit / bankroll) * 100).toFixed(1),
+      progressToTargetPct: DAILY_TARGET_PROFIT > 0
+        ? +Math.min((bestCaseProfit / DAILY_TARGET_PROFIT) * 100, 999).toFixed(1)
+        : null,
+      profitGapToTarget: DAILY_TARGET_PROFIT - bestCaseProfit,
       allocation: { tier1: Math.round(t1Pct * 100), tier2: Math.round(t2Pct * 100), tier3: Math.round(t3Pct * 100) },
     },
     generatedAt: new Date().toISOString(),

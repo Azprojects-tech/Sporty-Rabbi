@@ -394,6 +394,30 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                     {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
                   </div>
                 )}
+                {r.evidence && (
+                  <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #1e253555' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 5 }}>
+                      <span style={{ fontSize: 9, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
+                        {r.evidence.competitionFamily}
+                      </span>
+                      <span style={{ fontSize: 9, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
+                        EG {r.evidence.poisson?.expectedGoals ?? '--'}
+                      </span>
+                      <span style={{ fontSize: 9, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
+                        O2.5 {r.evidence.poisson?.over25 ?? '--'}%
+                      </span>
+                    </div>
+                    {Array.isArray(r.evidence.topFactors) && r.evidence.topFactors.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                        {r.evidence.topFactors.slice(0, 3).map((f, fi) => (
+                          <span key={fi} style={{ fontSize: 9, color: '#94a3b8', background: '#0a0d15', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
+                            {f.label} {f.score}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
