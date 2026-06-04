@@ -124,7 +124,7 @@ export default function AnalyticsModal({ match, onClose }) {
     </div>
   );
 
-  const { parameters: P = {}, poisson, chaos, recommendations = [], bookieEdges = [], overallScore = 0, tier = 4, tierName = '' } = analysis || {};
+  const { parameters: P = {}, poisson, chaos, recommendations = [], bookieEdges = [], overallScore = 0, tier = 4, tierName = '', winCall } = analysis || {};
   const probs = poisson?.probabilities || {};
 
   return (
@@ -139,6 +139,17 @@ export default function AnalyticsModal({ match, onClose }) {
               <span style={{ background: '#001a0d', border: '1px solid #065f46', borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 800, color: '#00e676', letterSpacing: '0.5px' }}>V9</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>T{tier} · {tierName}</span>
               <span style={{ fontSize: 13, fontWeight: 800, color: scoreColor(overallScore) }}>{overallScore}%</span>
+              <span style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: winCall?.outcome === 'UNDECIDED' ? '#fbbf24' : '#94a3b8',
+                background: winCall?.outcome === 'UNDECIDED' ? '#1c1200' : '#111c30',
+                border: `1px solid ${winCall?.outcome === 'UNDECIDED' ? '#78350f' : '#1a2540'}`,
+                borderRadius: 4,
+                padding: '1px 6px',
+              }}>
+                {winCall?.selection || 'Wins (Undecided)'}
+              </span>
             </div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#475569', fontSize: 22, lineHeight: 1 }}>×</button>
@@ -198,13 +209,19 @@ export default function AnalyticsModal({ match, onClose }) {
           )}
 
           {/* POISSON */}
-          {section === 'poisson' && poisson && (
+          {section === 'poisson' && (
             <div>
+              {!poisson || poisson.insufficientData ? (
+                <div style={{ padding: '32px 0', textAlign: 'center' }}>
+                  <p style={{ fontSize: 13, color: '#64748b', marginBottom: 8 }}>Poisson view unavailable for this fixture.</p>
+                  <p style={{ fontSize: 11, color: '#475569' }}>Model inputs are incomplete right now. Stats refresh should restore this section.</p>
+                </div>
+              ) : (<>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
                 <div style={{ background: '#080c14', border: '1px solid #1a2540', borderRadius: 8, padding: '12px 16px' }}>
                   <div style={{ fontSize: 10, color: '#334155', marginBottom: 4 }}>EXPECTED GOALS</div>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: '#00e676' }}>{poisson.expectedTotalGoals}</div>
-                  <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>H:{poisson.homeLambda} · A:{poisson.awayLambda}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: '#00e676' }}>{poisson.expectedTotalGoals ?? '--'}</div>
+                  <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>H:{poisson.homeLambda ?? '--'} · A:{poisson.awayLambda ?? '--'}</div>
                 </div>
                 <div style={{ background: '#080c14', border: '1px solid #1a2540', borderRadius: 8, padding: '12px 16px' }}>
                   <div style={{ fontSize: 10, color: '#334155', marginBottom: 4 }}>LIKELY SCORE</div>
@@ -213,14 +230,15 @@ export default function AnalyticsModal({ match, onClose }) {
                 </div>
               </div>
               <div style={{ background: '#080c14', border: '1px solid #1a2540', borderRadius: 8, padding: '16px' }}>
-                <ProbBar label="Over 0.5 Goals" value={probs.over05}  highlight />
-                <ProbBar label="Over 1.5 Goals" value={probs.over15}  highlight />
-                <ProbBar label="Over 2.5 Goals" value={probs.over25}  highlight={probs.over25 >= 60} />
-                <ProbBar label="Over 3.5 Goals" value={probs.over35}  highlight={false} />
-                <ProbBar label="Under 2.5 Goals" value={probs.under25} highlight={probs.under25 >= 60} />
-                <ProbBar label="BTTS"            value={probs.btts}   highlight={probs.btts >= 60} />
+                <ProbBar label="Over 0.5 Goals" value={probs.over05 ?? 0}  highlight />
+                <ProbBar label="Over 1.5 Goals" value={probs.over15 ?? 0}  highlight />
+                <ProbBar label="Over 2.5 Goals" value={probs.over25 ?? 0}  highlight={probs.over25 >= 60} />
+                <ProbBar label="Over 3.5 Goals" value={probs.over35 ?? 0}  highlight={false} />
+                <ProbBar label="Under 2.5 Goals" value={probs.under25 ?? 0} highlight={probs.under25 >= 60} />
+                <ProbBar label="BTTS"            value={probs.btts ?? 0}   highlight={probs.btts >= 60} />
               </div>
               <p style={{ fontSize: 12, color: '#475569', marginTop: 14, lineHeight: 1.6 }}>{poisson.assessment}</p>
+              </>)}
             </div>
           )}
 
