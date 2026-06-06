@@ -2,7 +2,7 @@
 
 Real-time football match analytics with a 15-parameter AI scoring engine (Agent 47 V9), WhatsApp alerts, and a live React dashboard.
 
-**Live:** [sporty-rabbit.netlify.app](https://sporty-rabbit.netlify.app)  
+**Live:** [sporty-rabbi.netlify.app](https://sporty-rabbi.netlify.app)  
 **Engine version:** V9 — commit `5185d1f` (May 30, 2026)
 
 ---

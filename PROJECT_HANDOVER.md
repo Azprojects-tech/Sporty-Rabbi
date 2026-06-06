@@ -6,7 +6,7 @@ Head commit: 4eccf62
 ## 1) Current Snapshot
 
 SportyRabbi is running with:
-- Frontend: Netlify (https://sporty-rabbit.netlify.app)
+- Frontend: Netlify (https://sporty-rabbi.netlify.app)
 - Backend: Railway (auto deploy from main)
 - Repo: https://github.com/Azprojects-tech/Sporty-Rabbi
 - Branch: main

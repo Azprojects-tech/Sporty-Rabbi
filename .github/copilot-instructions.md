@@ -178,6 +178,6 @@ firebase.firestore().collection('bets').get()
 
 **Last Updated**: May 30, 2026 — commit `5185d1f`  
 **Engine**: Agent 47 V9 | **Deploy**: Railway (backend) + Netlify (frontend)  
-**Live URL**: https://sporty-rabbit.netlify.app
+**Live URL**: https://sporty-rabbi.netlify.app
 
 

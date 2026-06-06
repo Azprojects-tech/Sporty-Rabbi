@@ -15,7 +15,7 @@ The product is NOT a sportsbook. It is a decision-support tool that tells the us
 
 | Service | URL | Platform |
 |---------|-----|----------|
-| Frontend | https://sporty-rabbit.netlify.app | Netlify (auto-deploy from GitHub main) |
+| Frontend | https://sporty-rabbi.netlify.app | Netlify (auto-deploy from GitHub main) |
 | Backend | https://web-production-cccff.up.railway.app | Railway (auto-deploy from GitHub main) |
 | GitHub repo | https://github.com/Azprojects-tech/Sporty-Rabbi | branch: `main` |
 
@@ -459,7 +459,7 @@ ALERT_PHONE_NUMBER=whatsapp:+2348072187110
 MIN_CONFIDENCE_ALERT=65
 PORT=3000
 NODE_ENV=production
-CORS_ORIGIN=https://sporty-rabbit.netlify.app
+CORS_ORIGIN=https://sporty-rabbi.netlify.app
 API_DAILY_SOFT_STOP=50
 API_MINUTE_SOFT_STOP=1
 ```

@@ -73,7 +73,7 @@ export async function sendBettingAlert({ home, away, league, confidence, recomme
     `💡 Bet: *${recommendation}*`,
     odds ? `💰 Odds: ${odds}` : null,
     ``,
-    `🔗 https://sporty-rabbit.netlify.app`,
+    `🔗 https://sporty-rabbi.netlify.app`,
   ].filter(l => l !== null).join('\n');
 
   return sendWhatsApp(lines);
