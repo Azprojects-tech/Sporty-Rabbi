@@ -667,20 +667,25 @@ async function fetchUpcomingMatches() {
   try {
     const now = new Date();
     const toIsoDate = (d) => d.toISOString().split('T')[0];
+    const isUpcomingStatus = (fixture) => {
+      const status = String(fixture?.fixture?.status?.short || '').toUpperCase();
+      return status === 'NS' || status === 'TBD';
+    };
     const todayDate    = now.toISOString().split('T')[0];
     const tomorrowDate = toIsoDate(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
-    console.log(`📅 Fetching upcoming matches (NS) for ${todayDate} + ${tomorrowDate}...`);
+    console.log(`📅 Fetching upcoming matches for ${todayDate} + ${tomorrowDate}...`);
 
-    // Fetch today's remaining NS fixtures AND tomorrow's NS fixtures in parallel
+    // Fetch both dates and filter upcoming statuses locally. This avoids missing
+    // fixtures when providers label them as TBD instead of NS.
     const [todayRes, tomorrowRes] = await Promise.all([
       axios.get(`${API_BASE}/fixtures`, {
-        params: { status: 'NS', date: todayDate, timezone: 'UTC' },
+        params: { date: todayDate, timezone: 'UTC' },
         headers: { 'x-apisports-key': API_KEY },
         timeout: 5000,
       }),
       axios.get(`${API_BASE}/fixtures`, {
-        params: { status: 'NS', date: tomorrowDate, timezone: 'UTC' },
+        params: { date: tomorrowDate, timezone: 'UTC' },
         headers: { 'x-apisports-key': API_KEY },
         timeout: 5000,
       }),
@@ -688,8 +693,8 @@ async function fetchUpcomingMatches() {
     updateQuotaFromHeaders(todayRes.headers);
     updateQuotaFromHeaders(tomorrowRes.headers);
 
-    const todayFixtures    = todayRes.data.response    || [];
-    const tomorrowFixtures = tomorrowRes.data.response || [];
+    const todayFixtures    = (todayRes.data.response || []).filter(isUpcomingStatus);
+    const tomorrowFixtures = (tomorrowRes.data.response || []).filter(isUpcomingStatus);
     const fixtures = [...todayFixtures, ...tomorrowFixtures];
     console.log(`📊 API returned ${todayFixtures.length} today + ${tomorrowFixtures.length} tomorrow = ${fixtures.length} upcoming fixtures`);
 
@@ -705,7 +710,7 @@ async function fetchUpcomingMatches() {
     const fallbackResponses = await Promise.all(
       fallbackDates.map(date =>
         axios.get(`${API_BASE}/fixtures`, {
-          params: { status: 'NS', date, timezone: 'UTC' },
+          params: { date, timezone: 'UTC' },
           headers: { 'x-apisports-key': API_KEY },
           timeout: 5000,
         })
@@ -713,7 +718,9 @@ async function fetchUpcomingMatches() {
     );
 
     fallbackResponses.forEach(res => updateQuotaFromHeaders(res.headers));
-    const fallbackFixtures = fallbackResponses.flatMap(res => res.data.response || []);
+    const fallbackFixtures = fallbackResponses
+      .flatMap(res => res.data.response || [])
+      .filter(isUpcomingStatus);
     console.log(`📊 Fallback window returned ${fallbackFixtures.length} upcoming fixtures`);
 
     return fallbackFixtures;
