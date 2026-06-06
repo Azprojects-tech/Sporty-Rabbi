@@ -174,6 +174,8 @@ Both services auto-deploy on `git push origin main`:
 
 See [SYSTEM_DOCUMENTATION.md](SYSTEM_DOCUMENTATION.md) for full technical reference including data flow diagrams, Firestore schema, and model improvement roadmap.
 
+For rapid restart in a new chat/session, see [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md).
+
 For periodic session summaries and recovery notes, see [SESSION_CONTINUITY_LOG.md](SESSION_CONTINUITY_LOG.md).
 
 ---
