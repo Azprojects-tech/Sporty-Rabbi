@@ -749,6 +749,15 @@ async function fetchUpcomingMatches() {
         : getNextUtcMidnightIso();
       setQuotaPause('Received 429 from API-Football', resumeAt);
     }
+
+    // Error-path fallback: if API-Football times out or fails, still try
+    // public source so the feed is not empty.
+    const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
+    if (sportsDbFixtures.length > 0) {
+      console.log(`📊 TheSportsDB error-path fallback returned ${sportsDbFixtures.length} upcoming fixtures`);
+      return sportsDbFixtures;
+    }
+
     return [];
   }
 }
