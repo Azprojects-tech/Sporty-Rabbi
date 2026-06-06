@@ -391,7 +391,13 @@ function getActiveCacheTTL(type) {
 function getCached(type) {
   const cached = cache[type];
   const now = Date.now();
-  const ttl = getActiveCacheTTL(type);
+  let ttl = getActiveCacheTTL(type);
+
+  // Empty match arrays should refresh quickly; otherwise users can get stuck on
+  // a stale "no games" state even when API data becomes available moments later.
+  if (cached && Array.isArray(cached.data) && cached.data.length === 0) {
+    ttl = Math.min(ttl, 15 * 1000);
+  }
   
   if (cached && now - cached.timestamp < ttl) {
     console.log(`  💾 Using cached ${type} (${Math.round((now - cached.timestamp) / 1000)}s old)`);
