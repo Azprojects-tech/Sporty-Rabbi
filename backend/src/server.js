@@ -466,6 +466,52 @@ async function fetchLiveMatches() {
   }
 }
 
+const fixtureStatsCache = new Map();
+const FIXTURE_STATS_CACHE_TTL = 30 * 1000;
+
+async function fetchFixtureStatistics(fixtureId) {
+  if (!API_KEY || !fixtureId || shouldSkipApiCalls()) return null;
+  const cached = fixtureStatsCache.get(fixtureId);
+  if (cached && (Date.now() - cached.ts) < FIXTURE_STATS_CACHE_TTL) return cached.data;
+
+  try {
+    const response = await axios.get(`${API_BASE}/fixtures/statistics`, {
+      params: { fixture: fixtureId },
+      headers: { 'x-apisports-key': API_KEY },
+      timeout: 5000,
+    });
+    updateQuotaFromHeaders(response.headers);
+    const rows = response.data?.response || [];
+    if (!rows.length) return null;
+
+    const homeStats = rows[0]?.statistics || [];
+    const awayStats = rows[1]?.statistics || [];
+    const getStat = (arr, key) => {
+      const s = arr.find((x) => x.type === key);
+      if (!s || s.value == null) return null;
+      const parsed = typeof s.value === 'number' ? s.value : parseFloat(s.value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const stats = {
+      possession: { home: getStat(homeStats, 'Ball Possession'), away: getStat(awayStats, 'Ball Possession') },
+      shots: { home: getStat(homeStats, 'Shots on Goal'), away: getStat(awayStats, 'Shots on Goal') },
+      totalShots: { home: getStat(homeStats, 'Total Shots'), away: getStat(awayStats, 'Total Shots') },
+      xg: { home: getStat(homeStats, 'expected_goals'), away: getStat(awayStats, 'expected_goals') },
+      cards: {
+        home: { yellow: getStat(homeStats, 'Yellow Cards') || 0, red: getStat(homeStats, 'Red Cards') || 0 },
+        away: { yellow: getStat(awayStats, 'Yellow Cards') || 0, red: getStat(awayStats, 'Red Cards') || 0 },
+      },
+    };
+
+    fixtureStatsCache.set(fixtureId, { ts: Date.now(), data: stats });
+    return stats;
+  } catch (error) {
+    if (error.response?.headers) updateQuotaFromHeaders(error.response.headers);
+    return null;
+  }
+}
+
 /**
  * Fetch ALL of today's fixtures from API-Football (one call, very cheap).
  * Returns raw API-Football fixture objects (not yet analyzed).
@@ -659,22 +705,27 @@ async function fetchUpcomingMatches() {
 
 // Strip non-primitive values from match object (prevents React errors)
 function sanitizeMatch(match) {
+  const numOrNull = (v) => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   return {
     id: match.id || 0,
     home: String(match.home || ''),
     away: String(match.away || ''),
     score: String(match.score || '0-0'),
     possession: {
-      home: Number(match.possession?.home || 0),
-      away: Number(match.possession?.away || 0),
+      home: numOrNull(match.possession?.home),
+      away: numOrNull(match.possession?.away),
     },
     shots: {
-      home: Number(match.shots?.home || 0),
-      away: Number(match.shots?.away || 0),
+      home: numOrNull(match.shots?.home),
+      away: numOrNull(match.shots?.away),
     },
     xg: {
-      home: Number(match.xg?.home || 0),
-      away: Number(match.xg?.away || 0),
+      home: numOrNull(match.xg?.home),
+      away: numOrNull(match.xg?.away),
     },
     status: String(match.status || ''),
     matchMinutes: Number(match.matchMinutes || 0),
@@ -684,6 +735,11 @@ function sanitizeMatch(match) {
     leagueId: Number(match.leagueId || 0),
     matchType: String(match.matchType || 'League'),
     leagueCountry: String(match.leagueCountry || ''),
+    homePosition: numOrNull(match.homePosition),
+    awayPosition: numOrNull(match.awayPosition),
+    homePoints: numOrNull(match.homePoints),
+    awayPoints: numOrNull(match.awayPoints),
+    totalTeams: numOrNull(match.totalTeams),
     homeTeamId: match.homeTeamId || null,
     awayTeamId: match.awayTeamId || null,
     cards: {
@@ -739,6 +795,28 @@ function blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
   return (seasonAvg * priorStrength + livePct * elapsedMin) / (priorStrength + elapsedMin);
 }
 
+function getLivePhase(matchMinutes = 0) {
+  if (matchMinutes < 25) return 'EARLY';
+  if (matchMinutes < 70) return 'MID';
+  return 'LATE';
+}
+
+function phaseBlendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength) {
+  if (liveCount == null || liveCount <= 0) return seasonAvg;
+  const phase = getLivePhase(elapsedMin);
+  if (phase === 'LATE') return liveCount;
+  if (phase === 'MID') return blendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength);
+  return blendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength * 1.8);
+}
+
+function phaseBlendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
+  if (livePct == null || livePct <= 0) return seasonAvg;
+  const phase = getLivePhase(elapsedMin);
+  if (phase === 'LATE') return livePct;
+  if (phase === 'MID') return blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength);
+  return blendPctStat(seasonAvg, livePct, elapsedMin, priorStrength * 1.8);
+}
+
 /**
  * Lightweight fixture parser — extracts display fields from a raw API-Football
  * fixture object without making ANY additional API calls.
@@ -761,8 +839,8 @@ function parseLightFixture(match) {
 
     const homeId = teams.home?.id   || null;
     const awayId = teams.away?.id   || null;
-    const hName  = teams.home?.name || 'Home';
-    const aName  = teams.away?.name || 'Away';
+    const hName  = teams.home?.name || 'Unavailable';
+    const aName  = teams.away?.name || 'Unavailable';
     const hGoals = goals.home ?? 0;
     const aGoals = goals.away ?? 0;
 
@@ -776,14 +854,14 @@ function parseLightFixture(match) {
       status:        statusStr,
       matchMinutes:  fixture.status?.elapsed || 0,
       kickoffUTC:    fixture.date || null,
-      league:        league.name  || 'Unknown League',
+      league:        league.name  || 'Unavailable',
       leagueId:      league.id    || 0,
       leagueCountry: league.country || '',
       confidence:    null,
       opportunities: [],
-      possession:    { home: 50, away: 50 },
-      shots:         { home: 0, away: 0 },
-      xg:            { home: 0, away: 0 },
+      possession:    { home: null, away: null },
+      shots:         { home: null, away: null },
+      xg:            { home: null, away: null },
       _lite:         true,
     };
   } catch {
@@ -829,7 +907,16 @@ async function analyzeMatch(match) {
         // Update only real-time fields; keep expensive analysis from cache
         const homeStats = (stats && stats[0]) ? stats[0].statistics || [] : [];
         const awayStats = (stats && stats[1]) ? stats[1].statistics || [] : [];
-        const getStat = (arr, key) => { const s = arr.find(s => s.type === key); return (!s || s.value == null) ? 0 : (typeof s.value === 'number' ? s.value : parseFloat(s.value) || 0); };
+        const getStat = (arr, key) => {
+          const s = arr.find(s => s.type === key);
+          if (!s || s.value == null) return null;
+          const parsed = typeof s.value === 'number' ? s.value : parseFloat(s.value);
+          return Number.isFinite(parsed) ? parsed : null;
+        };
+        const getStatZero = (arr, key) => {
+          const v = getStat(arr, key);
+          return v == null ? 0 : v;
+        };
         const liveElapsed = typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0;
         return {
           ...cached.result,
@@ -839,8 +926,8 @@ async function analyzeMatch(match) {
           shots:       { home: getStat(homeStats, 'Shots on Goal'),   away: getStat(awayStats, 'Shots on Goal') },
           xg:          { home: getStat(homeStats, 'expected_goals'),  away: getStat(awayStats, 'expected_goals') },
           cards: {
-            home: { yellow: getStat(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
-            away: { yellow: getStat(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
+            home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStatZero(homeStats, 'Red Cards') },
+            away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStatZero(awayStats, 'Red Cards') },
           },
         };
       }
@@ -853,34 +940,40 @@ async function analyzeMatch(match) {
 
     const getStat = (stats, key) => {
       const s = stats.find((s) => s.type === key);
-      if (!s || s.value === null || s.value === undefined) return 0;
-      return typeof s.value === 'number' ? s.value : parseFloat(s.value) || 0;
+      if (!s || s.value === null || s.value === undefined) return null;
+      const parsed = typeof s.value === 'number' ? s.value : parseFloat(s.value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const getStatZero = (stats, key) => {
+      const v = getStat(stats, key);
+      return v == null ? 0 : v;
     };
 
     const possession = {
-      home: getStat(homeStats, 'Ball Possession') || 0,
-      away: getStat(awayStats, 'Ball Possession') || 0,
+      home: getStat(homeStats, 'Ball Possession'),
+      away: getStat(awayStats, 'Ball Possession'),
     };
 
     const shots = {
-      home: getStat(homeStats, 'Shots on Goal') || 0,
-      away: getStat(awayStats, 'Shots on Goal') || 0,
+      home: getStat(homeStats, 'Shots on Goal'),
+      away: getStat(awayStats, 'Shots on Goal'),
     };
 
     // Total shots (not just on-goal) — consistent basis for season-avg blend
     const totalShots = {
-      home: getStat(homeStats, 'Total Shots') || 0,
-      away: getStat(awayStats, 'Total Shots') || 0,
+      home: getStat(homeStats, 'Total Shots'),
+      away: getStat(awayStats, 'Total Shots'),
     };
 
     const xg = {
-      home: getStat(homeStats, 'expected_goals') || 0,
-      away: getStat(awayStats, 'expected_goals') || 0,
+      home: getStat(homeStats, 'expected_goals'),
+      away: getStat(awayStats, 'expected_goals'),
     };
 
     const cards = {
-      home: { yellow: getStat(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
-      away: { yellow: getStat(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
+      home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStatZero(homeStats, 'Red Cards') },
+      away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStatZero(awayStats, 'Red Cards') },
     };
 
     // Calculate match elapsed time (approximate from fixture)
@@ -1047,19 +1140,19 @@ async function analyzeMatch(match) {
         ...(() => {
           const isLive = normalizedStatus === 'LIVE' && liveMin > 0;
           const leagueDefaults = getLeagueStatDefaults(league.id || 0);
-          // xG / attack quality — N=90 (fast convergence; xG reflects live tactics)
-          const hXgAvg  = isLive && xg.home > 0 && homeAvgGF ? blendCountStat(homeAvgGF, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : homeAvgGF);
-          const aXgAvg  = isLive && xg.away > 0 && awayAvgGF ? blendCountStat(awayAvgGF, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : awayAvgGF);
-          // xGA / defensive quality — away xG against home defense
-          const hXgaAvg = isLive && xg.away > 0 && homeAvgGA ? blendCountStat(homeAvgGA, xg.away, liveMin, 90)  : (xg.away > 0 ? xg.away : homeAvgGA);
-          const aXgaAvg = isLive && xg.home > 0 && awayAvgGA ? blendCountStat(awayAvgGA, xg.home, liveMin, 90)  : (xg.home > 0 ? xg.home : awayAvgGA);
+          // Phase logic: early uses baseline-heavy priors, mid blends, late uses live-only values.
+          const hXgAvg  = isLive && homeAvgGF ? phaseBlendCountStat(homeAvgGF, xg.home, liveMin, 90) : (xg.home > 0 ? xg.home : homeAvgGF);
+          const aXgAvg  = isLive && awayAvgGF ? phaseBlendCountStat(awayAvgGF, xg.away, liveMin, 90) : (xg.away > 0 ? xg.away : awayAvgGF);
+          // xGA / defensive quality — away xG against home defense.
+          const hXgaAvg = isLive && homeAvgGA ? phaseBlendCountStat(homeAvgGA, xg.away, liveMin, 90) : (xg.away > 0 ? xg.away : homeAvgGA);
+          const aXgaAvg = isLive && awayAvgGA ? phaseBlendCountStat(awayAvgGA, xg.home, liveMin, 90) : (xg.home > 0 ? xg.home : awayAvgGA);
           // Shots per game — N=180 (moderately stable; tactical changes take time)
           const baseHomeShots = homeSeasonShots || leagueDefaults.homeShotsPerGame;
           const baseAwayShots = awaySeasonShots || leagueDefaults.awayShotsPerGame;
-          const hShots  = isLive && totalShots.home > 0 ? blendCountStat(baseHomeShots, totalShots.home, liveMin, 180) : baseHomeShots;
-          const aShots  = isLive && totalShots.away > 0 ? blendCountStat(baseAwayShots, totalShots.away, liveMin, 180) : baseAwayShots;
+          const hShots  = isLive ? phaseBlendCountStat(baseHomeShots, totalShots.home, liveMin, 180) : baseHomeShots;
+          const aShots  = isLive ? phaseBlendCountStat(baseAwayShots, totalShots.away, liveMin, 180) : baseAwayShots;
           // Possession — N=360 (very stable; a team's style rarely shifts mid-match)
-          const hPoss   = isLive && possession.home > 0 ? blendPctStat(homeSeasonPossession || 50, possession.home, liveMin, 360) : (homeSeasonPossession || 50);
+          const hPoss   = isLive ? phaseBlendPctStat(homeSeasonPossession || 50, possession.home, liveMin, 360) : (homeSeasonPossession || 50);
           return {
             homeXgAvg: hXgAvg, awayXgAvg: aXgAvg,
             homeXgaAvg: hXgaAvg, awayXgaAvg: aXgaAvg,
@@ -1130,6 +1223,11 @@ async function analyzeMatch(match) {
       leagueId: league.id || 0,
       matchType,
       leagueCountry: league.country || '',
+      homePosition,
+      awayPosition,
+      homePoints,
+      awayPoints,
+      totalTeams,
       cards,
       homeConversionPct,
       awayConversionPct,
@@ -1161,9 +1259,9 @@ async function analyzeMatch(match) {
       home: teams.home?.name || 'Unknown',
       away: teams.away?.name || 'Unknown',
       score: `${goals.home || 0}-${goals.away || 0}`,
-      possession: { home: 0, away: 0 },
-      shots: { home: 0, away: 0 },
-      xg: { home: 0, away: 0 },
+      possession: { home: null, away: null },
+      shots: { home: null, away: null },
+      xg: { home: null, away: null },
       status: statusStr,
       matchMinutes: typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0,
       confidence: 50,
@@ -2666,6 +2764,16 @@ app.post('/api/analyze', async (req, res) => {
     const leagueId   = body.leagueId || 0;
     const isLive     = body.status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(body.status);
     const matchMins  = body.matchMinutes || 0;
+    const fixtureId  = body.fixtureId || body.id || null;
+
+    const hasPair = (obj) => Number(obj?.home) > 0 && Number(obj?.away) > 0;
+    const preLiveStats = {
+      possession: hasPair(body.possession),
+      shots: hasPair(body.shots),
+      xg: hasPair(body.xg),
+    };
+    let directFixtureStatsStatus = { status: 'not_attempted', source: 'fixture-statistics' };
+    let standingsStatus = { status: 'unavailable', source: homeTeamId && awayTeamId ? 'api-football-standings' : 'not-requested' };
 
     // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
     let enriched = { ...body };
@@ -2717,6 +2825,7 @@ app.post('/api/analyze', async (req, res) => {
         if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position; enriched.awayPoints = tms[awayTeamId].points; }
         const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
         if (played > 0) enriched.gameWeek = played;
+        standingsStatus = { status: 'available', source: 'api-football-standings' };
       }
     }
 
@@ -2755,32 +2864,78 @@ app.post('/api/analyze', async (req, res) => {
       if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
     }
 
-    // ── Step 2a: Live shots & possession blend ──────────────────────────────
-    // When a live match has ≥25 minutes of data, blend observed in-match shots
-    // rate and possession into V9's inputs alongside the season-average baseline.
-    // Affects P10 Pace (scorePace) and P11 Home Advantage (scoreHomeAdvantage).
-    // Blend weight ramps 20%→60% across 25–90 min: season context anchors early,
-    // actual match performance dominates late. Neither fully overrides the other.
-    if (isLive && matchMins >= 25) {
+    // ── Step 1b: Actively pull fixture live stats when available ───────────
+    // API-Football /fixtures live feed often omits granular statistics for some fixtures.
+    // On analysis click, we attempt a direct fixture-stat pull to avoid false "Unavailable".
+    if (isLive && fixtureId) {
+      const directStats = await fetchFixtureStatistics(fixtureId);
+      if (directStats) {
+        directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics' };
+        if (directStats.possession?.home != null || directStats.possession?.away != null) {
+          enriched.possession = {
+            home: directStats.possession?.home ?? enriched.possession?.home ?? null,
+            away: directStats.possession?.away ?? enriched.possession?.away ?? null,
+          };
+        }
+        if (directStats.shots?.home != null || directStats.shots?.away != null) {
+          enriched.shots = {
+            home: directStats.shots?.home ?? enriched.shots?.home ?? null,
+            away: directStats.shots?.away ?? enriched.shots?.away ?? null,
+          };
+        }
+        if (directStats.xg?.home != null || directStats.xg?.away != null) {
+          enriched.xg = {
+            home: directStats.xg?.home ?? enriched.xg?.home ?? null,
+            away: directStats.xg?.away ?? enriched.xg?.away ?? null,
+          };
+          enriched.hasLiveXg = true;
+        }
+        if (directStats.cards) {
+          enriched.homeCards = directStats.cards.home;
+          enriched.awayCards = directStats.cards.away;
+        }
+      } else {
+        directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics' };
+      }
+    }
+
+    const finalLiveStats = {
+      possession: hasPair(enriched.possession),
+      shots: hasPair(enriched.shots),
+      xg: hasPair(enriched.xg),
+    };
+    const liveMetricCount = [finalLiveStats.possession, finalLiveStats.shots, finalLiveStats.xg].filter(Boolean).length;
+    const preMetricCount = [preLiveStats.possession, preLiveStats.shots, preLiveStats.xg].filter(Boolean).length;
+    const liveStatsStatus = {
+      status: liveMetricCount === 0 ? 'unavailable' : liveMetricCount === 3 ? 'available' : 'partial',
+      source: liveMetricCount > preMetricCount ? 'fixture-statistics+live-feed' : 'live-feed',
+    };
+
+    enriched.dataSourceStatus = {
+      standings: standingsStatus,
+      liveStats: isLive ? liveStatsStatus : { status: 'not_applicable', source: 'pre-match' },
+      directFixtureStats: isLive ? directFixtureStatsStatus : { status: 'not_applicable', source: 'pre-match' },
+    };
+
+    // ── Step 2a: Phase-based live shots & possession blending ───────────────
+    // EARLY: baseline-heavy, MID: blended, LATE: live-only when available.
+    if (isLive) {
       const hShots = enriched.shots?.home ?? 0;
       const aShots = enriched.shots?.away ?? 0;
       const hPoss  = enriched.possession?.home ?? null;
-      // Ramp: 0.20 at 25 min → 0.60 at 90 min
-      const liveW = Math.min(0.60, 0.20 + ((matchMins - 25) / 65) * 0.40);
-      const norm  = 90 / matchMins;
+      const norm  = matchMins > 0 ? (90 / matchMins) : 1;
       if (hShots > 0) {
         const liveShotsH = hShots * norm;
         const baseH = enriched.homeShotsPerGame || 12;
-        enriched.homeShotsPerGame = parseFloat((liveShotsH * liveW + baseH * (1 - liveW)).toFixed(1));
+        enriched.homeShotsPerGame = parseFloat(phaseBlendCountStat(baseH, liveShotsH, matchMins, 180).toFixed(1));
       }
       if (aShots > 0) {
         const liveShotsA = aShots * norm;
         const baseA = enriched.awayShotsPerGame || 10;
-        enriched.awayShotsPerGame = parseFloat((liveShotsA * liveW + baseA * (1 - liveW)).toFixed(1));
+        enriched.awayShotsPerGame = parseFloat(phaseBlendCountStat(baseA, liveShotsA, matchMins, 180).toFixed(1));
       }
-      if (hPoss != null && hPoss !== 50) {
-        // Live possession is a direct real-time signal — use as-is
-        enriched.homePossession = hPoss;
+      if (hPoss != null && hPoss > 0) {
+        enriched.homePossession = parseFloat(phaseBlendPctStat(enriched.homePossession || 50, hPoss, matchMins, 360).toFixed(1));
       }
     }
 
@@ -2789,16 +2944,28 @@ app.post('/api/analyze', async (req, res) => {
     // Never runs on season-average fallback defaults — those would be squashed by
     // the Poisson interaction formula (lH = avg² / L) giving absurd λ values.
     if (isLive && matchMins >= 15 && enriched.hasLiveXg) {
-      const progress    = Math.min(matchMins / 90, 1.0);
-      const projFactor  = Math.min(90 / matchMins, 3.5);    // cap: avoid 15-min × 6 inflation
-      const blendWeight = Math.min(progress * 1.2, 0.7);    // 0 → 0.70 over first ~52 min
-      const project = (v) => v > 0
-        ? Math.min(v * (1 - blendWeight) + v * projFactor * blendWeight, 3.5)
-        : v;
-      enriched.homeXgAvg  = project(enriched.homeXgAvg  || 0);
-      enriched.homeXgaAvg = project(enriched.homeXgaAvg || 0);
-      enriched.awayXgAvg  = project(enriched.awayXgAvg  || 0);
-      enriched.awayXgaAvg = project(enriched.awayXgaAvg || 0);
+      const phase = getLivePhase(matchMins);
+      if (phase === 'LATE') {
+        if (enriched.xg?.home > 0) {
+          enriched.homeXgAvg = enriched.xg.home;
+          enriched.awayXgaAvg = enriched.xg.home;
+        }
+        if (enriched.xg?.away > 0) {
+          enriched.awayXgAvg = enriched.xg.away;
+          enriched.homeXgaAvg = enriched.xg.away;
+        }
+      } else {
+        const progress    = Math.min(matchMins / 90, 1.0);
+        const projFactor  = Math.min(90 / matchMins, 3.2);
+        const blendWeight = phase === 'MID' ? Math.min(0.55, progress * 1.05) : Math.min(0.35, progress * 0.8);
+        const project = (v) => v > 0
+          ? Math.min(v * (1 - blendWeight) + v * projFactor * blendWeight, 3.5)
+          : v;
+        enriched.homeXgAvg  = project(enriched.homeXgAvg  || 0);
+        enriched.homeXgaAvg = project(enriched.homeXgaAvg || 0);
+        enriched.awayXgAvg  = project(enriched.awayXgAvg  || 0);
+        enriched.awayXgaAvg = project(enriched.awayXgaAvg || 0);
+      }
       // Detect early goal for V9 chaos variable
       const [hG, aG] = (enriched.score || '0-0').split('-').map(n => parseInt(n) || 0);
       if (hG + aG > 0 && matchMins <= 20) {
@@ -2910,9 +3077,9 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       homeSquadIntegrity, awaySquadIntegrity,
       homeKeyAbsences, awayKeyAbsences,
       homeConversionPct, awayConversionPct,
-      homePossession:   isLive && livePoss > 0       ? blendPctStat(homeSeasonPossession  || 50, livePoss,       liveMin, 360) : (homeSeasonPossession  || 50),
-      homeShotsPerGame: isLive && liveShotsHome > 0  ? blendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
-      awayShotsPerGame: isLive && liveShotsAway > 0  ? blendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
+      homePossession:   isLive ? phaseBlendPctStat(homeSeasonPossession || 50, livePoss, liveMin, 360) : (homeSeasonPossession || 50),
+      homeShotsPerGame: isLive ? phaseBlendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
+      awayShotsPerGame: isLive ? phaseBlendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
       homeLateGoalPct,
       awayLateGoalPct,
       // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)

@@ -8,6 +8,9 @@ export function MatchCard({ match, onSelectMatch }) {
   const isLive = LIVE_STATUSES.has(match.status);
   const conf   = match.confidence || 0;
   const [hs, as_] = (match.score || '0-0').split('-').map(Number);
+  const hasPossession = Number(match.possession?.home) > 0 && Number(match.possession?.away) > 0;
+  const hasShots = Number(match.shots?.home) > 0 && Number(match.shots?.away) > 0;
+  const hasXg = Number(match.xg?.home) > 0 && Number(match.xg?.away) > 0;
 
   return (
     <div
@@ -88,7 +91,7 @@ export function MatchCard({ match, onSelectMatch }) {
         const recs = match.analysis?.recommendations || [];
         const winRec = recs.find(r => r.type === 'WINS_ONLY' && (r.confidence || 0) >= 55);
         const predictedWinner = winRec ? winRec.selection : 'UNDECIDED';
-        const predictedScore  = match.analysis?.poisson?.likelyScore?.score || '\u2013';
+        const predictedScore  = match.analysis?.poisson?.likelyScore?.score || 'Unavailable';
         const isHome   = winRec && winRec.selection === `${match.home} Win`;
         const winColor = !winRec ? '#334155' : isHome ? '#60a5fa' : '#c084fc';
         return (
@@ -112,9 +115,9 @@ export function MatchCard({ match, onSelectMatch }) {
 
       {/* Row 3: stats pills + confidence bar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <StatPill label="Poss"  value={`${match.possession?.home || 0}–${match.possession?.away || 0}%`} />
-        <StatPill label="Shots" value={`${match.shots?.home || 0}–${match.shots?.away || 0}`} />
-        <StatPill label="xG"    value={`${(match.xg?.home || 0).toFixed(1)}–${(match.xg?.away || 0).toFixed(1)}`} />
+        <StatPill label="Poss"  value={hasPossession ? `${match.possession.home}-${match.possession.away}%` : 'Unavailable'} />
+        <StatPill label="Shots" value={hasShots ? `${match.shots.home}-${match.shots.away}` : 'Unavailable'} />
+        <StatPill label="xG"    value={hasXg ? `${Number(match.xg.home).toFixed(1)}-${Number(match.xg.away).toFixed(1)}` : 'Unavailable'} />
         <div style={{ flex: 1, minWidth: 80 }}>
           <ConfBar score={conf} />
         </div>
@@ -164,106 +167,6 @@ export function Alert({ alert }) {
         <div>
           <p style={{ fontWeight: 700, color: '#fbbf24', marginBottom: 5, fontSize: 13 }}>{alert.title}</p>
           <p style={{ fontSize: 12, color: '#94a3b8' }}>{alert.description}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-export function MatchCard({ match, onSelectMatch }) {
-  return (
-    <div className="card-hover cursor-pointer group">
-      <div className="flex justify-between items-start mb-4 gap-2">
-        <span className="text-xs sm:text-sm font-bold text-green-400 bg-green-900 px-2 py-1 rounded">
-          {match.status || 'LIVE'}
-        </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelectMatch(match);
-          }}
-          className="text-xs sm:text-sm font-bold text-purple-400 bg-purple-900/40 hover:bg-purple-900 border border-purple-500 px-2 sm:px-3 py-1.5 rounded transition min-h-[36px] flex items-center"
-        >
-          📊 Stats
-        </button>
-      </div>
-
-      {/* Score - Larger on mobile */}
-      <div className="text-center mb-4">
-        <div className="flex justify-between items-center">
-          <div className="flex-1">
-            <p className="font-bold text-sm sm:text-base">{match.home}</p>
-            <p className="text-3xl sm:text-4xl font-bold text-green-400">{match.score?.split('-')[0] || 0}</p>
-          </div>
-          <div className="mx-2 sm:mx-4 text-gray-500 font-bold">vs</div>
-          <div className="flex-1 text-right">
-            <p className="font-bold text-sm sm:text-base">{match.away}</p>
-            <p className="text-3xl sm:text-4xl font-bold text-green-400">{match.score?.split('-')[1] || 0}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Stats - Better mobile spacing */}
-      <div className="grid grid-cols-3 gap-2 text-xs mb-4 border-t border-gray-700 pt-4">
-        <div className="bg-gray-900/50 rounded p-2">
-          <p className="text-gray-400 text-xs">Possession</p>
-          <p className="font-bold text-sm">{match.possession?.home || 0}%</p>
-        </div>
-        <div className="bg-gray-900/50 rounded p-2">
-          <p className="text-gray-400 text-xs">Shots</p>
-          <p className="font-bold text-sm">
-            {match.shots?.home || 0} vs {match.shots?.away || 0}
-          </p>
-        </div>
-        <div className="bg-gray-900/50 rounded p-2">
-          <p className="text-gray-400 text-xs">xG</p>
-          <p className="font-bold text-sm">
-            {(match.xg?.home || 0).toFixed(1)} vs {(match.xg?.away || 0).toFixed(1)}
-          </p>
-        </div>
-      </div>
-
-      {/* Confidence */}
-      <ConfidenceScore score={match.confidence} />
-    </div>
-  );
-}
-
-export function ConfidenceScore({ score }) {
-  let color = 'text-red-400';
-  if (score >= 70) color = 'text-green-400';
-  else if (score >= 60) color = 'text-yellow-400';
-
-  return (
-    <div className="flex items-center gap-2">
-      <div className="w-full bg-gray-700 rounded-full h-2">
-        <div
-          className={`h-2 rounded-full ${
-            score >= 70 ? 'bg-green-500' : score >= 60 ? 'bg-yellow-500' : 'bg-red-500'
-          }`}
-          style={{ width: `${score}%` }}
-        />
-      </div>
-      <span className={`${color} font-bold text-sm`}>{score.toFixed(0)}%</span>
-    </div>
-  );
-}
-
-export function Alert({ match, alert }) {
-  return (
-    <div className="bg-gradient-to-r from-yellow-900 to-orange-900 border border-yellow-600 rounded-lg p-4 mb-3">
-      <div className="flex gap-3">
-        <AlertCircle className="text-yellow-400 flex-shrink-0 mt-1" size={20} />
-        <div className="flex-1">
-          <h4 className="font-bold text-yellow-300 mb-1">{alert.title}</h4>
-          <p className="text-sm text-gray-200 mb-2">{alert.description}</p>
-          <div className="flex justify-between items-center">
-            <ConfidenceScore score={alert.confidence_score} />
-            <button className="btn btn-primary btn-sm">
-              💡 {alert.recommended_bet}
-            </button>
-          </div>
         </div>
       </div>
     </div>

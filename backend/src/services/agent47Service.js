@@ -201,7 +201,7 @@ function pLeadMaintained(lLeader_rem, lTrailer_rem, diff) {
 // ─── FORM PARSER ──────────────────────────────────────────────────────────────
 /** Accepts "W-W-L-D-W" string or ['W','W','L','D','W'] array */
 function parseForm(raw) {
-  if (!raw) return { wins: 0, draws: 0, losses: 0, total: 0, winRate: 0, points: 0, formStr: 'N/A' };
+  if (!raw) return { wins: 0, draws: 0, losses: 0, total: 0, winRate: 0, points: 0, formStr: 'Unavailable' };
   const parts = Array.isArray(raw) ? raw : String(raw).toUpperCase().split(/[-,\s]+/);
   const wins   = parts.filter(r => r === 'W').length;
   const draws  = parts.filter(r => r === 'D').length;
@@ -971,10 +971,10 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8,
   }
 
   const fallbackOptions = [
-    { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: probs.over15 ?? null, logic: `Fallback by Poisson O1.5 (${probs.over15 ?? 'N/A'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: probs.over25 ?? null, logic: `Fallback by Poisson O2.5 (${probs.over25 ?? 'N/A'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Under 2.5 Goals', confidence: probs.under25 ?? null, logic: `Fallback by Poisson U2.5 (${probs.under25 ?? 'N/A'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Both Teams to Score', confidence: probs.btts ?? null, logic: `Fallback by Poisson BTTS (${probs.btts ?? 'N/A'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: probs.over15 ?? null, logic: `Fallback by Poisson O1.5 (${probs.over15 ?? 'Unavailable'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: probs.over25 ?? null, logic: `Fallback by Poisson O2.5 (${probs.over25 ?? 'Unavailable'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Under 2.5 Goals', confidence: probs.under25 ?? null, logic: `Fallback by Poisson U2.5 (${probs.under25 ?? 'Unavailable'}%).` },
+    { type: 'GOALS_ONLY', selection: 'Both Teams to Score', confidence: probs.btts ?? null, logic: `Fallback by Poisson BTTS (${probs.btts ?? 'Unavailable'}%).` },
   ].filter(x => x.confidence != null);
 
   const directionalEdge = p1?.edge !== 'NEUTRAL' ? p1.edge : (p4?.edge !== 'NEUTRAL' ? p4?.edge : p8?.edge);
@@ -1215,7 +1215,7 @@ function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {})
   }));
 }
 
-function computeWinCall({ home, away, p1, p4, poisson, overallScore, recommendations = [] }) {
+function computeWinCall({ home, away, p1, p4, poisson, overallScore, recommendations = [], status = 'NS' }) {
   let homeVotes = 0;
   let awayVotes = 0;
   const reasons = [];
@@ -1235,6 +1235,21 @@ function computeWinCall({ home, away, p1, p4, poisson, overallScore, recommendat
   }
 
   const topWin = recommendations.find(r => r.type === 'WINS_ONLY');
+  const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
+  if (isLive && topWin && (topWin.confidence || 0) >= 55) {
+    const homeSel = String(topWin.selection || '').toLowerCase().includes(String(home || '').toLowerCase());
+    const awaySel = String(topWin.selection || '').toLowerCase().includes(String(away || '').toLowerCase());
+    if (homeSel || awaySel) {
+      const team = homeSel ? home : away;
+      return {
+        outcome: homeSel ? 'HOME' : 'AWAY',
+        selection: `${team} Win`,
+        team,
+        confidence: Math.min(97, Math.max(55, Math.round(topWin.confidence || overallScore || 55))),
+        rationale: `Live win-call aligned to top WINS_ONLY recommendation (${topWin.confidence || overallScore}%).`,
+      };
+    }
+  }
   if (topWin?.selection?.includes(home)) homeVotes += 2;
   if (topWin?.selection?.includes(away)) awayVotes += 2;
 
@@ -1428,6 +1443,7 @@ export function analyzeV9(matchData = {}) {
     // league scalar override (auto-resolved from leagueId if not provided)
     leagueScalar = null,
     competitionContext = null,
+    dataSourceStatus = null,
   } = matchData;
 
   const resolvedCompetitionContext = competitionContext || detectCompetitionContext({
@@ -1555,7 +1571,7 @@ export function analyzeV9(matchData = {}) {
     matchMinutes,
     score,
   });
-  const winCall = computeWinCall({ home, away, p1, p4, poisson: poi, overallScore: overall, recommendations });
+  const winCallLiveAware = computeWinCall({ home, away, p1, p4, poisson: poi, overallScore: overall, recommendations, status });
 
   // ── Bookie edge detection ──────────────────────────────────────────────────
   const bookieEdges = detectBookieEdges(p1, p2, p4, chaos);
@@ -1573,6 +1589,11 @@ export function analyzeV9(matchData = {}) {
       venue,
       gameWeek,
       totalGW,
+      homePosition,
+      awayPosition,
+      homePoints,
+      awayPoints,
+      totalTeams,
       competitionContext: resolvedCompetitionContext,
     },
     recommendations,
@@ -1584,7 +1605,7 @@ export function analyzeV9(matchData = {}) {
     poisson: poi,
     chaosVariables: chaos,
     overallScore: overall,
-    winCall,
+    winCall: winCallLiveAware,
     dataContext: {
       homeRecentOpposition,
       awayRecentOpposition,
@@ -1598,6 +1619,11 @@ export function analyzeV9(matchData = {}) {
     leagueScalarApplied: scalar,
     analysisQuality,
     bookieEdges,
+    dataSourceStatus: dataSourceStatus || {
+      standings: { status: 'unknown', source: 'unknown' },
+      liveStats: { status: 'unknown', source: 'unknown' },
+      directFixtureStats: { status: 'unknown', source: 'unknown' },
+    },
     analysisVersion: 'V9-Calibrated',
     analysisTimestamp: new Date().toISOString(),
   };

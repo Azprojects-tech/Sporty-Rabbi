@@ -8,12 +8,12 @@ function fmt(n) {
 }
 
 function timeStr(kickoffUTC) {
-  if (!kickoffUTC) return '--:--';
+  if (!kickoffUTC) return 'Unavailable';
   try {
     return new Date(kickoffUTC).toLocaleTimeString('en-GB', {
       hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
     });
-  } catch { return '--:--'; }
+  } catch { return 'Unavailable'; }
 }
 
 function ConfBadge({ conf }) {

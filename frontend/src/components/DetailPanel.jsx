@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { apiService } from '../services/api';
 import { getLeagueStatDefaults } from '../../../shared/leagueDefaults.js';
 
@@ -33,7 +33,7 @@ function ScoreBar({ score }) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
         <div style={{ flex: 1, background: '#0a0d15', borderRadius: 3, height: 3 }} />
-        <span style={{ fontSize: 11, fontWeight: 500, color: '#374151', minWidth: 24, textAlign: 'right' }}>--</span>
+        <span style={{ fontSize: 11, fontWeight: 500, color: '#374151', minWidth: 70, textAlign: 'right' }}>Unavailable</span>
       </div>
     );
   }
@@ -64,7 +64,7 @@ function edgeBadge(edge) {
 }
 
 function FormBadges({ formStr }) {
-  if (!formStr) return <span style={{ fontSize: 11, color: '#4a5568' }}>No data</span>;
+  if (!formStr) return <span style={{ fontSize: 11, color: '#4a5568' }}>Unavailable</span>;
   const results = String(formStr).toUpperCase().split(/[-,\s]+/).filter(Boolean).slice(0, 10);
   const colors = { W: '#00b859', D: '#fbbf24', L: '#ef4444' };
   return (
@@ -85,12 +85,18 @@ function FormBadges({ formStr }) {
 function DataSnapshot({ analysis, match }) {
   const homeOpp = analysis?.dataContext?.homeRecentOpposition;
   const awayOpp = analysis?.dataContext?.awayRecentOpposition;
-  const hasPossession = (Number(match?.possession?.home) > 0 || Number(match?.possession?.away) > 0);
-  const hasShots = (Number(match?.shots?.home) > 0 || Number(match?.shots?.away) > 0);
-  const hasXg = (Number(match?.xg?.home) > 0 || Number(match?.xg?.away) > 0);
+  const homePos = analysis?.match?.homePosition;
+  const awayPos = analysis?.match?.awayPosition;
+  const homePts = analysis?.match?.homePoints;
+  const awayPts = analysis?.match?.awayPoints;
+  const hasTableContext = homePos != null || awayPos != null;
+  const dataSourceStatus = analysis?.dataSourceStatus || null;
+  const hasPossession = (Number(match?.possession?.home) > 0 && Number(match?.possession?.away) > 0);
+  const hasShots = (Number(match?.shots?.home) > 0 && Number(match?.shots?.away) > 0);
+  const hasXg = (Number(match?.xg?.home) > 0 && Number(match?.xg?.away) > 0);
   const hasLiveStats = hasPossession || hasShots || hasXg;
 
-  if (!homeOpp && !awayOpp && !hasLiveStats) return null;
+  if (!homeOpp && !awayOpp && !hasLiveStats && !hasTableContext && !dataSourceStatus) return null;
 
   return (
     <div style={{
@@ -101,24 +107,38 @@ function DataSnapshot({ analysis, match }) {
       <div style={{ fontSize: 9, fontWeight: 800, color: '#8b9ab3', letterSpacing: '1px', marginBottom: 8 }}>
         DATA SNAPSHOT
       </div>
+      {dataSourceStatus && (
+        <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+          <div style={{ fontSize: 9, color: '#4a5568' }}>Data Sources</div>
+          <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700, lineHeight: 1.5 }}>
+            Standings: {dataSourceStatus.standings?.status || 'Unavailable'} | Live feed: {dataSourceStatus.liveStats?.status || 'Unavailable'} | Direct stats pull: {dataSourceStatus.directFixtureStats?.status || 'Unavailable'}
+          </div>
+        </div>
+      )}
+      <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+        <div style={{ fontSize: 9, color: '#4a5568' }}>Table</div>
+        <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
+          {match?.home}: {homePos != null ? `#${homePos}` : 'Unavailable'}{homePts != null ? ` (${homePts} pts)` : ''} | {match?.away}: {awayPos != null ? `#${awayPos}` : 'Unavailable'}{awayPts != null ? ` (${awayPts} pts)` : ''}
+        </div>
+      </div>
       {hasLiveStats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 10 }}>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>Possession</div>
             <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
-              {hasPossession ? `${match?.possession?.home ?? '-'}% / ${match?.possession?.away ?? '-'}%` : 'Unavailable'}
+              {hasPossession ? `${match?.possession?.home}% / ${match?.possession?.away}%` : 'Unavailable'}
             </div>
           </div>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>Shots</div>
             <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
-              {hasShots ? `${match?.shots?.home ?? '-'} / ${match?.shots?.away ?? '-'}` : 'Unavailable'}
+              {hasShots ? `${match?.shots?.home} / ${match?.shots?.away}` : 'Unavailable'}
             </div>
           </div>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>xG</div>
             <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
-              {hasXg ? `${match?.xg?.home ?? '-'} / ${match?.xg?.away ?? '-'}` : 'Unavailable'}
+              {hasXg ? `${match?.xg?.home} / ${match?.xg?.away}` : 'Unavailable'}
             </div>
           </div>
         </div>
@@ -224,6 +244,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   const [error, setError]           = useState(null);
   const [section, setSection]       = useState('params');
   const [expandedParam, setExpandedParam] = useState(null);
+  const panelScrollRef = useRef(null);
 
   useEffect(() => {
     // Always run fresh analysis on click — calibrated or not
@@ -231,6 +252,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     loadAnalysis();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id]);
+
+  useEffect(() => {
+    setExpandedParam(null);
+    if (panelScrollRef.current) panelScrollRef.current.scrollTop = 0;
+  }, [section]);
 
   // Auto-refresh every 30s when the match is live
   useEffect(() => {
@@ -255,9 +281,15 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         leagueId:         _lid,
         homeTeamId:       match.homeTeamId || null,
         awayTeamId:       match.awayTeamId || null,
+        fixtureId:        match.id || null,
         status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
+        homePosition:     match.homePosition ?? null,
+        awayPosition:     match.awayPosition ?? null,
+        homePoints:       match.homePoints ?? null,
+        awayPoints:       match.awayPoints ?? null,
+        totalTeams:       match.totalTeams ?? null,
         homePossession:   match.possession?.home > 0 ? match.possession.home : null,
         hasLiveXg:        !!(match.xg?.home > 0 || match.xg?.away > 0),
         homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
@@ -312,10 +344,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   );
 
   const {
-    parameters: P = {}, poisson, chaos,
+    parameters: P = {}, poisson,
     recommendations = [], bookieEdges = [],
     overallScore = 0, tier = 4, tierName = '',
   } = analysis || {};
+  const chaos = analysis?.chaosVariables || analysis?.chaos || null;
   const winCall = analysis?.winCall || null;
   const probs = poisson?.probabilities || {};
 
@@ -329,7 +362,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
 
   return (
     <div style={panelStyle}>
-      <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <div ref={panelScrollRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
       {/* Header */}
       <div style={{ padding: '13px 16px', borderBottom: '1px solid #1e2535', flexShrink: 0 }}>
@@ -420,10 +453,10 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                         {r.evidence.competitionFamily}
                       </span>
                       <span style={{ fontSize: 9, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
-                        EG {r.evidence.poisson?.expectedGoals ?? '--'}
+                        EG {r.evidence.poisson?.expectedGoals ?? 'Unavailable'}
                       </span>
                       <span style={{ fontSize: 9, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 3, padding: '1px 5px' }}>
-                        O2.5 {r.evidence.poisson?.over25 ?? '--'}%
+                        O2.5 {r.evidence.poisson?.over25 != null ? `${r.evidence.poisson.over25}%` : 'Unavailable'}
                       </span>
                     </div>
                     {Array.isArray(r.evidence.topFactors) && r.evidence.topFactors.length > 0 && (
@@ -552,8 +585,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>EXPECTED GOALS</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: '#00b859' }}>{poisson.expectedTotalGoals ?? '--'}</div>
-                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda ?? '--'} &middot; A:{poisson.awayLambda ?? '--'}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: '#00b859' }}>{poisson.expectedTotalGoals ?? 'Unavailable'}</div>
+                <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>H:{poisson.homeLambda ?? 'Unavailable'} &middot; A:{poisson.awayLambda ?? 'Unavailable'}</div>
               </div>
               <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 7, padding: '12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: '#4a5568', marginBottom: 5, letterSpacing: '0.5px' }}>
@@ -562,12 +595,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                 <div style={{ fontSize: 26, fontWeight: 800, color: '#3b82f6' }}>
                   {poisson.liveProjectedFinalScore
                     ? poisson.liveProjectedFinalScore.score
-                    : (poisson.likelyScore?.score || '--')}
+                    : (poisson.likelyScore?.score || 'Unavailable')}
                 </div>
                 <div style={{ fontSize: 10, color: '#4a5568', marginTop: 3 }}>
                   {poisson.liveProjectedFinalScore
                     ? `${poisson.liveProjectedFinalScore.probAnotherGoal}% P(+goal)`
-                    : `${poisson.likelyScore?.probability ?? '--'}%`}
+                    : (poisson.likelyScore?.probability != null ? `${poisson.likelyScore.probability}%` : 'Unavailable')}
                 </div>
               </div>
             </div>
@@ -582,7 +615,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <div key={label} style={{ marginBottom: 9 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                   <span style={{ fontSize: 11, color: '#8b9ab3' }}>{label}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: hi ? '#00b859' : '#8b9ab3' }}>{val ?? '--'}{val != null ? '%' : ''}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: hi ? '#00b859' : '#8b9ab3' }}>{val != null ? `${val}%` : 'Unavailable'}</span>
                 </div>
                 <div style={{ background: '#0f1117', borderRadius: 2, height: 3, overflow: 'hidden' }}>
                   <div style={{ width: `${val ?? 0}%`, height: '100%', background: hi ? '#00b859' : '#1e2535' }} />
@@ -597,9 +630,14 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         )}
 
         {/* CHAOS */}
-        {section === 'chaos' && chaos && (
+        {section === 'chaos' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {[
+            {!chaos && (
+              <p style={{ fontSize: 12, color: '#4a5568', textAlign: 'center', padding: '24px 0' }}>
+                Chaos analysis unavailable for this fixture.
+              </p>
+            )}
+            {chaos && [
               { label: 'MWV Index',  val: chaos.mwvLabel,                           active: chaos.mwvIndex > 0.5 },
               { label: 'Early Goal', val: chaos.earlyGoalActive ? 'ACTIVE' : 'NO',  active: chaos.earlyGoalActive },
               { label: 'Bivariate',  val: chaos.bivariateDependency ? 'YES' : 'NO', active: chaos.bivariateDependency },
@@ -615,7 +653,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                 <span style={{ fontSize: 12, fontWeight: 700, color: active ? '#fbbf24' : '#4a5568' }}>{val}</span>
               </div>
             ))}
-            {chaos.summary && (
+            {chaos?.summary && (
               <p style={{ fontSize: 11, color: '#4a5568', marginTop: 4, lineHeight: 1.6 }}>{chaos.summary}</p>
             )}
           </div>

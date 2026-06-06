@@ -52,13 +52,15 @@ function StatusCell({ status, minute, kickoffUTC }) {
     return <span style={{ fontSize: 11, color: '#4a5568', width: 56, flexShrink: 0 }}>FT</span>;
   }
   // NS — show kickoff time
-  let timeStr = '--:--';
+  let timeStr = 'Unavailable';
   if (kickoffUTC) {
     try {
       timeStr = new Date(kickoffUTC).toLocaleTimeString('en-GB', {
         hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
       });
-    } catch {}
+    } catch {
+      timeStr = 'Unavailable';
+    }
   }
   return (
     <span style={{ fontSize: 11, color: '#4a5568', width: 56, flexShrink: 0 }}>{timeStr}</span>

@@ -169,7 +169,7 @@ export async function getTeamForm(teamId, league = null) {
           goalsAgainst: 0,
           avgGoalsFor: 0,
           avgGoalsAgainst: 0,
-          form: 'N/A',
+          form: 'Unavailable',
           goalDrought: 0,
           recentLosses: 0,
         },

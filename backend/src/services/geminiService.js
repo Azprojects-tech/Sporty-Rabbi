@@ -818,7 +818,7 @@ Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsenc
  */
 export async function generateMatchNarrative(analysis, matchInfo) {
   const { home = '?', away = '?', league = '', leagueId = 0, status = 'NS', matchMinutes = 0, score = '0-0',
-    homeCards, awayCards } = matchInfo || {};
+    homeCards, awayCards, homePosition = null, awayPosition = null, homePoints = null, awayPoints = null } = matchInfo || {};
   const { overallScore = 0, recommendations = [], parameters = {}, poisson, winCall } = analysis || {};
 
   const topRec = recommendations[0];
@@ -850,15 +850,16 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     .join('');
 
   const phaseModel = getNarrativePhaseModel(isLive ? 'LIVE' : 'NS', matchMinutes);
+  const tableContext = `${home} rank ${homePosition != null ? `#${homePosition}${homePoints != null ? ` (${homePoints} pts)` : ''}` : 'Unavailable'} vs ${away} rank ${awayPosition != null ? `#${awayPosition}${awayPoints != null ? ` (${awayPoints} pts)` : ''}` : 'Unavailable'}`;
 
   const buildStructuredNarrative = (coreText = '') => {
     const baseline = isLive
-      ? `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, driven by ${topParams[0]?.name || 'the strongest V9 signal'} and ${topParams[1]?.name || 'supporting context'}.`
-      : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, with form ${formCompact(homeFormRaw) || 'N/A'} vs ${formCompact(awayFormRaw) || 'N/A'} and opponent quality setting the baseline.`;
+      ? `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, with table context ${tableContext}, driven by ${topParams[0]?.name || 'the strongest V9 signal'} and ${topParams[1]?.name || 'supporting context'}.`
+      : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, table context ${tableContext}, with form ${formCompact(homeFormRaw) || 'Unavailable'} vs ${formCompact(awayFormRaw) || 'Unavailable'} and opponent quality setting the baseline.`;
 
     const liveReality = isLive
       ? `Possession is ${homePoss != null && awayPoss != null ? `${homePoss}-${awayPoss}` : 'unavailable'}, shots are ${homeShots != null && awayShots != null ? `${homeShots}-${awayShots}` : 'unavailable'}, xG is ${homeXg != null && awayXg != null ? `${homeXg}-${awayXg}` : 'unavailable'}, and the score is ${score}.`
-      : `Poisson projects ${poisson?.expectedTotalGoals ?? '--'} total goals, with likely score ${poisson?.likelyScore?.score || '--'} and draw probability ${poisson?.probabilities?.draw ?? '--'}%.`;
+      : `Poisson projects ${poisson?.expectedTotalGoals ?? 'Unavailable'} total goals, with likely score ${poisson?.likelyScore?.score || 'Unavailable'} and draw probability ${poisson?.probabilities?.draw ?? 'Unavailable'}%.`;
 
     const verdictCore = coreText
       ? coreText.replace(/\s+/g, ' ').trim()
@@ -873,8 +874,9 @@ export async function generateMatchNarrative(analysis, matchInfo) {
 
   const metricsBlock = [
     `PHASE MODEL: ${phaseModel.phase}. Baseline weight ${Math.round(phaseModel.baselineWeight * 100)}%, live weight ${Math.round(phaseModel.liveWeight * 100)}%.`,
+    `TABLE CONTEXT: ${tableContext}.`,
     `LIVE METRICS: Possession ${home} ${homePoss != null ? `${homePoss}%` : 'unavailable'} vs ${away} ${awayPoss != null ? `${awayPoss}%` : 'unavailable'}, Shots ${homeShots ?? 'unavailable'}-${awayShots ?? 'unavailable'}, xG ${homeXg ?? 'unavailable'}-${awayXg ?? 'unavailable'}, Score ${score}.`,
-    `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'N/A'} | ${away} ${formCompact(awayFormRaw) || 'N/A'}.`,
+    `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'Unavailable'} | ${away} ${formCompact(awayFormRaw) || 'Unavailable'}.`,
     `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
     `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,
   ].join('\n');
@@ -918,6 +920,7 @@ Your job is to write a sharp, confident 2-3 sentence analyst note for a match.
 ${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasing, cards, and what the remaining expected goals data means for live bettors. Do NOT just echo the Poisson numbers — reason about the SITUATION.' : ''}
 If the model says "Wins (Undecided)", say clearly that this is a tight game and winner is not certain yet.
 Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals, opponent quality).
+Always mention both teams' league ranking/position.
 Use this phase rule: ${phaseModel.instruction}
 Use this structure implicitly: 1) baseline expectation, 2) live reality, 3) verdict on whether live data confirms, weakens, or overturns the baseline.
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.
