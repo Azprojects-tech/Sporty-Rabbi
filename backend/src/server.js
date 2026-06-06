@@ -2119,6 +2119,108 @@ app.get('/api/debug/live-raw', async (req, res) => {
   }
 });
 
+// ── Debug: compare upcoming coverage across sources (API-Football vs fallback) ──
+app.get('/api/debug/upcoming-sources', async (req, res) => {
+  const summarizeStatuses = (fixtures = []) => {
+    const buckets = {};
+    for (const f of fixtures) {
+      const s = String(f?.fixture?.status?.short || '').toUpperCase() || 'UNKNOWN';
+      buckets[s] = (buckets[s] || 0) + 1;
+    }
+    return buckets;
+  };
+  const summarizeCountries = (fixtures = []) => {
+    const buckets = {};
+    for (const f of fixtures) {
+      const c = String(f?.league?.country || 'Unknown');
+      buckets[c] = (buckets[c] || 0) + 1;
+    }
+    return Object.entries(buckets)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([country, count]) => ({ country, count }));
+  };
+  const isUpcoming = (f) => {
+    const status = String(f?.fixture?.status?.short || '').toUpperCase();
+    return status === 'NS' || status === 'TBD' || status === 'PST';
+  };
+
+  try {
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    let apiNextRaw = [];
+    let apiTodayRaw = [];
+    let apiTomorrowRaw = [];
+
+    if (API_KEY && !shouldSkipApiCalls()) {
+      const [nextRes, todayRes, tomorrowRes] = await Promise.all([
+        axios.get(`${API_BASE}/fixtures`, {
+          params: { next: 200, timezone: 'UTC' },
+          headers: { 'x-apisports-key': API_KEY },
+          timeout: 8000,
+        }),
+        axios.get(`${API_BASE}/fixtures`, {
+          params: { date: today, timezone: 'UTC' },
+          headers: { 'x-apisports-key': API_KEY },
+          timeout: 8000,
+        }),
+        axios.get(`${API_BASE}/fixtures`, {
+          params: { date: tomorrow, timezone: 'UTC' },
+          headers: { 'x-apisports-key': API_KEY },
+          timeout: 8000,
+        }),
+      ]);
+
+      updateQuotaFromHeaders(nextRes.headers);
+      updateQuotaFromHeaders(todayRes.headers);
+      updateQuotaFromHeaders(tomorrowRes.headers);
+
+      apiNextRaw = nextRes.data?.response || [];
+      apiTodayRaw = todayRes.data?.response || [];
+      apiTomorrowRaw = tomorrowRes.data?.response || [];
+    }
+
+    const sportsDbRaw = await fetchTodayFixturesFromSportsDB();
+    const apiWindowRaw = [...apiTodayRaw, ...apiTomorrowRaw];
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      quotaGuard: {
+        isPaused: quotaState.isPaused,
+        pauseReason: quotaState.pauseReason,
+        dailyRemaining: quotaState.dailyRemaining,
+        minuteRemaining: quotaState.minuteRemaining,
+      },
+      apiFootball: {
+        next200: {
+          rawCount: apiNextRaw.length,
+          upcomingCount: apiNextRaw.filter(isUpcoming).length,
+          statuses: summarizeStatuses(apiNextRaw),
+          topCountries: summarizeCountries(apiNextRaw),
+        },
+        todayPlusTomorrow: {
+          rawCount: apiWindowRaw.length,
+          upcomingCount: apiWindowRaw.filter(isUpcoming).length,
+          statuses: summarizeStatuses(apiWindowRaw),
+          topCountries: summarizeCountries(apiWindowRaw),
+        },
+      },
+      sportsDb: {
+        rawCount: sportsDbRaw.length,
+        topCountries: summarizeCountries(sportsDbRaw),
+      },
+      currentFeed: {
+        liveCount: liveMatches.length,
+        upcomingCount: upcomingMatches.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, quotaState });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: '✓ Online',
