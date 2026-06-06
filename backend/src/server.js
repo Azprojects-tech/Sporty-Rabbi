@@ -670,8 +670,25 @@ async function fetchUpcomingMatches() {
     const toIsoDate = (d) => d.toISOString().split('T')[0];
     const isUpcomingStatus = (fixture) => {
       const status = String(fixture?.fixture?.status?.short || '').toUpperCase();
-      return status === 'NS' || status === 'TBD';
+      return status === 'NS' || status === 'TBD' || status === 'PST';
     };
+
+    // Primary strategy: ask API-Football for the next global fixtures directly.
+    // This is broader and more reliable than day-bound windows.
+    console.log('📅 Fetching global upcoming fixtures via next=200...');
+    const nextRes = await axios.get(`${API_BASE}/fixtures`, {
+      params: { next: 200, timezone: 'UTC' },
+      headers: { 'x-apisports-key': API_KEY },
+      timeout: 7000,
+    });
+    updateQuotaFromHeaders(nextRes.headers);
+
+    const nextFixtures = (nextRes.data.response || []).filter(isUpcomingStatus);
+    console.log(`📊 API next-window returned ${nextFixtures.length} upcoming fixtures`);
+    if (nextFixtures.length > 0) {
+      return nextFixtures;
+    }
+
     const todayDate    = now.toISOString().split('T')[0];
     const tomorrowDate = toIsoDate(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
