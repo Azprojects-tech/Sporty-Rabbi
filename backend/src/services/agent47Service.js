@@ -965,7 +965,7 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8,
         confidence: conf,
         tier,
         tierName: TIERS[tier].name,
-        logic: `Contradictory directional signals. Broad-goals fallback selected with O1.5 at ${probs.over15}%.",
+        logic: `Contradictory directional signals. Broad-goals fallback selected with O1.5 at ${probs.over15}%.`,
       };
     }
   }

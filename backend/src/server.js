@@ -949,6 +949,7 @@ async function analyzeMatch(match) {
       let homeSeasonPossession = null;
       let homeLateGoalPct = null, awayLateGoalPct = null;
       let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
+      let homeKeyAbsences = [], awayKeyAbsences = [];
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
@@ -1017,7 +1018,6 @@ async function analyzeMatch(match) {
           if (as.lateGoalPct   != null) awayLateGoalPct   = as.lateGoalPct;
         }
         // Squad integrity + key absences for P2 Star Power position-weighted impact
-        let homeKeyAbsences = [], awayKeyAbsences = [];
         if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline) {
           if (hInjRes.value.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
           if (hInjRes.value.keyAbsences?.length)   homeKeyAbsences    = hInjRes.value.keyAbsences;
