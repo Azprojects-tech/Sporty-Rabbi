@@ -666,8 +666,9 @@ async function fetchUpcomingMatches() {
 
   try {
     const now = new Date();
+    const toIsoDate = (d) => d.toISOString().split('T')[0];
     const todayDate    = now.toISOString().split('T')[0];
-    const tomorrowDate = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const tomorrowDate = toIsoDate(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
     console.log(`📅 Fetching upcoming matches (NS) for ${todayDate} + ${tomorrowDate}...`);
 
@@ -692,7 +693,30 @@ async function fetchUpcomingMatches() {
     const fixtures = [...todayFixtures, ...tomorrowFixtures];
     console.log(`📊 API returned ${todayFixtures.length} today + ${tomorrowFixtures.length} tomorrow = ${fixtures.length} upcoming fixtures`);
 
-    return fixtures;
+    if (fixtures.length > 0) {
+      return fixtures;
+    }
+
+    // Fallback horizon: if today+tomorrow are empty, scan next few days so the UI
+    // does not look "down" during calendar gaps or UTC boundary windows.
+    const fallbackDates = [2, 3, 4, 5].map(days => toIsoDate(new Date(now.getTime() + days * 24 * 60 * 60 * 1000)));
+    console.log(`📅 No NS fixtures in primary window; expanding search to ${fallbackDates.join(', ')}`);
+
+    const fallbackResponses = await Promise.all(
+      fallbackDates.map(date =>
+        axios.get(`${API_BASE}/fixtures`, {
+          params: { status: 'NS', date, timezone: 'UTC' },
+          headers: { 'x-apisports-key': API_KEY },
+          timeout: 5000,
+        })
+      )
+    );
+
+    fallbackResponses.forEach(res => updateQuotaFromHeaders(res.headers));
+    const fallbackFixtures = fallbackResponses.flatMap(res => res.data.response || []);
+    console.log(`📊 Fallback window returned ${fallbackFixtures.length} upcoming fixtures`);
+
+    return fallbackFixtures;
   } catch (error) {
     console.error('❌ Upcoming matches error:', error.message);
     if (error.response?.headers) {
