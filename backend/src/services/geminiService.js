@@ -834,12 +834,13 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const awayFormRaw = matchInfo?.awayForm || '';
   const homeOpposition = matchInfo?.homeRecentOpposition || analysis?.dataContext?.homeRecentOpposition || null;
   const awayOpposition = matchInfo?.awayRecentOpposition || analysis?.dataContext?.awayRecentOpposition || null;
-  const homePoss = matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null;
-  const awayPoss = matchInfo?.possession?.away ?? (homePoss != null ? 100 - homePoss : null);
-  const homeShots = matchInfo?.shots?.home ?? null;
-  const awayShots = matchInfo?.shots?.away ?? null;
-  const homeXg = matchInfo?.xg?.home ?? null;
-  const awayXg = matchInfo?.xg?.away ?? null;
+  const toMeaningful = (v) => (v == null || Number(v) <= 0 ? null : Number(v));
+  const homePoss = toMeaningful(matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null);
+  const awayPoss = toMeaningful(matchInfo?.possession?.away);
+  const homeShots = toMeaningful(matchInfo?.shots?.home ?? null);
+  const awayShots = toMeaningful(matchInfo?.shots?.away ?? null);
+  const homeXg = toMeaningful(matchInfo?.xg?.home ?? null);
+  const awayXg = toMeaningful(matchInfo?.xg?.away ?? null);
 
   const formCompact = (s) => String(s || '')
     .toUpperCase()
@@ -856,7 +857,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
       : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, with form ${formCompact(homeFormRaw) || 'N/A'} vs ${formCompact(awayFormRaw) || 'N/A'} and opponent quality setting the baseline.`;
 
     const liveReality = isLive
-      ? `Possession is ${homePoss ?? '-'}-${awayPoss ?? '-'}, shots are ${homeShots ?? '-'}-${awayShots ?? '-'}, xG is ${homeXg ?? '-'}-${awayXg ?? '-'}, and the score is ${score}.`
+      ? `Possession is ${homePoss != null && awayPoss != null ? `${homePoss}-${awayPoss}` : 'unavailable'}, shots are ${homeShots != null && awayShots != null ? `${homeShots}-${awayShots}` : 'unavailable'}, xG is ${homeXg != null && awayXg != null ? `${homeXg}-${awayXg}` : 'unavailable'}, and the score is ${score}.`
       : `Poisson projects ${poisson?.expectedTotalGoals ?? '--'} total goals, with likely score ${poisson?.likelyScore?.score || '--'} and draw probability ${poisson?.probabilities?.draw ?? '--'}%.`;
 
     const verdictCore = coreText
@@ -872,7 +873,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
 
   const metricsBlock = [
     `PHASE MODEL: ${phaseModel.phase}. Baseline weight ${Math.round(phaseModel.baselineWeight * 100)}%, live weight ${Math.round(phaseModel.liveWeight * 100)}%.`,
-    `LIVE METRICS: Possession ${home} ${homePoss ?? '-'}% vs ${away} ${awayPoss ?? '-'}%, Shots ${homeShots ?? '-'}-${awayShots ?? '-'}, xG ${homeXg ?? '-'}-${awayXg ?? '-'}, Score ${score}.`,
+    `LIVE METRICS: Possession ${home} ${homePoss != null ? `${homePoss}%` : 'unavailable'} vs ${away} ${awayPoss != null ? `${awayPoss}%` : 'unavailable'}, Shots ${homeShots ?? 'unavailable'}-${awayShots ?? 'unavailable'}, xG ${homeXg ?? 'unavailable'}-${awayXg ?? 'unavailable'}, Score ${score}.`,
     `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'N/A'} | ${away} ${formCompact(awayFormRaw) || 'N/A'}.`,
     `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
     `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,

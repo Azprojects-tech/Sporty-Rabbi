@@ -85,7 +85,10 @@ function FormBadges({ formStr }) {
 function DataSnapshot({ analysis, match }) {
   const homeOpp = analysis?.dataContext?.homeRecentOpposition;
   const awayOpp = analysis?.dataContext?.awayRecentOpposition;
-  const hasLiveStats = match?.possession || match?.shots || match?.xg;
+  const hasPossession = (Number(match?.possession?.home) > 0 || Number(match?.possession?.away) > 0);
+  const hasShots = (Number(match?.shots?.home) > 0 || Number(match?.shots?.away) > 0);
+  const hasXg = (Number(match?.xg?.home) > 0 || Number(match?.xg?.away) > 0);
+  const hasLiveStats = hasPossession || hasShots || hasXg;
 
   if (!homeOpp && !awayOpp && !hasLiveStats) return null;
 
@@ -102,15 +105,21 @@ function DataSnapshot({ analysis, match }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 10 }}>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>Possession</div>
-            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.possession?.home ?? '-'}% / {match?.possession?.away ?? '-' }%</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
+              {hasPossession ? `${match?.possession?.home ?? '-'}% / ${match?.possession?.away ?? '-'}%` : 'Unavailable'}
+            </div>
           </div>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>Shots</div>
-            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.shots?.home ?? '-'} / {match?.shots?.away ?? '-'}</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
+              {hasShots ? `${match?.shots?.home ?? '-'} / ${match?.shots?.away ?? '-'}` : 'Unavailable'}
+            </div>
           </div>
           <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: '#4a5568' }}>xG</div>
-            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{match?.xg?.home ?? '-'} / {match?.xg?.away ?? '-'}</div>
+            <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>
+              {hasXg ? `${match?.xg?.home ?? '-'} / ${match?.xg?.away ?? '-'}` : 'Unavailable'}
+            </div>
           </div>
         </div>
       )}
@@ -119,9 +128,19 @@ function DataSnapshot({ analysis, match }) {
           <strong style={{ color: '#e2e8f0' }}>{match?.home}:</strong> {homeOpp.summary}
         </p>
       )}
+      {Array.isArray(homeOpp?.recent) && homeOpp.recent.length > 0 && (
+        <p style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '0 0 6px 0' }}>
+          {match?.home} last 5: {homeOpp.recent.map((g) => `${g.result} vs ${g.opponent}`).join(' • ')}
+        </p>
+      )}
       {awayOpp?.summary && (
         <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6, margin: 0 }}>
           <strong style={{ color: '#e2e8f0' }}>{match?.away}:</strong> {awayOpp.summary}
+        </p>
+      )}
+      {Array.isArray(awayOpp?.recent) && awayOpp.recent.length > 0 && (
+        <p style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '6px 0 0 0' }}>
+          {match?.away} last 5: {awayOpp.recent.map((g) => `${g.result} vs ${g.opponent}`).join(' • ')}
         </p>
       )}
     </div>
@@ -239,7 +258,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
-        homePossession:   match.possession?.home || 50,
+        homePossession:   match.possession?.home > 0 ? match.possession.home : null,
         hasLiveXg:        !!(match.xg?.home > 0 || match.xg?.away > 0),
         homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
         awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : leagueDefaults.awayXgAvg,

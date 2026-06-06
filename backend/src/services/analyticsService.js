@@ -55,42 +55,58 @@ function setCache(key, data) {
 function summarizeRecentOpposition(teamId, matches = [], standings = null) {
   const teamMap = standings?.teams || null;
   const ownPosition = teamMap?.[teamId]?.position || null;
-  if (!teamMap || !ownPosition || matches.length === 0) return null;
+  if (matches.length === 0) return null;
 
   const recent = matches.slice(0, 5).map((match) => {
     const isHome = match.teams.home.id === teamId;
     const opponent = isHome ? match.teams.away : match.teams.home;
+    const teamGoals = isHome ? (match.goals.home || 0) : (match.goals.away || 0);
+    const oppGoals = isHome ? (match.goals.away || 0) : (match.goals.home || 0);
+    const result = teamGoals > oppGoals ? 'W' : teamGoals < oppGoals ? 'L' : 'D';
     const opponentPosition = teamMap?.[opponent.id]?.position || null;
-    let tier = 'peer';
-    if (opponentPosition != null) {
+    let tier = null;
+    if (opponentPosition != null && ownPosition != null) {
       if (opponentPosition <= ownPosition - 3) tier = 'stronger';
       else if (opponentPosition >= ownPosition + 3) tier = 'weaker';
+      else tier = 'peer';
     }
     return {
       opponentId: opponent.id,
       opponent: opponent.name,
       opponentPosition,
       tier,
+      result,
+      score: `${teamGoals}-${oppGoals}`,
       date: match.fixture.date,
     };
   });
 
   const counts = recent.reduce((acc, item) => {
-    acc[item.tier] += 1;
+    if (item.tier) acc[item.tier] += 1;
     return acc;
   }, { stronger: 0, peer: 0, weaker: 0 });
+
+  const results = recent.reduce((acc, item) => {
+    acc[item.result] = (acc[item.result] || 0) + 1;
+    return acc;
+  }, { W: 0, D: 0, L: 0 });
 
   const positioned = recent.filter((item) => item.opponentPosition != null);
   const avgOpponentPosition = positioned.length
     ? +(positioned.reduce((sum, item) => sum + item.opponentPosition, 0) / positioned.length).toFixed(1)
     : null;
 
-  const summary = `Last 5 opponents: ${counts.stronger} stronger, ${counts.peer} peer, ${counts.weaker} weaker${avgOpponentPosition != null ? ` (avg opp position ${avgOpponentPosition})` : ''}.`;
+  const hasStrengthBands = ownPosition != null && positioned.length > 0;
+  const strengthPart = hasStrengthBands
+    ? `Opposition quality: ${counts.stronger} stronger, ${counts.peer} peer, ${counts.weaker} weaker${avgOpponentPosition != null ? ` (avg opp position ${avgOpponentPosition})` : ''}.`
+    : 'Opposition quality bands unavailable (standings not resolved).';
+  const summary = `Last 5 results: ${results.W}W ${results.D}D ${results.L}L. ${strengthPart}`;
 
   return {
     ownPosition,
     avgOpponentPosition,
     counts,
+    results,
     recent,
     summary,
   };

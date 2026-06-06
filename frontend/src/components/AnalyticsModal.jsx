@@ -85,13 +85,13 @@ export default function AnalyticsModal({ match, onClose }) {
         status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
-        homePossession:   match.possession?.home || 50,
-        homeXgAvg:        match.xg?.home  || 1.3,
-        awayXgAvg:        match.xg?.away  || 1.1,
-        homeXgaAvg:       match.xg?.away  || 1.2,
-        awayXgaAvg:       match.xg?.home  || 1.2,
-        homeShotsPerGame: match.shots?.home || 12,
-        awayShotsPerGame: match.shots?.away || 10,
+        homePossession:   match.possession?.home > 0 ? match.possession.home : null,
+        homeXgAvg:        match.xg?.home  > 0 ? match.xg.home : null,
+        awayXgAvg:        match.xg?.away  > 0 ? match.xg.away : null,
+        homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away : null,
+        awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home : null,
+        homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : null,
+        awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : null,
       };
       const res = await apiService.client.post('/analyze', matchData);
       setAnalysis(res.data);
