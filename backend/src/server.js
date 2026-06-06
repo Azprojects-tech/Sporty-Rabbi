@@ -1443,6 +1443,9 @@ async function saveAlert(alertData) {
     }
   }
 
+  // Initialize calibration cache from whatever bets are available in memory.
+  recomputePostMatchCalibrationFromBets(bets);
+
   // Broadcast to portal
   broadcast({ type: 'NEW_ALERT', payload: alertPayload });
 
@@ -1527,6 +1530,148 @@ function normalizeSlipMode(mode) {
   return key;
 }
 
+const postMatchCalibrationStore = {
+  updatedAt: null,
+  totalSettled: 0,
+  byMode: {},
+  byFamily: {},
+};
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(value, max));
+}
+
+function settledBetProfit(bet) {
+  const stake = Number(bet.stake || 0);
+  const odds = Number(bet.odds || 0);
+  const explicitProfit = Number(bet.profit);
+  const payout = Number(bet.payout || bet.returnAmount || 0);
+
+  if (bet.result === 'won') {
+    if (Number.isFinite(explicitProfit)) return explicitProfit;
+    if (Number.isFinite(payout) && payout > 0 && stake > 0) return payout - stake;
+    if (Number.isFinite(odds) && odds > 1 && stake > 0) return stake * (odds - 1);
+    return 0;
+  }
+
+  if (bet.result === 'lost') {
+    return stake > 0 ? -stake : 0;
+  }
+
+  return 0;
+}
+
+function deriveCalibrationAdjustment(bucket, minSample = 8) {
+  if (!bucket || bucket.settled < minSample) {
+    return {
+      settled: bucket?.settled || 0,
+      winRate: bucket?.settled > 0 ? +((bucket.won / bucket.settled) * 100).toFixed(1) : null,
+      roi: bucket?.stakeTurnover > 0 ? +((bucket.netProfit / bucket.stakeTurnover) * 100).toFixed(1) : null,
+      avgConfidence: bucket?.confCount > 0 ? +(bucket.confSum / bucket.confCount).toFixed(1) : null,
+      calibrationGap: null,
+      confidenceFloorAdjustment: 0,
+      stakeMultiplierAdjustment: 1,
+    };
+  }
+
+  const winRate = +((bucket.won / bucket.settled) * 100).toFixed(1);
+  const avgConfidence = bucket.confCount > 0 ? +(bucket.confSum / bucket.confCount).toFixed(1) : null;
+  const calibrationGap = avgConfidence == null ? null : +(winRate - avgConfidence).toFixed(1);
+  const roi = bucket.stakeTurnover > 0 ? +((bucket.netProfit / bucket.stakeTurnover) * 100).toFixed(1) : null;
+
+  let confidenceFloorAdjustment = 0;
+  if (calibrationGap != null) {
+    if (calibrationGap < -8) confidenceFloorAdjustment = Math.min(4, Math.round(Math.abs(calibrationGap) / 6));
+    else if (calibrationGap > 8) confidenceFloorAdjustment = -Math.min(3, Math.round(calibrationGap / 8));
+  }
+
+  let stakeMultiplierAdjustment = 1;
+  if (roi != null) {
+    if (roi >= 12) stakeMultiplierAdjustment += Math.min(0.12, roi / 100);
+    else if (roi <= -12) stakeMultiplierAdjustment -= Math.min(0.15, Math.abs(roi) / 90);
+  }
+
+  return {
+    settled: bucket.settled,
+    winRate,
+    roi,
+    avgConfidence,
+    calibrationGap,
+    confidenceFloorAdjustment,
+    stakeMultiplierAdjustment: +clamp(stakeMultiplierAdjustment, 0.85, 1.15).toFixed(3),
+  };
+}
+
+function recomputePostMatchCalibrationFromBets(allBets = bets) {
+  const settled = (allBets || []).filter((b) => b.result === 'won' || b.result === 'lost');
+  const byMode = {};
+  const byFamily = {};
+
+  for (const bet of settled) {
+    const mode = normalizeSlipMode(bet.slipMode || bet.mode || bet.riskMode) || 'unassigned';
+    const family = bet.competitionFamily || detectCompetitionContext({
+      leagueId: bet.leagueId || 0,
+      league: bet.leagueName || bet.league || '',
+      country: bet.leagueCountry || bet.country || '',
+      matchType: bet.matchType || '',
+      round: bet.round || '',
+      isKnockout: Boolean(bet.isKnockout),
+      notes: bet.notes || '',
+    }).family;
+    const stake = Number(bet.stake || 0);
+    const profit = settledBetProfit(bet);
+    const confidence = Number(bet.confidence);
+
+    if (!byMode[mode]) byMode[mode] = { settled: 0, won: 0, stakeTurnover: 0, netProfit: 0, confSum: 0, confCount: 0 };
+    if (!byFamily[family]) byFamily[family] = { settled: 0, won: 0, stakeTurnover: 0, netProfit: 0, confSum: 0, confCount: 0 };
+
+    byMode[mode].settled++;
+    byFamily[family].settled++;
+    if (bet.result === 'won') {
+      byMode[mode].won++;
+      byFamily[family].won++;
+    }
+    if (stake > 0) {
+      byMode[mode].stakeTurnover += stake;
+      byFamily[family].stakeTurnover += stake;
+    }
+    byMode[mode].netProfit += profit;
+    byFamily[family].netProfit += profit;
+    if (Number.isFinite(confidence)) {
+      byMode[mode].confSum += confidence;
+      byMode[mode].confCount++;
+      byFamily[family].confSum += confidence;
+      byFamily[family].confCount++;
+    }
+  }
+
+  postMatchCalibrationStore.byMode = Object.fromEntries(
+    Object.entries(byMode).map(([key, bucket]) => [key, deriveCalibrationAdjustment(bucket, 8)])
+  );
+  postMatchCalibrationStore.byFamily = Object.fromEntries(
+    Object.entries(byFamily).map(([key, bucket]) => [key, deriveCalibrationAdjustment(bucket, 10)])
+  );
+  postMatchCalibrationStore.totalSettled = settled.length;
+  postMatchCalibrationStore.updatedAt = new Date().toISOString();
+}
+
+function getModeCalibrationAdjustment(modeKey) {
+  const key = normalizeSlipMode(modeKey) || 'balanced';
+  return postMatchCalibrationStore.byMode[key] || {
+    settled: 0,
+    confidenceFloorAdjustment: 0,
+    stakeMultiplierAdjustment: 1,
+  };
+}
+
+function getFamilyCalibrationAdjustment(family) {
+  return postMatchCalibrationStore.byFamily[family] || {
+    settled: 0,
+    confidenceFloorAdjustment: 0,
+    stakeMultiplierAdjustment: 1,
+  };
+}
+
 function applyModeAllocation(base, modeProfile) {
   const weighted = {
     tier1: base.tier1 * modeProfile.allocationMultipliers.tier1,
@@ -1571,6 +1716,7 @@ function bestSelection(match) {
 
 function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   const modeProfile = resolveSlipMode(mode);
+  const modeCalibration = getModeCalibrationAdjustment(modeProfile.key);
   const pool = calibrationStore.matches
     .map((m) => {
       const ctx = detectCompetitionContext({
@@ -1583,9 +1729,16 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
         notes: m.notes,
       });
       const risk = getCompetitionRiskPolicy(ctx.family);
-      return { ...m, _competitionFamily: ctx.family, _riskPolicy: risk };
+      const familyCalibration = getFamilyCalibrationAdjustment(ctx.family);
+      return { ...m, _competitionFamily: ctx.family, _riskPolicy: risk, _familyCalibration: familyCalibration };
     })
-    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(52, m._riskPolicy.confidenceFloor + modeProfile.confidenceFloorAdjustment));
+    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(
+      52,
+      m._riskPolicy.confidenceFloor +
+      modeProfile.confidenceFloorAdjustment +
+      (modeCalibration.confidenceFloorAdjustment || 0) +
+      (m._familyCalibration?.confidenceFloorAdjustment || 0)
+    ));
 
   if (pool.length === 0) {
     return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
@@ -1624,7 +1777,11 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
     const odds = oddsForSelection(m, sel.type);
     const rawStake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
     const guardedStake = Math.round(Math.min(
-      rawStake * m._riskPolicy.stakeMultiplier * modeProfile.stakeMultiplier,
+      rawStake *
+        m._riskPolicy.stakeMultiplier *
+        modeProfile.stakeMultiplier *
+        (modeCalibration.stakeMultiplierAdjustment || 1) *
+        (m._familyCalibration?.stakeMultiplierAdjustment || 1),
       bankroll * m._riskPolicy.maxSingleStakePct * modeProfile.maxSingleStakePctMultiplier
     ));
     return {
@@ -1668,9 +1825,9 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   }, { legs: [], combinedOdds: 1.0 });
   const tier2StakeRaw = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
   const tier2RiskMultiplier = tier2Legs.length > 0
-    ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier))
+    ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier * (m._familyCalibration?.stakeMultiplierAdjustment || 1)))
     : 1;
-  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier * modeProfile.stakeMultiplier);
+  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier * modeProfile.stakeMultiplier * (modeCalibration.stakeMultiplierAdjustment || 1));
   const tier2 = tier2Legs.length >= 2 ? {
     ...tier2Combined,
     stake: tier2Stake,
@@ -1709,9 +1866,9 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
   const tier3StakeRaw = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
   const tier3RiskMultiplier = tier3Candidates.length > 0
-    ? Math.min(...tier3Candidates.map(m => m._riskPolicy.stakeMultiplier))
+    ? Math.min(...tier3Candidates.map(m => m._riskPolicy.stakeMultiplier * (m._familyCalibration?.stakeMultiplierAdjustment || 1)))
     : 1;
-  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier * modeProfile.stakeMultiplier);
+  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier * modeProfile.stakeMultiplier * (modeCalibration.stakeMultiplierAdjustment || 1));
   const tier3 = tier3Legs.length >= 2 ? {
     legs: tier3Legs,
     combinedOdds: tier3CombinedOdds,
@@ -1744,6 +1901,11 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
         ? +Math.min((bestCaseProfit / DAILY_TARGET_PROFIT) * 100, 999).toFixed(1)
         : null,
       profitGapToTarget: DAILY_TARGET_PROFIT - bestCaseProfit,
+      postMatchCalibration: {
+        updatedAt: postMatchCalibrationStore.updatedAt,
+        totalSettled: postMatchCalibrationStore.totalSettled,
+        mode: modeCalibration,
+      },
       allocation: { tier1: Math.round(t1Pct * 100), tier2: Math.round(t2Pct * 100), tier3: Math.round(t3Pct * 100) },
     },
     generatedAt: new Date().toISOString(),
@@ -1968,6 +2130,7 @@ app.post('/api/bets', async (req, res) => {
   // Keep in memory as fallback
   bets.unshift(bet);
   if (bets.length > 500) bets.pop();
+  recomputePostMatchCalibrationFromBets(bets);
 
   broadcast({ type: 'BET_LOGGED', payload: bet });
   res.json({ success: true, bet });
@@ -1984,6 +2147,13 @@ app.patch('/api/bets/:id', async (req, res) => {
       delete updates.firestoreId;
       await ref.update(updates);
       const updated = { ...(await ref.get()).data(), firestoreId: req.body.firestoreId };
+      const existingIdx = bets.findIndex((b) => b.firestoreId === req.body.firestoreId || String(b.id) === String(req.params.id));
+      if (existingIdx >= 0) bets[existingIdx] = { ...bets[existingIdx], ...updated };
+      else {
+        bets.unshift(updated);
+        if (bets.length > 500) bets.pop();
+      }
+      recomputePostMatchCalibrationFromBets(bets);
       broadcast({ type: 'BET_UPDATED', payload: updated });
       return res.json({ success: true, bet: updated });
     } catch (err) {
@@ -1996,6 +2166,7 @@ app.patch('/api/bets/:id', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Bet not found' });
 
   bets[idx] = { ...bets[idx], ...req.body, updatedAt: new Date().toISOString() };
+  recomputePostMatchCalibrationFromBets(bets);
   broadcast({ type: 'BET_UPDATED', payload: bets[idx] });
   res.json({ success: true, bet: bets[idx] });
 });
@@ -2183,6 +2354,15 @@ app.get('/api/stats/mode', async (req, res) => {
     note: rows.length === 0
       ? 'No settled bets with mode tags yet. Start logging bets with slipMode to unlock tracking.'
       : 'Best mode requires at least 5 settled bets with valid stake/odds inputs.',
+  });
+});
+
+app.get('/api/stats/calibration-hook', (req, res) => {
+  res.json({
+    updatedAt: postMatchCalibrationStore.updatedAt,
+    totalSettled: postMatchCalibrationStore.totalSettled,
+    byMode: postMatchCalibrationStore.byMode,
+    byFamily: postMatchCalibrationStore.byFamily,
   });
 });
 
@@ -3438,6 +3618,7 @@ server.listen(PORT, async () => {
     try {
       const snapshot = await db.collection('bets').orderBy('createdAt', 'desc').limit(200).get();
       bets = snapshot.docs.map(d => ({ firestoreId: d.id, ...d.data() }));
+      recomputePostMatchCalibrationFromBets(bets);
       console.log(`🔥 Loaded ${bets.length} bets from Firestore`);
     } catch (err) {
       console.warn('⚠️  Could not pre-load bets from Firestore:', err.message);

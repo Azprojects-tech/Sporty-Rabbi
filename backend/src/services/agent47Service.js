@@ -938,8 +938,38 @@ function tierFromConfidence(conf = 50) {
   return conf >= 85 ? 1 : conf >= 72 ? 2 : conf >= 62 ? 3 : 4;
 }
 
-function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4 }) {
+function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8, analysisQuality = null }) {
   const probs = poisson?.probabilities || {};
+  const contradiction = Boolean(analysisQuality?.contradiction);
+  const drawProb = Number(probs.draw || 0);
+
+  if (contradiction) {
+    if (drawProb >= 30 && (probs.under25 || 0) >= 56) {
+      const conf = Math.max(54, Math.min(84, Math.round(probs.under25)));
+      const tier = tierFromConfidence(conf);
+      return {
+        type: 'GOALS_ONLY',
+        selection: 'Under 2.5 Goals',
+        confidence: conf,
+        tier,
+        tierName: TIERS[tier].name,
+        logic: `Contradictory directional signals. Draw risk ${drawProb}% and U2.5 ${probs.under25}% favor a safer fallback.`,
+      };
+    }
+    if ((probs.over15 || 0) >= 68) {
+      const conf = Math.max(55, Math.min(86, Math.round(probs.over15)));
+      const tier = tierFromConfidence(conf);
+      return {
+        type: 'GOALS_ONLY',
+        selection: 'Over 1.5 Goals',
+        confidence: conf,
+        tier,
+        tierName: TIERS[tier].name,
+        logic: `Contradictory directional signals. Broad-goals fallback selected with O1.5 at ${probs.over15}%.",
+      };
+    }
+  }
+
   const fallbackOptions = [
     { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: probs.over15 ?? null, logic: `Fallback by Poisson O1.5 (${probs.over15 ?? 'N/A'}%).` },
     { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: probs.over25 ?? null, logic: `Fallback by Poisson O2.5 (${probs.over25 ?? 'N/A'}%).` },
@@ -947,7 +977,7 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4 }) {
     { type: 'GOALS_ONLY', selection: 'Both Teams to Score', confidence: probs.btts ?? null, logic: `Fallback by Poisson BTTS (${probs.btts ?? 'N/A'}%).` },
   ].filter(x => x.confidence != null);
 
-  const directionalEdge = p1?.edge !== 'NEUTRAL' ? p1.edge : p4?.edge;
+  const directionalEdge = p1?.edge !== 'NEUTRAL' ? p1.edge : (p4?.edge !== 'NEUTRAL' ? p4?.edge : p8?.edge);
   if (directionalEdge && directionalEdge !== 'NEUTRAL') {
     const team = directionalEdge === 'HOME' ? home : away;
     const conf = Math.max(55, Math.min(88, Math.round((overallScore || 50) * 0.9)));
@@ -977,6 +1007,64 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4 }) {
     ...best,
     tier,
     tierName: TIERS[tier].name,
+  };
+}
+
+function recommendationEVSanity(recommendation, context = {}) {
+  const { poisson, p1, p4, p8 } = context;
+  const probs = poisson?.probabilities || {};
+  const selection = String(recommendation.selection || '').toLowerCase();
+  let penalty = 0;
+  const reasons = [];
+
+  const directionalVotes = [p1?.edge, p4?.edge, p8?.edge];
+  const homeVotes = directionalVotes.filter(v => v === 'HOME').length;
+  const awayVotes = directionalVotes.filter(v => v === 'AWAY').length;
+  const directionalConflict = homeVotes > 0 && awayVotes > 0;
+
+  if (recommendation.type === 'GOALS_ONLY') {
+    if (selection.includes('over 3.5') && (probs.over35 ?? 0) < 34) {
+      penalty += 8;
+      reasons.push(`O3.5 model support only ${probs.over35 ?? 0}%`);
+    }
+    if (selection.includes('over 2.5') && (probs.over25 ?? 0) < 50) {
+      penalty += 10;
+      reasons.push(`O2.5 model support only ${probs.over25 ?? 0}%`);
+    }
+    if (selection.includes('under 2.5') && (probs.under25 ?? 0) < 54) {
+      penalty += 10;
+      reasons.push(`U2.5 model support only ${probs.under25 ?? 0}%`);
+    }
+    if (selection.includes('both teams to score') && (probs.btts ?? 0) < 55) {
+      penalty += 8;
+      reasons.push(`BTTS model support only ${probs.btts ?? 0}%`);
+    }
+  }
+
+  if (recommendation.type === 'WINS_ONLY') {
+    const drawProb = probs.draw ?? 0;
+    if (drawProb >= 31) {
+      penalty += 8;
+      reasons.push(`Draw risk elevated at ${drawProb}%`);
+    }
+    if (directionalConflict) {
+      penalty += 6;
+      reasons.push('Motivation/form/xG directional conflict');
+    }
+    if (selection.includes('home') && awayVotes > homeVotes) {
+      penalty += 8;
+      reasons.push('Directional signals lean away');
+    }
+    if (selection.includes('away') && homeVotes > awayVotes) {
+      penalty += 8;
+      reasons.push('Directional signals lean home');
+    }
+  }
+
+  return {
+    penalty,
+    evPass: penalty <= 6,
+    reasons,
   };
 }
 
@@ -1051,6 +1139,24 @@ function recalibrateRecommendations(recommendations = [], analysisQuality) {
     .sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
 }
 
+function applyRecommendationSanityChecks(recommendations = [], context = {}) {
+  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
+  return recommendations
+    .map((r) => {
+      const ev = recommendationEVSanity(r, context);
+      const adjustedConfidence = Math.max(50, Math.min(97, Math.round((r.confidence || 50) - ev.penalty)));
+      const tier = tierFromConfidence(adjustedConfidence);
+      return {
+        ...r,
+        confidence: adjustedConfidence,
+        tier,
+        tierName: TIERS[tier].name,
+        evSanity: ev,
+      };
+    })
+    .sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
+}
+
 function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {}) {
   const {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
@@ -1097,6 +1203,7 @@ function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {})
       competitionProfile: competitionModelProfile?.name || 'Default',
       liveState: { status, matchMinutes, score },
       analysisQuality,
+      evSanity: r.evSanity || null,
       topFactors,
       poisson: {
         expectedGoals: poisson?.expectedTotalGoals ?? null,
@@ -1433,9 +1540,10 @@ export function analyzeV9(matchData = {}) {
   // ── Recommendations ────────────────────────────────────────────────────────
   let recommendations = generateRecommendations(overall, poi, p1, p4, chaos, matchData);
   if (!Array.isArray(recommendations) || recommendations.length === 0) {
-    recommendations = [fallbackRecommendation({ home, away, overallScore: overall, poisson: poi, p1, p4 })];
+    recommendations = [fallbackRecommendation({ home, away, overallScore: overall, poisson: poi, p1, p4, p8, analysisQuality })];
   }
   recommendations = recalibrateRecommendations(recommendations, analysisQuality);
+  recommendations = applyRecommendationSanityChecks(recommendations, { poisson: poi, p1, p4, p8 });
   recommendations = attachEvidenceToRecommendations(recommendations, {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
     poisson: poi,
