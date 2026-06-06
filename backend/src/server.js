@@ -2862,6 +2862,13 @@ app.post('/api/analyze', async (req, res) => {
       if (!enriched.homeShotsPerGame)           enriched.homeShotsPerGame    = ci.homeShotsPerGame;
       if (!enriched.awayShotsPerGame)           enriched.awayShotsPerGame    = ci.awayShotsPerGame;
       if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
+
+      if (
+        standingsStatus.status !== 'available' &&
+        ((enriched.homePosition != null && enriched.homePosition > 0) || (enriched.awayPosition != null && enriched.awayPosition > 0))
+      ) {
+        standingsStatus = { status: 'fallback', source: 'calibrated-inputs' };
+      }
     }
 
     // ── Step 1b: Actively pull fixture live stats when available ───────────
