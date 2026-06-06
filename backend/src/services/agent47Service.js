@@ -980,6 +980,77 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4 }) {
   };
 }
 
+function computeAnalysisQuality({ p1, p4, p8, p12, poisson, status, matchMinutes = 0, scalar = 1, paramCoverage = 1 }) {
+  const homeVotes = [p1?.edge, p4?.edge, p8?.edge].filter(x => x === 'HOME').length;
+  const awayVotes = [p1?.edge, p4?.edge, p8?.edge].filter(x => x === 'AWAY').length;
+  const totalVotes = homeVotes + awayVotes;
+  const contradiction = homeVotes > 0 && awayVotes > 0;
+
+  let poissonEdge = 'NEUTRAL';
+  if (poisson?.homeLambda != null && poisson?.awayLambda != null) {
+    const diff = poisson.homeLambda - poisson.awayLambda;
+    if (diff >= 0.18) poissonEdge = 'HOME';
+    else if (diff <= -0.18) poissonEdge = 'AWAY';
+  }
+
+  const consensusWithPoisson = (
+    poissonEdge === 'NEUTRAL' ||
+    (poissonEdge === 'HOME' && homeVotes >= awayVotes) ||
+    (poissonEdge === 'AWAY' && awayVotes >= homeVotes)
+  );
+
+  const directionalStrength = totalVotes > 0 ? Math.abs(homeVotes - awayVotes) / totalVotes : 0;
+  const hasPoisson = poisson?.homeLambda != null && poisson?.awayLambda != null;
+  const marketDivergence = Math.abs(Number(p12?.divergence || 0));
+
+  let score = 62;
+  score += Math.round(Math.max(0, Math.min(paramCoverage, 1)) * 16);
+  score += Math.round(directionalStrength * 10);
+  score += hasPoisson ? 5 : -8;
+  score += consensusWithPoisson ? 4 : -6;
+  score += contradiction ? -8 : 0;
+  score += marketDivergence >= 0.12 ? -3 : 0; // Large model-vs-market disagreement increases uncertainty.
+  score += Math.round((Math.max(0.75, Math.min(scalar, 1.1)) - 0.93) * 20);
+  if (status !== 'NS' && matchMinutes < 12) score -= 4;
+  score = Math.max(45, Math.min(score, 92));
+
+  const confidenceMultiplier = Math.max(0.86, Math.min(1.08, 0.92 + (score - 60) / 100));
+
+  return {
+    score,
+    confidenceMultiplier: +confidenceMultiplier.toFixed(3),
+    contradiction,
+    hasPoisson,
+    directionalStrength: +directionalStrength.toFixed(2),
+    paramCoverage: +Math.max(0, Math.min(paramCoverage, 1)).toFixed(2),
+    poissonEdge,
+    consensusWithPoisson,
+  };
+}
+
+function recalibrateRecommendations(recommendations = [], analysisQuality) {
+  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
+  return recommendations
+    .map((r) => {
+      let conf = Number(r.confidence || 50);
+      conf *= analysisQuality?.confidenceMultiplier || 1;
+
+      if (analysisQuality?.contradiction && r.type === 'WINS_ONLY') conf -= 6;
+      if ((analysisQuality?.paramCoverage || 1) < 0.75) conf -= 4;
+      if (!analysisQuality?.hasPoisson && (r.type === 'NEXT_GOAL' || r.type === 'SNIPER_WATCH')) conf -= 5;
+
+      conf = Math.round(Math.max(52, Math.min(conf, 97)));
+      const tier = tierFromConfidence(conf);
+      return {
+        ...r,
+        confidence: conf,
+        tier,
+        tierName: TIERS[tier].name,
+      };
+    })
+    .sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
+}
+
 function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {}) {
   const {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
@@ -987,6 +1058,7 @@ function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {})
     resolvedCompetitionContext,
     competitionModelProfile,
     overall,
+    analysisQuality,
     status,
     matchMinutes,
     score,
@@ -1024,6 +1096,7 @@ function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {})
       competitionFamily: resolvedCompetitionContext?.family || 'UNKNOWN',
       competitionProfile: competitionModelProfile?.name || 'Default',
       liveState: { status, matchMinutes, score },
+      analysisQuality,
       topFactors,
       poisson: {
         expectedGoals: poisson?.expectedTotalGoals ?? null,
@@ -1341,6 +1414,17 @@ export function analyzeV9(matchData = {}) {
     ? paramScores.reduce((acc, [s, w]) => acc + s * (w / totalWeight), 0)
     : 50;
   const overall = Math.round(Math.max(0, Math.min(rawScore * scalar + (competitionModelProfile.overallAdjustment ?? 0), 100)));
+  const analysisQuality = computeAnalysisQuality({
+    p1,
+    p4,
+    p8,
+    p12,
+    poisson: poi,
+    status,
+    matchMinutes,
+    scalar,
+    paramCoverage: paramScores.length / 15,
+  });
 
   // ── Chaos variables ────────────────────────────────────────────────────────
   const chaos = evaluateChaos({ motivation: p1, form: p4, matchMinutes, earlyGoalScored, earlyGoalMinute,
@@ -1351,12 +1435,14 @@ export function analyzeV9(matchData = {}) {
   if (!Array.isArray(recommendations) || recommendations.length === 0) {
     recommendations = [fallbackRecommendation({ home, away, overallScore: overall, poisson: poi, p1, p4 })];
   }
+  recommendations = recalibrateRecommendations(recommendations, analysisQuality);
   recommendations = attachEvidenceToRecommendations(recommendations, {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
     poisson: poi,
     resolvedCompetitionContext,
     competitionModelProfile,
     overall,
+    analysisQuality,
     status,
     matchMinutes,
     score,
@@ -1402,6 +1488,7 @@ export function analyzeV9(matchData = {}) {
       scalarMultiplier: competitionModelProfile.scalarMultiplier ?? 1,
     },
     leagueScalarApplied: scalar,
+    analysisQuality,
     bookieEdges,
     analysisVersion: 'V9-Calibrated',
     analysisTimestamp: new Date().toISOString(),
