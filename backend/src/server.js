@@ -655,13 +655,14 @@ async function fetchTodayFixturesFromSportsDB() {
 
 async function fetchUpcomingMatches() {
   if (!API_KEY) {
-    return [];
+    console.warn('⚠️  API_FOOTBALL_KEY missing for upcoming feed; using TheSportsDB fallback');
+    return await fetchTodayFixturesFromSportsDB();
   }
 
   if (shouldSkipApiCalls()) {
     const resumeMsg = quotaState.resumeAt ? ` until ${quotaState.resumeAt}` : '';
     console.warn(`⏸️  Skipping UPCOMING API call due to quota guard${resumeMsg}`);
-    return [];
+    return await fetchTodayFixturesFromSportsDB();
   }
 
   try {
@@ -722,6 +723,18 @@ async function fetchUpcomingMatches() {
       .flatMap(res => res.data.response || [])
       .filter(isUpcomingStatus);
     console.log(`📊 Fallback window returned ${fallbackFixtures.length} upcoming fixtures`);
+
+    if (fallbackFixtures.length > 0) {
+      return fallbackFixtures;
+    }
+
+    // Final fallback: free public source to avoid empty portal when API-Football
+    // has temporary schedule gaps or provider-side anomalies.
+    const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
+    if (sportsDbFixtures.length > 0) {
+      console.log(`📊 TheSportsDB fallback returned ${sportsDbFixtures.length} upcoming fixtures`);
+      return sportsDbFixtures;
+    }
 
     return fallbackFixtures;
   } catch (error) {
