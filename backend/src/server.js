@@ -2944,11 +2944,12 @@ app.post('/api/analyze', async (req, res) => {
     const matchMins  = body.matchMinutes || 0;
     const fixtureId  = body.fixtureId || body.id || null;
 
-    const hasPair = (obj) => Number(obj?.home) > 0 && Number(obj?.away) > 0;
+    const hasMetricValue = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
+    const hasAnyMetric = (obj) => hasMetricValue(obj?.home) || hasMetricValue(obj?.away);
     const preLiveStats = {
-      possession: hasPair(body.possession),
-      shots: hasPair(body.shots),
-      xg: hasPair(body.xg),
+      possession: hasAnyMetric(body.possession),
+      shots: hasAnyMetric(body.shots),
+      xg: hasAnyMetric(body.xg),
     };
     let directFixtureStatsStatus = { status: 'not_attempted', source: 'fixture-statistics', reason: null };
     let standingsStatus = { status: 'unavailable', source: homeTeamId && awayTeamId ? 'api-football-standings' : 'not-requested' };
@@ -3100,9 +3101,9 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     const finalLiveStats = {
-      possession: hasPair(enriched.possession),
-      shots: hasPair(enriched.shots),
-      xg: hasPair(enriched.xg),
+      possession: hasAnyMetric(enriched.possession),
+      shots: hasAnyMetric(enriched.shots),
+      xg: hasAnyMetric(enriched.xg),
     };
     const liveMetricCount = [finalLiveStats.possession, finalLiveStats.shots, finalLiveStats.xg].filter(Boolean).length;
     const preMetricCount = [preLiveStats.possession, preLiveStats.shots, preLiveStats.xg].filter(Boolean).length;

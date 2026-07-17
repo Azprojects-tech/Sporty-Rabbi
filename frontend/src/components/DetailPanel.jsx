@@ -83,6 +83,7 @@ function FormBadges({ formStr }) {
 }
 
 function DataSnapshot({ analysis, match }) {
+  const hasMetricValue = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
   const homeOpp = analysis?.dataContext?.homeRecentOpposition;
   const awayOpp = analysis?.dataContext?.awayRecentOpposition;
   const homePos = analysis?.match?.homePosition;
@@ -91,9 +92,9 @@ function DataSnapshot({ analysis, match }) {
   const awayPts = analysis?.match?.awayPoints;
   const hasTableContext = homePos != null || awayPos != null;
   const dataSourceStatus = analysis?.dataSourceStatus || null;
-  const hasPossession = (Number(match?.possession?.home) > 0 && Number(match?.possession?.away) > 0);
-  const hasShots = (Number(match?.shots?.home) > 0 && Number(match?.shots?.away) > 0);
-  const hasXg = (Number(match?.xg?.home) > 0 && Number(match?.xg?.away) > 0);
+  const hasPossession = hasMetricValue(match?.possession?.home) || hasMetricValue(match?.possession?.away);
+  const hasShots = hasMetricValue(match?.shots?.home) || hasMetricValue(match?.shots?.away);
+  const hasXg = hasMetricValue(match?.xg?.home) || hasMetricValue(match?.xg?.away);
   const hasLiveStats = hasPossession || hasShots || hasXg;
 
   if (!homeOpp && !awayOpp && !hasLiveStats && !hasTableContext && !dataSourceStatus) return null;
@@ -356,14 +357,14 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         homePoints:       match.homePoints ?? null,
         awayPoints:       match.awayPoints ?? null,
         totalTeams:       match.totalTeams ?? null,
-        homePossession:   match.possession?.home > 0 ? match.possession.home : null,
-        hasLiveXg:        !!(match.xg?.home > 0 || match.xg?.away > 0),
-        homeXgAvg:        match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
-        awayXgAvg:        match.xg?.away  > 0 ? match.xg.away  : leagueDefaults.awayXgAvg,
-        homeXgaAvg:       match.xg?.away  > 0 ? match.xg.away  : leagueDefaults.awayXgAvg,
-        awayXgaAvg:       match.xg?.home  > 0 ? match.xg.home  : leagueDefaults.homeXgAvg,
-        homeShotsPerGame: match.shots?.home > 0 ? match.shots.home : leagueDefaults.homeShotsPerGame,
-        awayShotsPerGame: match.shots?.away > 0 ? match.shots.away : leagueDefaults.awayShotsPerGame,
+        homePossession:   (match.possession?.home != null && Number.isFinite(Number(match.possession.home))) ? Number(match.possession.home) : null,
+        hasLiveXg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) || (match.xg?.away != null && Number.isFinite(Number(match.xg.away))),
+        homeXgAvg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : leagueDefaults.homeXgAvg,
+        awayXgAvg:        (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : leagueDefaults.awayXgAvg,
+        homeXgaAvg:       (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : leagueDefaults.awayXgAvg,
+        awayXgaAvg:       (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : leagueDefaults.homeXgAvg,
+        homeShotsPerGame: (match.shots?.home != null && Number.isFinite(Number(match.shots.home))) ? Number(match.shots.home) : leagueDefaults.homeShotsPerGame,
+        awayShotsPerGame: (match.shots?.away != null && Number.isFinite(Number(match.shots.away))) ? Number(match.shots.away) : leagueDefaults.awayShotsPerGame,
         matchType:        match.matchType || 'League',
         homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
         awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },
