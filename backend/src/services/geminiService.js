@@ -834,13 +834,21 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const awayFormRaw = matchInfo?.awayForm || '';
   const homeOpposition = matchInfo?.homeRecentOpposition || analysis?.dataContext?.homeRecentOpposition || null;
   const awayOpposition = matchInfo?.awayRecentOpposition || analysis?.dataContext?.awayRecentOpposition || null;
-  const toMeaningful = (v) => (v == null || Number(v) <= 0 ? null : Number(v));
-  const homePoss = toMeaningful(matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null);
-  const awayPoss = toMeaningful(matchInfo?.possession?.away);
-  const homeShots = toMeaningful(matchInfo?.shots?.home ?? null);
-  const awayShots = toMeaningful(matchInfo?.shots?.away ?? null);
-  const homeXg = toMeaningful(matchInfo?.xg?.home ?? null);
-  const awayXg = toMeaningful(matchInfo?.xg?.away ?? null);
+  const toMetric = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+  const homePoss = toMetric(matchInfo?.possession?.home ?? matchInfo?.homePossession ?? null);
+  const awayPoss = toMetric(matchInfo?.possession?.away);
+  const homeShots = toMetric(matchInfo?.shots?.home ?? null);
+  const awayShots = toMetric(matchInfo?.shots?.away ?? null);
+  const homeXg = toMetric(matchInfo?.xg?.home ?? null);
+  const awayXg = toMetric(matchInfo?.xg?.away ?? null);
+  const dataSourceStatus = analysis?.dataSourceStatus || matchInfo?.dataSourceStatus || null;
+
+  const pairText = (a, b, suffix = '') => {
+    if (a != null && b != null) return `${a}-${b}${suffix}`;
+    if (a != null && b == null) return `${a}-?${suffix}`;
+    if (a == null && b != null) return `?-${b}${suffix}`;
+    return 'unavailable';
+  };
 
   const formCompact = (s) => String(s || '')
     .toUpperCase()
@@ -858,7 +866,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
       : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, table context ${tableContext}, with form ${formCompact(homeFormRaw) || 'Unavailable'} vs ${formCompact(awayFormRaw) || 'Unavailable'} and opponent quality setting the baseline.`;
 
     const liveReality = isLive
-      ? `Possession is ${homePoss != null && awayPoss != null ? `${homePoss}-${awayPoss}` : 'unavailable'}, shots are ${homeShots != null && awayShots != null ? `${homeShots}-${awayShots}` : 'unavailable'}, xG is ${homeXg != null && awayXg != null ? `${homeXg}-${awayXg}` : 'unavailable'}, and the score is ${score}.`
+      ? `Possession is ${pairText(homePoss, awayPoss)}, shots are ${pairText(homeShots, awayShots)}, xG is ${pairText(homeXg, awayXg)}, and the score is ${score}.${dataSourceStatus?.liveStats?.status ? ` Live feed status: ${dataSourceStatus.liveStats.status}.` : ''}`
       : `Poisson projects ${poisson?.expectedTotalGoals ?? 'Unavailable'} total goals, with likely score ${poisson?.likelyScore?.score || 'Unavailable'} and draw probability ${poisson?.probabilities?.draw ?? 'Unavailable'}%.`;
 
     const verdictCore = coreText
