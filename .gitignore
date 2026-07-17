@@ -14,8 +14,6 @@ backend/.env
 backend/.env.*
 frontend/.env
 frontend/.env.*
-!backend/.env.example
-!frontend/.env.example
 
 # Firebase service account (never commit)
 firebase-service-account.json

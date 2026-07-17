@@ -255,7 +255,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
 
   useEffect(() => {
     setExpandedParam(null);
-    if (panelScrollRef.current) panelScrollRef.current.scrollTop = 0;
   }, [section]);
 
   // Auto-refresh every 30s when the match is live
@@ -265,7 +264,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     const iv = setInterval(loadAnalysis, 30000);
     return () => clearInterval(iv);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [match?.id, match?.status, match?.isLive]);
+  }, [match?.id, match?.status, match?.isLive, match?.score, match?.matchMinutes]);
 
   async function loadAnalysis() {
     // Show spinner only when there is no existing analysis to display

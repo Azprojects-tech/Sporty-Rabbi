@@ -16,7 +16,7 @@ export default function LiveAnalysisPanel({ match }) {
 
     const fetchAnalysis = async () => {
       try {
-        const response = await api.get(`/live-analysis/${match.id}`);
+        const response = await api.getLiveAnalysis(match.id);
         setAnalysis(response.data);
       } catch (error) {
         console.error('Error fetching live analysis:', error);
@@ -273,10 +273,7 @@ function OddsInputForm({ match, nextGoal, momentum }) {
         probability = (parseFloat(nextGoal?.homeGoalRate || 0) * 45) * 100; // Simplified
       }
 
-      const response = await api.post('/bet-value', {
-        probability,
-        odds: parseFloat(odds),
-      });
+      const response = await api.getBetValue(probability, parseFloat(odds));
 
       setValueResult(response.data);
     } catch (error) {

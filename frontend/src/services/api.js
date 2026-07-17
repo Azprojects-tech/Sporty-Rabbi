@@ -94,6 +94,10 @@ export const apiService = {
 
   // V6 analysis on a live match already in server memory
   analyzeLive: (matchId, params = {}) => client.get(`/analyze/live/${matchId}`, { params }),
+
+  // Live in-play analytics panel
+  getLiveAnalysis: (matchId) => client.get(`/live-analysis/${matchId}`),
+  getBetValue: (probability, odds) => client.post('/bet-value', { probability, odds }),
 };
 
 // ─── WEBSOCKET CLIENT ─────────────────────────────────────────────────────

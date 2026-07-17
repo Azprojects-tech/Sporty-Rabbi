@@ -1,26 +1,11 @@
-﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getPhaseConfidencePolicyFromMatch } from '../../shared/confidencePolicy.js';
-
-import { connectWebSocket, on, off, disconnectWebSocket, apiService } from './services/api';
+﻿import React, { useState, useEffect } from 'react';
+import { connectWebSocket, disconnectWebSocket, on, off, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
 import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
 import AlertHistory from './components/AlertHistory';
-
-// ── Constants outside component (never recreated) ──────────────────────────
-const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
-
-// Tier hierarchy for sidebar sort: lower = higher priority
-const LEAGUE_TIER = {
-  1: 1, 4: 1, 9: 1, 16: 1,
-  2: 2, 3: 2, 848: 2,
-  39: 3, 140: 3, 78: 3, 135: 3, 61: 3,
-  40: 4, 141: 4, 79: 4, 136: 4, 62: 4,
-  88: 4, 94: 4, 203: 4, 235: 4, 179: 4, 144: 4, 307: 4, 13: 4, 11: 4,
-  253: 5, 71: 5, 128: 5, 98: 5, 292: 5, 169: 5, 313: 5, 188: 5, 17: 5,
-};
 
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
@@ -60,6 +45,11 @@ export default function App() {
  }
 
  useEffect(() => {
+ connectWebSocket(() => {
+ setConnected(true);
+ setLoading(false);
+ }).catch(() => setLoading(false));
+
  const handleLiveMatches = (p) => {
  setAllMatches(prev => {
  const liveIds = new Set((p || []).map(m => m.id));
@@ -79,11 +69,6 @@ export default function App() {
 
  const handleBetLogged = (b) => setBets(p => [b, ...p]);
  const handleBetUpdated = (b) => setBets(p => p.map(x => x.id === b.id ? b : x));
-
- connectWebSocket(() => {
- setConnected(true);
- setLoading(false);
- }).catch(() => setLoading(false));
 
  on('LIVE_MATCHES', handleLiveMatches);
  on('UPCOMING_MATCHES', handleUpcomingMatches);
@@ -151,159 +136,109 @@ export default function App() {
  };
  }, []);
 
- // ── Refresh (pull-to-refresh) ────────────────────────────────────────────────
- const handleRefresh = useCallback(async () => {
-   try {
-     const [liveRes, upRes] = await Promise.all([
-       apiService.getLiveMatches().catch(() => ({ data: { matches: [] } })),
-       apiService.getUpcoming().catch(() => ({ data: { matches: [] } })),
-     ]);
-     const live = liveRes?.data?.matches || [];
-     const upcoming = upRes?.data?.matches || [];
-     const liveIds = new Set(live.map(m => m.id));
-     setAllMatches(prev => {
-       const calMatches = prev.filter(m => m._calibrated);
-       return [
-         ...live.map(m => ({ ...m, _source: 'live' })),
-         ...upcoming.filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' })),
-         ...calMatches.filter(m => !liveIds.has(m.id)),
-       ];
-     });
-   } catch (e) {
-     console.warn('Pull-refresh failed:', e.message);
-   }
- }, []);
-
  // â”€â”€ Recalibrate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- const handleCalibrate = useCallback(async () => {
-   setCalibrating(true);
-   try {
-     // Fire-and-forget: backend returns immediately, we poll for results
-     await apiService.client.post('/calibrate');
-     const prevCalibratedAt = calibratedAt;
-     let attempts = 0;
-     await new Promise((resolve) => {
-       const poll = setInterval(async () => {
-         attempts++;
-         try {
-           const r = await apiService.client.get('/calibrate/results');
-           const data = r.data;
-           if (!data.running && data.calibratedAt && data.calibratedAt !== prevCalibratedAt) {
-             clearInterval(poll);
-             setCalibratedAt(data.calibratedAt);
-             setAllMatches(prev => {
-               const nonCal = prev.filter(m => !m._calibrated);
-               const nonIds = new Set(nonCal.map(m => m.id));
-               const newCal = (data.matches || [])
-                 .filter(m => !nonIds.has(m.id))
-                 .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
-               return [...nonCal, ...newCal];
-             });
-             resolve();
-           } else if (attempts >= 60) {
-             clearInterval(poll);
-             resolve();
-           }
-         } catch { clearInterval(poll); resolve(); }
-       }, 3000);
-     });
-   } catch (err) {
-     console.error('Calibrate failed:', err.response?.data?.error || err.message);
-   } finally {
-     setCalibrating(false);
-   }
- }, [calibratedAt]);
+ async function handleCalibrate() {
+ setCalibrating(true);
+ try {
+ const res = await apiService.client.post('/calibrate');
+ const data = res.data;
+ setCalibratedAt(data.calibratedAt);
+
+ setAllMatches(prev => {
+ const nonCal = prev.filter(m => !m._calibrated);
+ const nonIds = new Set(nonCal.map(m => m.id));
+ const newCal = (data.matches || [])
+ .filter(m => !nonIds.has(m.id))
+ .map(m => ({ ...m, _calibrated: true, _source: 'calibrated' }));
+ return [...nonCal, ...newCal];
+ });
+ } catch (err) {
+ console.error('Calibrate failed:', err.response?.data?.error || err.message);
+ } finally {
+ setCalibrating(false);
+ }
+ }
 
  // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- const handleSearch = useCallback(async (e) => {
-   e?.preventDefault();
-   if (!searchQuery.trim()) return;
-   setSearching(true);
-   try {
-     const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
-     const data = res.data;
-
-     if (data.type === 'matches' && data.matches?.length > 0) {
-       // Real cached matches found — prefer the live version already in allMatches
-       // (it may have richer in-play stats), fall back to what the server returned.
-       const best = data.matches[0];
-       const live = allMatches.find(m => m.id === best.id) || best;
-       setSelectedMatch(live);
-       setSelectedAnalysis(live.analysis || null);
-       setShowBets(false);
-     } else {
-       // LLM synthesis fallback — build a pseudo match for the detail panel
-       const analysis = data.analysis || data;
-       const pseudo = {
-         id: `search_${Date.now()}`,
-         home: analysis.home || '?',
-         away: analysis.away || '?',
-         league: analysis.league || 'Search Result',
-         leagueId: 0,
-         score: '0-0',
-         status: analysis.status || 'NS',
-         matchMinutes: 0,
-         confidence: analysis.overallScore || 50,
-         possession: { home: 50, away: 50 },
-         shots: { home: 0, away: 0 },
-         xg: { home: 0, away: 0 },
-         opportunities: [],
-         leagueCountry: '',
-         _source: 'search',
-       };
-       setSelectedMatch(pseudo);
-       setSelectedAnalysis(analysis);
-     }
-   } catch (err) {
-     console.error('Search failed:', err.response?.data?.error || err.message);
-   } finally {
-     setSearching(false);
-   }
- }, [searchQuery, allMatches]);
+ async function handleSearch(e) {
+ e?.preventDefault();
+ if (!searchQuery.trim()) return;
+ setSearching(true);
+ try {
+ const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
+ const analysis = res.data;
+ const pseudo = {
+ id: `search_${Date.now()}`,
+ home: analysis.home || '?',
+ away: analysis.away || '?',
+ league: analysis.league || 'Search Result',
+ leagueId: 0,
+ score: '0-0',
+ status: analysis.status || 'NS',
+ matchMinutes: 0,
+ confidence: analysis.overallScore || 50,
+ possession: { home: 50, away: 50 },
+ shots: { home: 0, away: 0 },
+ xg: { home: 0, away: 0 },
+ opportunities:[],
+ leagueCountry:'',
+ _source: 'search',
+ };
+ setSelectedMatch(pseudo);
+ setSelectedAnalysis(analysis);
+ } catch (err) {
+ console.error('Search failed:', err.response?.data?.error || err.message);
+ } finally {
+ setSearching(false);
+ }
+ }
 
  // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- const displayedMatches = useMemo(() => allMatches.filter(m => {
-   if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
-  if (filter === 'high' && (m.confidence || 0) < getPhaseConfidencePolicyFromMatch(m).premiumThreshold) return false;
-   if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
-   if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
-   if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
-   return true;
- }), [allMatches, filter, selectedLeague, selectedCountry, selectedKeyword]);
+ const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+ const displayedMatches = allMatches.filter(m => {
+ if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
+ if (filter === 'high' && (m.confidence || 0) < 80) return false;
+ if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
+ if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
+ if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
+ return true;
+ });
 
- // Tier hierarchy: lower number = higher up in sidebar
- const LEAGUE_TIER = {
-   // Tier 1 — International tournaments
-   1: 1, 4: 1, 9: 1, 16: 1,
-   // Tier 2 — UEFA club competitions
-   2: 2, 3: 2, 848: 2,
-   // Tier 3 — Top 5 European leagues
-   39: 3, 140: 3, 78: 3, 135: 3, 61: 3,
-   // Tier 4 — Strong European + major cups
-   40: 4, 141: 4, 79: 4, 136: 4, 62: 4,
-   88: 4, 94: 4, 203: 4, 235: 4, 179: 4, 144: 4, 307: 4,
-   13: 4, 11: 4,
-   // Tier 5 — Americas / Asia / Middle East
-   253: 5, 71: 5, 128: 5, 98: 5, 292: 5, 169: 5, 313: 5, 188: 5, 17: 5,
- };
- const leagueCounts = useMemo(() => {
-   const counts = {};
-   for (const m of allMatches) {
-     if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
-     counts[m.leagueId].count++;
-   }
-   return Object.values(counts).sort((a, b) => {
-     const ta = LEAGUE_TIER[a.id] ?? 6;
-     const tb = LEAGUE_TIER[b.id] ?? 6;
-     if (ta !== tb) return ta - tb;
-     return b.count - a.count;
-   });
- }, [allMatches]);
- const handleSelectMatch = useCallback((m) => {
-   setSelectedMatch(m);
-   setSelectedAnalysis(m.analysis || null);
-   setShowBets(false);
- }, []);
+ useEffect(() => {
+ if (!selectedMatch?.id) return;
+ const fresh = allMatches.find((m) => m.id === selectedMatch.id);
+ if (!fresh) return;
+ setSelectedMatch((prev) => {
+ if (!prev) return prev;
+ if (
+ prev.score === fresh.score &&
+ prev.status === fresh.status &&
+ prev.matchMinutes === fresh.matchMinutes &&
+ prev.confidence === fresh.confidence
+ ) {
+ return prev;
+ }
+ return { ...prev, ...fresh };
+ });
+ if (fresh.analysis) {
+ setSelectedAnalysis(fresh.analysis);
+ }
+ }, [allMatches, selectedMatch?.id]);
+
+ const leagueCounts = (() => {
+ const counts = {};
+ for (const m of allMatches) {
+ if (!counts[m.leagueId]) counts[m.leagueId] = { id: m.leagueId, name: m.league || 'Unknown', count: 0, country: m.leagueCountry || '' };
+ counts[m.leagueId].count++;
+ }
+ return Object.values(counts).sort((a, b) => b.count - a.count);
+ })();
+
+ function handleSelectMatch(m) {
+ setSelectedMatch(m);
+ setSelectedAnalysis(m.analysis || null);
+ setShowBets(false);
+ }
 
  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  return (
@@ -333,12 +268,12 @@ export default function App() {
 
  {/* Logo */}
  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, cursor: 'pointer' }}
- onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); setShowAlerts(false); setSidebarOpen(false); setFilter('all'); setSelectedLeague(null); setSelectedCountry(null); setSelectedKeyword(null); setSearchQuery(''); }}>
+ onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); }}>
  <span style={{ fontSize: 20 }}>&#9889;</span>
  <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.5px' }}>
  <span style={{ color: '#e2e8f0' }}>Sporty</span><span style={{ color: '#00b859' }}>Rabbi</span>
  </span>
- <span style={{ fontSize: 9, fontWeight: 700, color: '#4a5568', letterSpacing: 1, background: '#1e2535', borderRadius: 3, padding: '1px 4px' }}>V9</span>
+ <span style={{ fontSize: 9, fontWeight: 700, color: '#4a5568', letterSpacing: 1, background: '#1e2535', borderRadius: 3, padding: '1px 4px' }}>V8</span>
  </div>
 
  {/* Recalibrate */}
@@ -500,7 +435,7 @@ export default function App() {
  display: 'flex', alignItems: 'center', gap: 12,
  }}>
  <span style={{ fontSize: 12, color: '#8b9ab3', fontWeight: 600 }}>
- {filter === 'high' ? ' Premium Picks (phase-aware)' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
+ {filter === 'high' ? ' High Confidence Picks (>=80%)' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
  </span>
  <span style={{ fontSize: 11, color: '#4a5568' }}>
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}
@@ -512,7 +447,6 @@ export default function App() {
  matches={displayedMatches}
  selectedMatch={selectedMatch}
  onSelectMatch={handleSelectMatch}
- onRefresh={handleRefresh}
  />
  </div>
  )}

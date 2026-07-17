@@ -1,57 +1,45 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 
 const LEAGUE_FLAGS = {
-  // Europe — Top 5
   39: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 140: '🇪🇸', 78: '🇩🇪', 135: '🇮🇹', 61: '🇫🇷',
-  // Europe — Other
-  88: '🇳🇱', 94: '🇵🇹', 64: '🇵🇹', 203: '🇹🇷', 235: '🇷🇺',
-  179: '🏴󠁧󠁢󠁳󠁣󠁴󠁿', 144: '🇧🇪', 236: '🇷🇺', 204: '🇹🇷',
-  // UEFA / International club
-  2: '🇪🇺', 3: '🟠', 848: '💜', 17: '🏆',
-  13: '🌎', 11: '🌎',
-  // International
-  1: '⭐', 4: '🏆', 9: '🌎', 16: '🏅', 6: '🌍', 30: '🌎',
-  // Middle East
-  307: '🇸🇦', 541: '🇸🇦',
-  // Asia / Pacific
-  98: '🇯🇵', 292: '🇰🇷', 169: '🇨🇳', 313: '🇮🇩', 188: '🇦🇺',
-  // Americas
-  253: '🇺🇸', 71: '🇧🇷', 128: '🇦🇷', 239: '🇨🇴',
+  88: '🇳🇱', 64: '🇵🇹', 203: '🇹🇷', 541: '🇸🇦',
+  1: '⭐', 3: '🟠', 849: '💜',
+  4: '🏆', 18: '🎯', 2: '🇪🇺', 5: '🌎', 6: '🌍',
+  16: '🏅', 17: '🎖️', 15: '🤝',
+  98: '🇯🇵', 292: '🇰🇷', 188: '🇦🇺', 253: '🇺🇸',
+  71: '🇧🇷', 128: '🇦🇷', 239: '🇨🇴',
 };
 
 const FILTERS = [
   { id: 'all',  label: 'All Matches',   icon: '⚽' },
   { id: 'live', label: 'Live Now',      icon: '🔴' },
-  { id: 'high', label: 'Premium Picks',   icon: '🔥' },
+  { id: 'high', label: '80%+ Picks',   icon: '🔥' },
 ];
 
 export default function Sidebar({ filter, setFilter, selectedLeague, setSelectedLeague, selectedCountry, setSelectedCountry, selectedKeyword, setSelectedKeyword, leagueCounts, open, onClose, isMobile }) {
   const [compSearch, setCompSearch] = useState('');
   const searchTerm = compSearch.trim().toLowerCase();
 
-  const filteredLeagues = useMemo(() => searchTerm
+  const filteredLeagues = searchTerm
     ? leagueCounts.filter(l =>
         l.name.toLowerCase().includes(searchTerm) ||
         (l.country || '').toLowerCase().includes(searchTerm)
       )
-    : leagueCounts
-  , [leagueCounts, searchTerm]);
+    : leagueCounts;
 
   // Countries whose name matches the search term
-  const matchedCountries = useMemo(() => searchTerm
+  const matchedCountries = searchTerm
     ? [...new Set(
         filteredLeagues
           .filter(l => (l.country || '').toLowerCase().includes(searchTerm))
           .map(l => l.country)
       )].filter(Boolean)
-    : []
-  , [filteredLeagues, searchTerm]);
+    : [];
 
-  // League-name keyword button: show when 2+ leagues match by name
-  const leagueNameMatches = useMemo(() => searchTerm
+  // League-name keyword button: show when 2+ leagues match by name (CAF, UEFA, World Cup, Copa…)
+  const leagueNameMatches = searchTerm
     ? filteredLeagues.filter(l => l.name.toLowerCase().includes(searchTerm))
-    : []
-  , [filteredLeagues, searchTerm]);
+    : [];
   const showKeywordButton = leagueNameMatches.length > 1;
   // On desktop: always visible inline. On mobile: slide-in overlay.
   const sidebarStyle = isMobile ? {
