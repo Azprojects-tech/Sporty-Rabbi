@@ -113,6 +113,11 @@ function DataSnapshot({ analysis, match }) {
           <div style={{ fontSize: 11, color: '#cbd5e1', fontWeight: 700, lineHeight: 1.5 }}>
             Standings: {dataSourceStatus.standings?.status || 'Unavailable'} | Live feed: {dataSourceStatus.liveStats?.status || 'Unavailable'} | Direct stats pull: {dataSourceStatus.directFixtureStats?.status || 'Unavailable'}
           </div>
+          {dataSourceStatus.directFixtureStats?.reason && (
+            <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 6, lineHeight: 1.45 }}>
+              Live stats note: {String(dataSourceStatus.directFixtureStats.reason).replace(/_/g, ' ')}
+            </div>
+          )}
         </div>
       )}
       <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
@@ -149,9 +154,26 @@ function DataSnapshot({ analysis, match }) {
         </p>
       )}
       {Array.isArray(homeOpp?.recent) && homeOpp.recent.length > 0 && (
-        <p style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '0 0 6px 0' }}>
-          {match?.home} last 5: {homeOpp.recent.map((g) => `${g.result} vs ${g.opponent}`).join(' • ')}
-        </p>
+        <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '0 0 6px 0' }}>
+          <span>{match?.home} last 5: </span>
+          {homeOpp.recent.map((g, idx) => {
+            const own = String(g.score || '').split('-')[0] || '0';
+            const opp = String(g.score || '').split('-')[1] || '0';
+            const rc = g.result === 'W' ? '#00b859' : g.result === 'D' ? '#fbbf24' : '#ef4444';
+            return (
+              <span key={`${g.opponent}-${idx}`} style={{ marginRight: 6, whiteSpace: 'nowrap' }}>
+                <span style={{ color: rc, fontWeight: 700 }}>{g.result}</span>
+                <span style={{ color: '#8b9ab3' }}> (</span>
+                <span style={{ color: '#00b859', fontWeight: 700 }}>{own}</span>
+                <span style={{ color: '#8b9ab3' }}>-</span>
+                <span style={{ color: '#ef4444', fontWeight: 700 }}>{opp}</span>
+                <span style={{ color: '#8b9ab3' }}>) </span>
+                <span style={{ color: '#94a3b8' }}>vs {g.opponent}</span>
+                {idx < homeOpp.recent.length - 1 ? <span style={{ color: '#334155' }}> • </span> : null}
+              </span>
+            );
+          })}
+        </div>
       )}
       {awayOpp?.summary && (
         <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6, margin: 0 }}>
@@ -159,9 +181,26 @@ function DataSnapshot({ analysis, match }) {
         </p>
       )}
       {Array.isArray(awayOpp?.recent) && awayOpp.recent.length > 0 && (
-        <p style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '6px 0 0 0' }}>
-          {match?.away} last 5: {awayOpp.recent.map((g) => `${g.result} vs ${g.opponent}`).join(' • ')}
-        </p>
+        <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, margin: '6px 0 0 0' }}>
+          <span>{match?.away} last 5: </span>
+          {awayOpp.recent.map((g, idx) => {
+            const own = String(g.score || '').split('-')[0] || '0';
+            const opp = String(g.score || '').split('-')[1] || '0';
+            const rc = g.result === 'W' ? '#00b859' : g.result === 'D' ? '#fbbf24' : '#ef4444';
+            return (
+              <span key={`${g.opponent}-${idx}`} style={{ marginRight: 6, whiteSpace: 'nowrap' }}>
+                <span style={{ color: rc, fontWeight: 700 }}>{g.result}</span>
+                <span style={{ color: '#8b9ab3' }}> (</span>
+                <span style={{ color: '#00b859', fontWeight: 700 }}>{own}</span>
+                <span style={{ color: '#8b9ab3' }}>-</span>
+                <span style={{ color: '#ef4444', fontWeight: 700 }}>{opp}</span>
+                <span style={{ color: '#8b9ab3' }}>) </span>
+                <span style={{ color: '#94a3b8' }}>vs {g.opponent}</span>
+                {idx < awayOpp.recent.length - 1 ? <span style={{ color: '#334155' }}> • </span> : null}
+              </span>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -197,8 +236,24 @@ function ParamDetail({ paramKey, p, match }) {
     const d  = p.draws;
     const goalsAvg = p.goalsAvg;
     const overRate = p.overRate != null ? Math.round(p.overRate * 100) : null;
+    const fav = (hw || 0) - (aw || 0);
+    const favLabel = fav > 0 ? `Favours ${match?.home || 'Home'}` : fav < 0 ? `Favours ${match?.away || 'Away'}` : 'Balanced';
+    const favColor = fav > 0 ? '#3b82f6' : fav < 0 ? '#a78bfa' : '#fbbf24';
     return (
       <div style={{ paddingTop: 8, paddingLeft: 4, borderTop: '1px solid #1e253522' }}>
+        <div style={{ marginBottom: 8 }}>
+          <span style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: favColor,
+            background: favColor + '22',
+            border: `1px solid ${favColor}55`,
+            borderRadius: 4,
+            padding: '2px 7px',
+          }}>
+            {favLabel}
+          </span>
+        </div>
         {(hw != null || aw != null) && (
           <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
             {[
@@ -284,6 +339,18 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
+        possession:       {
+          home: match.possession?.home ?? null,
+          away: match.possession?.away ?? null,
+        },
+        shots:            {
+          home: match.shots?.home ?? null,
+          away: match.shots?.away ?? null,
+        },
+        xg:               {
+          home: match.xg?.home ?? null,
+          away: match.xg?.away ?? null,
+        },
         homePosition:     match.homePosition ?? null,
         awayPosition:     match.awayPosition ?? null,
         homePoints:       match.homePoints ?? null,
@@ -377,8 +444,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>
                 T{tier} &middot; {tierName}
               </span>
-              <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(overallScore) }}>
-                {overallScore}%
+              <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(overallScore) }} title="Composite model score across all 15 parameters. This is not the same as win probability.">
+                Model {overallScore}%
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(winCall?.confidence || overallScore), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Win confidence from directional win-call logic and live recommendation context.">
+                Win {winCall?.confidence ?? 'Unavailable'}%
               </span>
               <span style={{
                 fontSize: 10,

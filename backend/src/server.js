@@ -2950,7 +2950,7 @@ app.post('/api/analyze', async (req, res) => {
       shots: hasPair(body.shots),
       xg: hasPair(body.xg),
     };
-    let directFixtureStatsStatus = { status: 'not_attempted', source: 'fixture-statistics' };
+    let directFixtureStatsStatus = { status: 'not_attempted', source: 'fixture-statistics', reason: null };
     let standingsStatus = { status: 'unavailable', source: homeTeamId && awayTeamId ? 'api-football-standings' : 'not-requested' };
 
     // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
@@ -3053,9 +3053,20 @@ app.post('/api/analyze', async (req, res) => {
     // API-Football /fixtures live feed often omits granular statistics for some fixtures.
     // On analysis click, we attempt a direct fixture-stat pull to avoid false "Unavailable".
     if (isLive && fixtureId) {
+      if (!API_KEY) {
+        directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'API_FOOTBALL_KEY_missing' };
+      } else if (shouldSkipApiCalls()) {
+        directFixtureStatsStatus = {
+          status: 'unavailable',
+          source: 'fixture-statistics',
+          reason: quotaState.isPaused
+            ? `quota_guard_paused: ${quotaState.pauseReason || 'unknown'}`
+            : 'api_calls_temporarily_skipped',
+        };
+      }
       const directStats = await fetchFixtureStatistics(fixtureId);
       if (directStats) {
-        directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics' };
+        directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
         if (directStats.possession?.home != null || directStats.possession?.away != null) {
           enriched.possession = {
             home: directStats.possession?.home ?? enriched.possession?.home ?? null,
@@ -3080,8 +3091,12 @@ app.post('/api/analyze', async (req, res) => {
           enriched.awayCards = directStats.cards.away;
         }
       } else {
-        directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics' };
+        if (!directFixtureStatsStatus.reason) {
+          directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'provider_returned_no_stats_for_fixture' };
+        }
       }
+    } else if (isLive && !fixtureId) {
+      directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'missing_fixture_id' };
     }
 
     const finalLiveStats = {
