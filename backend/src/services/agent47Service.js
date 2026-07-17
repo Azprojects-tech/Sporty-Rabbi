@@ -604,7 +604,7 @@ function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
     return {
       homeLambda: null, awayLambda: null,
       expectedTotalGoals: null,
-      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null, draw: null },
+      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null, draw: null, homeWin: null, awayWin: null },
       likelyScore: null,
       insufficientData: true,
       assessment: 'Insufficient team statistics for Poisson projection.',
@@ -615,10 +615,17 @@ function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
   const lH = Math.max((hXg / L) * (aXga / L) * L, 0.10);
   const lA = Math.max((aXg / L) * (hXga / L) * L, 0.10);
 
-  // Draw probability: Dixon-Coles corrected P(i-i) for i = 0..7
+  // Full 1X2 probability matrix (home/draw/away) using Dixon-Coles correction.
+  let pHome = 0;
   let pDraw = 0;
-  for (let g = 0; g <= 7; g++) {
-    pDraw += dcTau(g, g, lH, lA) * poissonProb(lH, g) * poissonProb(lA, g);
+  let pAway = 0;
+  for (let h = 0; h <= 9; h++) {
+    for (let a = 0; a <= 9; a++) {
+      const p = dcTau(h, a, lH, lA) * poissonProb(lH, h) * poissonProb(lA, a);
+      if (h > a) pHome += p;
+      else if (h < a) pAway += p;
+      else pDraw += p;
+    }
   }
 
   const probs = {
@@ -629,6 +636,8 @@ function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
     btts:    Math.round(probBTTS(lH, lA)      * 100),
     under25: Math.round((1 - probOver(lH, lA, 2)) * 100),
     draw:    Math.round(pDraw * 100),
+    homeWin: Math.round(pHome * 100),
+    awayWin: Math.round(pAway * 100),
   };
 
   const ls = likelyScore(lH, lA);
@@ -637,7 +646,7 @@ function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
     expectedTotalGoals: +(lH + lA).toFixed(2),
     probabilities: probs,
     likelyScore: ls,
-    assessment: `Projected ${(lH + lA).toFixed(1)} goals. ${probs.over25}% O2.5. ${probs.btts}% BTTS. Draw: ${probs.draw}%. Most likely: ${ls.score} (${ls.probability}%).`,
+    assessment: `Projected ${(lH + lA).toFixed(1)} goals. 1X2: H ${probs.homeWin}% | D ${probs.draw}% | A ${probs.awayWin}%. ${probs.over25}% O2.5. ${probs.btts}% BTTS. Most likely: ${ls.score} (${ls.probability}%).`,
   };
 }
 
@@ -696,8 +705,11 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     const awayRed    = matchData.awayCards?.red    || 0;
     const homeYellow = matchData.homeCards?.yellow || 0;
     const awayYellow = matchData.awayCards?.yellow || 0;
-    const homeCardMult = homeRed > 0 ? 0.62 : 1.0;
-    const awayCardMult = awayRed  > 0 ? 0.62 : 1.0;
+    // Red card impact should both reduce offending side attack and increase opponent scoring chance.
+    const homeAttackCardMult = homeRed > 0 ? 0.62 : 1.0;
+    const awayAttackCardMult = awayRed > 0 ? 0.62 : 1.0;
+    const homeDefenseCardMult = homeRed > 0 ? 1.18 : 1.0;
+    const awayDefenseCardMult = awayRed > 0 ? 1.18 : 1.0;
 
     // Dixon & Robinson (1998): motivation urgency grows linearly with time into the match.
     const timeUrgency = Math.min(effectiveMins / 90, 1.0);
@@ -713,8 +725,8 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
       : 1.0;
 
     // Remaining expected goals per team
-    const lH_rem = Math.max(poisson.homeLambda * remainFrac * hMotiveMult * homeCardMult, 0.01);
-    const lA_rem = Math.max(poisson.awayLambda * remainFrac * aMotiveMult * awayCardMult, 0.01);
+    const lH_rem = Math.max(poisson.homeLambda * remainFrac * hMotiveMult * homeAttackCardMult * awayDefenseCardMult, 0.01);
+    const lA_rem = Math.max(poisson.awayLambda * remainFrac * aMotiveMult * awayAttackCardMult * homeDefenseCardMult, 0.01);
     const expRem = lH_rem + lA_rem;
 
     // Poisson probabilities for remaining goals
@@ -746,11 +758,11 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
         ? Math.min(1.0 + (absDiff >= 2 ? 0.18 : 0.12) + 0.25 * timeUrgency, 1.50)
         : (leaderIsHome ? aMotiveMult : hMotiveMult);
       const lLeader_final  = leaderIsHome
-        ? Math.max(poisson.homeLambda * remainFrac * leaderMotiveMult  * homeCardMult, 0.01)
-        : Math.max(poisson.awayLambda * remainFrac * leaderMotiveMult  * awayCardMult, 0.01);
+        ? Math.max(poisson.homeLambda * remainFrac * leaderMotiveMult  * homeAttackCardMult * awayDefenseCardMult, 0.01)
+        : Math.max(poisson.awayLambda * remainFrac * leaderMotiveMult  * awayAttackCardMult * homeDefenseCardMult, 0.01);
       const lTrailer_final = leaderIsHome
-        ? Math.max(poisson.awayLambda * remainFrac * trailerMotiveMult * awayCardMult, 0.01)
-        : Math.max(poisson.homeLambda * remainFrac * trailerMotiveMult * homeCardMult, 0.01);
+        ? Math.max(poisson.awayLambda * remainFrac * trailerMotiveMult * awayAttackCardMult * homeDefenseCardMult, 0.01)
+        : Math.max(poisson.homeLambda * remainFrac * trailerMotiveMult * homeAttackCardMult * awayDefenseCardMult, 0.01);
 
       const winConf = Math.round(pLeadMaintained(lLeader_final, lTrailer_final, absDiff) * 100);
       if (winConf >= 52) {
@@ -787,7 +799,7 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
     // Over {totalGoals}.5 — needs 1 more goal
     if (probAny1 >= 45) {
       const tier     = probAny1 >= 82 ? 1 : probAny1 >= 72 ? 2 : probAny1 >= 62 ? 3 : 4;
-      const cardNote = homeRed > 0 || awayRed > 0 ? ' Red card reduces scoring rate.' : '';
+      const cardNote = homeRed > 0 || awayRed > 0 ? ' Red card state applied to both attack and defensive exposure.' : '';
       recs.push({
         type: 'GOALS_ONLY', selection: `Over ${totalGoals}.5 Goals`,
         confidence: Math.min(probAny1, 96), tier, tierName: TIERS[tier].name,
@@ -871,23 +883,26 @@ function generateRecommendations(overallScore, poisson, p1, p4, chaos, matchData
   const btts = poisson.probabilities.btts;
 
   // ── Win recommendation ──
-  const winEdge = p1.edge !== 'NEUTRAL' ? p1.edge : p4.edge;
-  if (winEdge !== 'NEUTRAL') {
-    const winTeam = winEdge === 'HOME' ? home : away;
-    const wConf   = Math.min(
-      Math.round(overallScore * 0.55 + (winEdge === p1.edge ? 20 : 8) + (winEdge === p4.edge ? 15 : 5)),
-      96
-    );
-    if (wConf >= 52) {
-      const tier = wConf >= 82 ? 1 : wConf >= 72 ? 2 : wConf >= 62 ? 3 : 4;
-      recs.push({
-        type: 'WINS_ONLY',
-        selection: `${winTeam} Win`,
-        confidence: wConf, tier,
-        tierName: TIERS[tier].name,
-        logic: `Motivation (${p1.edge}) + form (${p4.edge}) both point ${winEdge}. ${p1.assessment.slice(0, 120)}`,
-      });
-    }
+  // Pre-match win market should anchor on Poisson 1X2 probabilities, not only heuristic edge votes.
+  const pHome = Number(poisson.probabilities.homeWin || 0);
+  const pAway = Number(poisson.probabilities.awayWin || 0);
+  const pDraw = Number(poisson.probabilities.draw || 0);
+  const baseWinEdge = pHome >= pAway ? 'HOME' : 'AWAY';
+  const baseWinProb = Math.max(pHome, pAway);
+  const directionalBoost = (baseWinEdge === p1.edge ? 3 : 0) + (baseWinEdge === p4.edge ? 2 : 0);
+  const drawPenalty = pDraw >= 30 ? 4 : 0;
+  const wConf = Math.max(0, Math.min(97, Math.round(baseWinProb + directionalBoost - drawPenalty)));
+  if (wConf >= 58) {
+    const winTeam = baseWinEdge === 'HOME' ? home : away;
+    const tier = wConf >= 82 ? 1 : wConf >= 72 ? 2 : wConf >= 62 ? 3 : 4;
+    recs.push({
+      type: 'WINS_ONLY',
+      selection: `${winTeam} Win`,
+      confidence: wConf,
+      tier,
+      tierName: TIERS[tier].name,
+      logic: `Poisson 1X2 anchor: H ${pHome}% | D ${pDraw}% | A ${pAway}%. Edge alignment boost from motivation/form applied.`,
+    });
   }
 
   // ── Over 2.5 ──
@@ -943,6 +958,18 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8,
   const contradiction = Boolean(analysisQuality?.contradiction);
   const drawProb = Number(probs.draw || 0);
 
+  // True NO_BET mode: low coverage/quality should not force a market pick.
+  if (!analysisQuality || (analysisQuality.paramCoverage ?? 0) < 0.6 || (analysisQuality.score ?? 0) < 56) {
+    return {
+      type: 'NO_BET',
+      selection: 'No Bet',
+      confidence: Math.max(35, Math.min(55, Math.round((analysisQuality?.score ?? 50) - 5))),
+      tier: 4,
+      tierName: TIERS[4].name,
+      logic: 'Insufficient or low-quality signal coverage. Better to pass than force a weak play.',
+    };
+  }
+
   if (contradiction) {
     if (drawProb >= 30 && (probs.under25 || 0) >= 56) {
       const conf = Math.max(54, Math.min(84, Math.round(probs.under25)));
@@ -990,18 +1017,29 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8,
   }
 
   if (fallbackOptions.length === 0) {
-    const conf = Math.max(52, Math.min(75, Math.round(overallScore || 55)));
+    const conf = Math.max(38, Math.min(62, Math.round(overallScore || 55)));
     return {
-      type: 'GOALS_ONLY',
-      selection: 'Over 1.5 Goals',
+      type: 'NO_BET',
+      selection: 'No Bet',
       confidence: conf,
       tier: tierFromConfidence(conf),
       tierName: TIERS[tierFromConfidence(conf)].name,
-      logic: 'Fallback recommendation: limited signal, defaulting to the broadest goal line.',
+      logic: 'No market crossed reliability threshold after fallback checks.',
     };
   }
 
   const best = fallbackOptions.sort((a, b) => b.confidence - a.confidence)[0];
+  if ((best.confidence ?? 0) < 60) {
+    const conf = Math.max(38, Math.min(60, Math.round(best.confidence || 50)));
+    return {
+      type: 'NO_BET',
+      selection: 'No Bet',
+      confidence: conf,
+      tier: tierFromConfidence(conf),
+      tierName: TIERS[tierFromConfidence(conf)].name,
+      logic: `Best fallback confidence ${best.confidence}% is below execution threshold.`,
+    };
+  }
   const tier = tierFromConfidence(best.confidence);
   return {
     ...best,
@@ -1127,7 +1165,8 @@ function recalibrateRecommendations(recommendations = [], analysisQuality) {
       if ((analysisQuality?.paramCoverage || 1) < 0.75) conf -= 4;
       if (!analysisQuality?.hasPoisson && (r.type === 'NEXT_GOAL' || r.type === 'SNIPER_WATCH')) conf -= 5;
 
-      conf = Math.round(Math.max(52, Math.min(conf, 97)));
+      const floor = r.type === 'NO_BET' ? 30 : 45;
+      conf = Math.round(Math.max(floor, Math.min(conf, 97)));
       const tier = tierFromConfidence(conf);
       return {
         ...r,
@@ -1144,7 +1183,8 @@ function applyRecommendationSanityChecks(recommendations = [], context = {}) {
   return recommendations
     .map((r) => {
       const ev = recommendationEVSanity(r, context);
-      const adjustedConfidence = Math.max(50, Math.min(97, Math.round((r.confidence || 50) - ev.penalty)));
+      const floor = r.type === 'NO_BET' ? 30 : 45;
+      const adjustedConfidence = Math.max(floor, Math.min(97, Math.round((r.confidence || 50) - ev.penalty)));
       const tier = tierFromConfidence(adjustedConfidence);
       return {
         ...r,
