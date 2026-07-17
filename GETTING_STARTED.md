@@ -73,6 +73,27 @@ You should see the SportyRabbi dashboard with:
 - 💡 Betting alerts
 - 📈 Bet tracker & P&L stats
 
+## Instant Deploy Command
+
+From project root, run:
+
+```bash
+npm run deploy
+```
+
+What it does automatically:
+- Stages all local changes
+- Creates a commit with a timestamp message
+- Pushes the current branch to GitHub origin
+
+Optional custom commit message:
+
+```bash
+npm run deploy:msg -- "deploy: your message"
+```
+
+After push, linked Railway and Netlify auto-deploy pipelines will run as usual.
+
 ## API Endpoints Available
 
 Once backend is running, test these endpoints:

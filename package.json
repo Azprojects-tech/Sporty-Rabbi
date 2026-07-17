@@ -11,7 +11,9 @@
     "install-all": "npm install && npm install --prefix frontend && npm install --prefix backend",
     "dev": "concurrently \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\"",
     "build": "npm run build --prefix frontend && npm run build --prefix backend",
-    "start": "npm start --prefix backend"
+    "start": "npm start --prefix backend",
+    "deploy": "node scripts/deploy-now.mjs",
+    "deploy:msg": "node scripts/deploy-now.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
