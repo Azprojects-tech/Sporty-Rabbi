@@ -953,6 +953,95 @@ function tierFromConfidence(conf = 50) {
   return conf >= 85 ? 1 : conf >= 72 ? 2 : conf >= 62 ? 3 : 4;
 }
 
+const STRICT_NO_BET_POLICY = {
+  minQualityPreMatch: 62,
+  minQualityLive: 60,
+  minCoveragePreMatch: 0.72,
+  minCoverageLive: 0.68,
+  minTopConfidencePreMatch: 64,
+  minTopConfidenceLive: 61,
+};
+
+function forceNoBet(reason, analysisQuality = null, baselineConfidence = 50) {
+  const qualityBias = Math.round((analysisQuality?.score ?? baselineConfidence) - 6);
+  const conf = Math.max(38, Math.min(58, qualityBias));
+  const tier = tierFromConfidence(conf);
+  return [{
+    type: 'NO_BET',
+    selection: 'No Bet',
+    confidence: conf,
+    tier,
+    tierName: TIERS[tier].name,
+    logic: reason,
+  }];
+}
+
+function enforceStrictNoBetPolicy(recommendations = [], { analysisQuality = null, status = 'NS' } = {}) {
+  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
+
+  const top = recommendations[0];
+  const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
+  const qualityScore = Number(analysisQuality?.score ?? 0);
+  const coverage = Number(analysisQuality?.paramCoverage ?? 0);
+  const directionalStrength = Number(analysisQuality?.directionalStrength ?? 0);
+
+  const minQuality = isLive ? STRICT_NO_BET_POLICY.minQualityLive : STRICT_NO_BET_POLICY.minQualityPreMatch;
+  const minCoverage = isLive ? STRICT_NO_BET_POLICY.minCoverageLive : STRICT_NO_BET_POLICY.minCoveragePreMatch;
+  const minTopConfidence = isLive ? STRICT_NO_BET_POLICY.minTopConfidenceLive : STRICT_NO_BET_POLICY.minTopConfidencePreMatch;
+
+  if (top?.type === 'NO_BET') return recommendations;
+
+  if (qualityScore < minQuality) {
+    return forceNoBet(
+      `Model quality score ${qualityScore} is below execution threshold ${minQuality}. Signal is too weak for a bet.`,
+      analysisQuality,
+      48,
+    );
+  }
+
+  if (coverage < minCoverage) {
+    return forceNoBet(
+      `Signal coverage ${Math.round(coverage * 100)}% is below required ${Math.round(minCoverage * 100)}%. Better to pass.`,
+      analysisQuality,
+      50,
+    );
+  }
+
+  if (analysisQuality?.contradiction && top?.type === 'WINS_ONLY' && directionalStrength < 0.67) {
+    return forceNoBet(
+      'Directional signals conflict across key parameters. No Bet enforced instead of forcing a winner pick.',
+      analysisQuality,
+      50,
+    );
+  }
+
+  if (!analysisQuality?.hasPoisson && ['WINS_ONLY', 'NEXT_GOAL', 'SNIPER_WATCH'].includes(top?.type)) {
+    return forceNoBet(
+      'Poisson team-quality projection unavailable for directional market. No Bet enforced.',
+      analysisQuality,
+      49,
+    );
+  }
+
+  if (!top?.evSanity?.evPass && Number(top?.evSanity?.penalty || 0) >= 8) {
+    return forceNoBet(
+      `Market sanity checks flagged the play (penalty ${top.evSanity.penalty}). No Bet enforced.`,
+      analysisQuality,
+      50,
+    );
+  }
+
+  if (Number(top?.confidence || 0) < minTopConfidence) {
+    return forceNoBet(
+      `Best available play is only ${top?.confidence || 0}% confidence, below execution minimum ${minTopConfidence}%.`,
+      analysisQuality,
+      50,
+    );
+  }
+
+  return recommendations;
+}
+
 function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8, analysisQuality = null }) {
   const probs = poisson?.probabilities || {};
   const contradiction = Boolean(analysisQuality?.contradiction);
@@ -1600,6 +1689,7 @@ export function analyzeV9(matchData = {}) {
   }
   recommendations = recalibrateRecommendations(recommendations, analysisQuality);
   recommendations = applyRecommendationSanityChecks(recommendations, { poisson: poi, p1, p4, p8 });
+  recommendations = enforceStrictNoBetPolicy(recommendations, { analysisQuality, status, matchMinutes });
   recommendations = attachEvidenceToRecommendations(recommendations, {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
     poisson: poi,
