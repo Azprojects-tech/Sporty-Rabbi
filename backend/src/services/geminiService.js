@@ -14,74 +14,110 @@ import { getNarrativePhaseModel } from '../../../shared/confidencePolicy.js';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-// ─── GROQ / OPENROUTER (free LLM — pick one, both are OpenAI-compatible) ─────
-// Groq:       console.groq.com  → env var GROQ_API_KEY  — 14,400 req/day free
-// OpenRouter: openrouter.ai     → env var GROQ_API_KEY  — many free models
-//
-// To use Groq:       GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-//                    GROQ_MODEL = 'llama-3.3-70b-versatile'
-// To use OpenRouter: GROQ_URL = 'https://openrouter.ai/api/v1/chat/completions'
-//                    GROQ_MODEL = 'meta-llama/llama-3.3-70b-instruct:free'
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_URL     = process.env.GROQ_URL     || 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = process.env.GROQ_MODEL   || 'llama-3.3-70b-versatile';
+// ─── OpenAI-compatible LLM providers (OpenRouter + Groq) ────────────────────
+// OpenRouter is preferred for free open-source model access.
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3-32b:free';
+const OPENROUTER_FALLBACK_MODELS = [
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'deepseek/deepseek-r1-0528:free',
+  'qwen/qwen3-14b:free',
+];
 
-// Fallback model chain — tried in order if the primary model returns a 404/400
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_URL = process.env.GROQ_URL || 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const GROQ_FALLBACK_MODELS = [
   'llama-3.1-8b-instant',
   'gemma2-9b-it',
   'mixtral-8x7b-32768',
 ];
 
-const AVAILABLE = Boolean(GEMINI_API_KEY || GROQ_API_KEY);
+const LLM_PRIMARY_PROVIDER = (process.env.LLM_PRIMARY_PROVIDER || '').toLowerCase();
+const OPENAI_COMPAT_AVAILABLE = Boolean(OPENROUTER_API_KEY || GROQ_API_KEY);
+
+const AVAILABLE = Boolean(GEMINI_API_KEY || OPENAI_COMPAT_AVAILABLE);
 
 if (!AVAILABLE) {
-  console.warn('[LLM] Neither GEMINI_API_KEY nor GROQ_API_KEY set — natural language analysis disabled.');
+  console.warn('[LLM] No provider configured. Set GEMINI_API_KEY and/or OPENROUTER_API_KEY/GROQ_API_KEY.');
 } else {
-  const providers = [GROQ_API_KEY && 'Groq', GEMINI_API_KEY && 'Gemini'].filter(Boolean);
+  const providers = [OPENROUTER_API_KEY && 'OpenRouter', GROQ_API_KEY && 'Groq', GEMINI_API_KEY && 'Gemini'].filter(Boolean);
   console.log(`[LLM] Active providers: ${providers.join(', ')}`);
 }
 
-// ─── Groq helper ──────────────────────────────────────────────────────────────
+// ─── OpenAI-compatible helper (OpenRouter/Groq) ─────────────────────────────
 async function groqChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = true } = {}) {
-  if (!GROQ_API_KEY) return null;
+  if (!OPENAI_COMPAT_AVAILABLE) return null;
 
-  const modelsToTry = [GROQ_MODEL, ...GROQ_FALLBACK_MODELS.filter(m => m !== GROQ_MODEL)];
+  const openrouterProvider = {
+    name: 'OpenRouter',
+    enabled: Boolean(OPENROUTER_API_KEY),
+    url: OPENROUTER_URL,
+    apiKey: OPENROUTER_API_KEY,
+    models: [OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS.filter(m => m !== OPENROUTER_MODEL)],
+    extraHeaders: {
+      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://sporty-rabbi.netlify.app',
+      'X-Title': process.env.OPENROUTER_APP_NAME || 'SportyRabbi',
+    },
+  };
+  const groqProvider = {
+    name: 'Groq',
+    enabled: Boolean(GROQ_API_KEY),
+    url: GROQ_URL,
+    apiKey: GROQ_API_KEY,
+    models: [GROQ_MODEL, ...GROQ_FALLBACK_MODELS.filter(m => m !== GROQ_MODEL)],
+    extraHeaders: {},
+  };
 
-  for (const model of modelsToTry) {
-    try {
-      const response = await axios.post(GROQ_URL, {
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userText },
-        ],
-        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        temperature: 0.15,
-        max_tokens: maxTokens,
-      }, {
-        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        timeout: 30000,
-      });
-      const content = response.data?.choices?.[0]?.message?.content || null;
-      if (content) {
-        if (model !== GROQ_MODEL) console.log(`[Groq] Used fallback model: ${model}`);
-        return content;
+  const providerOrder = (LLM_PRIMARY_PROVIDER === 'groq')
+    ? [groqProvider, openrouterProvider]
+    : [openrouterProvider, groqProvider];
+
+  for (const provider of providerOrder) {
+    if (!provider.enabled) continue;
+
+    for (const model of provider.models) {
+      try {
+        const response = await axios.post(provider.url, {
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userText },
+          ],
+          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+          temperature: 0.15,
+          max_tokens: maxTokens,
+        }, {
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            'Content-Type': 'application/json',
+            ...provider.extraHeaders,
+          },
+          timeout: 30000,
+        });
+
+        const content = response.data?.choices?.[0]?.message?.content || null;
+        if (content) {
+          if (model !== provider.models[0]) {
+            console.log(`[LLM] Used fallback model on ${provider.name}: ${model}`);
+          }
+          return content;
+        }
+      } catch (err) {
+        const status = err.response?.status;
+        const msg = err.response?.data?.error?.message || err.message;
+        if (status === 404 || status === 400 || status === 429) {
+          console.warn(`[LLM] ${provider.name} model ${model} unavailable (${status}): ${msg.slice(0, 80)} — trying next`);
+          continue;
+        }
+        console.warn(`[LLM] ${provider.name} request failed (${status ?? 'network'}): ${msg.slice(0, 120)}`);
+        break;
       }
-    } catch (err) {
-      const status = err.response?.status;
-      const msg = err.response?.data?.error?.message || err.message;
-      if (status === 404 || status === 400) {
-        console.warn(`[Groq] Model ${model} unavailable (${status}): ${msg.slice(0, 80)} — trying next`);
-        continue; // try next model
-      }
-      // Auth error, network error etc — don't retry
-      console.warn(`[Groq] Request failed (${status ?? 'network'}): ${msg.slice(0, 120)}`);
-      return null;
     }
   }
 
-  console.warn('[Groq] All models failed — falling back to Gemini');
+  console.warn('[LLM] All OpenAI-compatible models failed — falling back to Gemini');
   return null;
 }
 
@@ -182,7 +218,7 @@ Rules:
  */
 export async function naturalLanguageToMatchData(userText) {
   if (!AVAILABLE) {
-    throw new Error('No LLM configured. Add GROQ_API_KEY or GEMINI_API_KEY to backend/.env.');
+    throw new Error('No LLM configured. Add OPENROUTER_API_KEY/GROQ_API_KEY or GEMINI_API_KEY to backend/.env.');
   }
 
   // Helper to parse and return the standard response shape
@@ -198,22 +234,22 @@ export async function naturalLanguageToMatchData(userText) {
   }
 
   // ── Try Groq first (free tier, fast) ────────────────────────────────────────
-  if (GROQ_API_KEY) {
+  if (OPENAI_COMPAT_AVAILABLE) {
     try {
       const raw = await groqChat(SYSTEM_PROMPT, `Analyse this match: ${userText}`, { maxTokens: 1500 });
       if (raw) {
         const result = parseLLMText(raw);
-        console.log('[Groq] naturalLanguageToMatchData: success');
+        console.log('[LLM] naturalLanguageToMatchData: success via OpenAI-compatible provider');
         return result;
       }
     } catch (err) {
-      console.warn('[Groq] naturalLanguageToMatchData failed:', err.message.slice(0, 120));
+      console.warn('[LLM] naturalLanguageToMatchData OpenAI-compatible call failed:', err.message.slice(0, 120));
     }
   }
 
   // ── Fallback: Gemini ─────────────────────────────────────────────────────────
   if (!GEMINI_API_KEY) {
-    throw new Error('GROQ_API_KEY failed and GEMINI_API_KEY not configured.');
+    throw new Error('OpenAI-compatible provider failed and GEMINI_API_KEY not configured.');
   }
 
   const body = {
@@ -584,8 +620,8 @@ export async function enrichFixturesWithGemini(fixtureList) {
         results.push(enriched);
       }
     } else {
-      // ── Gemini failed — try Groq (no search grounding but strong football knowledge) ──
-      if (GROQ_API_KEY) {
+      // ── Gemini failed — try OpenAI-compatible provider (OpenRouter/Groq) ──
+      if (OPENAI_COMPAT_AVAILABLE) {
         try {
           const enrichSysPrompt = 'You are a football analytics AI. Return only a valid JSON array with no markdown and no extra text. Use your training knowledge of football teams to provide realistic current-season stats for each fixture in the list.';
           const raw = await groqChat(enrichSysPrompt, buildEnrichPrompt(batch, today), { maxTokens: 8000, jsonMode: false });
@@ -596,12 +632,12 @@ export async function enrichFixturesWithGemini(fixtureList) {
               const parsed = JSON.parse(raw.slice(start, end + 1));
               if (Array.isArray(parsed) && parsed.length > 0) {
                 batchEnriched = parsed;
-                console.log(`[Enrich] batch ${batchNum}/${totalBatches} via Groq: ${parsed.length} fixtures`);
+                console.log(`[Enrich] batch ${batchNum}/${totalBatches} via OpenAI-compatible provider: ${parsed.length} fixtures`);
               }
             }
           }
         } catch (err) {
-          console.warn(`[Enrich] batch ${batchNum} Groq failed:`, (err.response?.data?.error?.message || err.message).slice(0, 120));
+          console.warn(`[Enrich] batch ${batchNum} OpenAI-compatible provider failed:`, (err.response?.data?.error?.message || err.message).slice(0, 120));
         }
       }
 
@@ -770,7 +806,7 @@ CRITICAL — Weight adjustments by ACTUAL recent contribution, not historical re
     if (!news) continue;
 
     tasks.push((async () => {
-      if (!GROQ_API_KEY) return [key, null];
+      if (!OPENAI_COMPAT_AVAILABLE) return [key, null];
       try {
         const userPrompt = `Match: ${fixture.home} vs ${fixture.away} (${fixture.league || ''})
 Current V9 inputs:

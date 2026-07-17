@@ -11,7 +11,7 @@ Real-time football match analytics with a 15-parameter AI scoring engine (Agent 
 
 - **Live match feed** — WebSocket-pushed scores, possession %, shots on target, xG
 - **Agent 47 V9 engine** — 15-parameter Dixon-Coles Poisson model with confidence scoring 0–100
-- **AI analyst notes** — Groq llama-3.3-70b narrative; Gemini 2.5 Flash search for calibration
+- **AI analyst notes** — OpenRouter free OSS models (primary) with Groq fallback; Gemini 2.5 Flash search for calibration
 - **WhatsApp alerts** — Fires via Twilio when confidence ≥ 65%
 - **Bet slip logging** — Log manual bets, track P&L and win rate
 - **Pre-match calibration** — Auto-runs every 6 h; enriches fixtures with real form/standings via Gemini Search
@@ -103,6 +103,9 @@ npm run dev
 ```
 API_FOOTBALL_KEY=your_api_football_key
 GOOGLE_AI_API_KEY=your_gemini_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=qwen/qwen3-32b:free
+LLM_PRIMARY_PROVIDER=openrouter
 GROQ_API_KEY=your_groq_api_key
 TWILIO_ACCOUNT_SID=your_twilio_sid
 TWILIO_AUTH_TOKEN=your_twilio_token
