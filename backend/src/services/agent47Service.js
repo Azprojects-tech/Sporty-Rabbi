@@ -1429,6 +1429,38 @@ function detectBookieEdges(p1, p2, p4, chaos) {
   return edges;
 }
 
+function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations = [], analysisQuality = null }) {
+  const probs = poisson?.probabilities || {};
+  const homeWin = Number.isFinite(Number(probs.homeWin)) ? Number(probs.homeWin) : null;
+  const draw = Number.isFinite(Number(probs.draw)) ? Number(probs.draw) : null;
+  const awayWin = Number.isFinite(Number(probs.awayWin)) ? Number(probs.awayWin) : null;
+  const has1x2 = homeWin != null && draw != null && awayWin != null;
+
+  let selectedOutcomeProbability = null;
+  if (has1x2) {
+    if (winCall?.outcome === 'HOME') selectedOutcomeProbability = homeWin;
+    else if (winCall?.outcome === 'AWAY') selectedOutcomeProbability = awayWin;
+    else selectedOutcomeProbability = Math.max(homeWin, draw, awayWin);
+  }
+
+  return {
+    signalStrength: {
+      score: overallScore,
+      qualityScore: analysisQuality?.score ?? null,
+      topRecommendationConfidence: recommendations?.[0]?.confidence ?? null,
+      meaning: 'How strong and coherent the model signal is based on data quality and parameter agreement.',
+    },
+    outcomeProbabilities: {
+      homeWin,
+      draw,
+      awayWin,
+      selectedOutcomeProbability,
+      available: has1x2,
+      meaning: 'Estimated match outcome chances (1X2) from the Poisson layer. This is not model confidence.',
+    },
+  };
+}
+
 // ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
 function scoreHomeAdvantage(homePossession = 50, homeShotsPerGame = 11, awayShotsPerGame = 11, venue = null, status = 'NS') {
   let score = 55; // Baseline: ~5% home win rate boost (literature consensus)
@@ -1702,6 +1734,13 @@ export function analyzeV9(matchData = {}) {
     score,
   });
   const winCallLiveAware = computeWinCall({ home, away, p1, p4, poisson: poi, overallScore: overall, recommendations, status });
+  const decisionMetrics = buildDecisionMetrics({
+    overallScore: overall,
+    winCall: winCallLiveAware,
+    poisson: poi,
+    recommendations,
+    analysisQuality,
+  });
 
   // ── Bookie edge detection ──────────────────────────────────────────────────
   const bookieEdges = detectBookieEdges(p1, p2, p4, chaos);
@@ -1736,6 +1775,7 @@ export function analyzeV9(matchData = {}) {
     chaosVariables: chaos,
     overallScore: overall,
     winCall: winCallLiveAware,
+    decisionMetrics,
     dataContext: {
       homeRecentOpposition,
       awayRecentOpposition,

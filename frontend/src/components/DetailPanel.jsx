@@ -417,6 +417,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   } = analysis || {};
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
   const winCall = analysis?.winCall || null;
+  const decisionMetrics = analysis?.decisionMetrics || {};
+  const signalStrength = decisionMetrics?.signalStrength || {};
+  const outcomeProbabilities = decisionMetrics?.outcomeProbabilities || {};
+  const modelSignalScore = signalStrength?.score ?? overallScore;
+  const selectedOutcomeProbability = outcomeProbabilities?.selectedOutcomeProbability;
   const probs = poisson?.probabilities || {};
 
   const topPicks = recommendations
@@ -445,11 +450,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>
                 T{tier} &middot; {tierName}
               </span>
-              <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(overallScore) }} title="Composite model score across all 15 parameters. This is not the same as win probability.">
-                Model {overallScore}%
+              <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title="Model signal strength: how coherent the evidence is. Not match outcome probability.">
+                Signal {modelSignalScore}%
               </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(winCall?.confidence || overallScore), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Win confidence from directional win-call logic and live recommendation context.">
-                Win {winCall?.confidence ?? 'Unavailable'}%
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Outcome probability (1X2) from Poisson. This is not model signal strength.">
+                1X2 {selectedOutcomeProbability != null ? `${selectedOutcomeProbability}%` : 'Unavailable'}
               </span>
               <span style={{
                 fontSize: 10,
@@ -486,6 +491,17 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
           <div style={{ fontSize: 9, fontWeight: 800, color: '#00b859', letterSpacing: '1px', marginBottom: 8 }}>
             AGENT RECOMMENDATION
           </div>
+          <div style={{ fontSize: 10, color: '#8b9ab3', marginBottom: 8, lineHeight: 1.5 }}>
+            Signal strength and outcome probability are shown separately below.
+            Signal: {modelSignalScore}%{selectedOutcomeProbability != null ? ` | 1X2: ${selectedOutcomeProbability}%` : ' | 1X2: Unavailable'}
+          </div>
+          {outcomeProbabilities?.available && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Home {outcomeProbabilities.homeWin}%</span>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Draw {outcomeProbabilities.draw}%</span>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Away {outcomeProbabilities.awayWin}%</span>
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {topPicks.map((r, i) => (
               <div key={i} style={{
@@ -505,7 +521,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                   </span>
                   <span style={{ fontSize: 9, color: '#4a5568' }}>&middot;</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: scoreColor(r.confidence) }}>
-                    {r.confidence}% confidence
+                    {r.confidence}% signal confidence
                   </span>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 800, color: '#e2e8f0', marginBottom: 5, lineHeight: 1.3 }}>
