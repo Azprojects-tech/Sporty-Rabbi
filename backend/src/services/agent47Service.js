@@ -16,6 +16,13 @@ import {
   getCompetitionModelProfile,
   applyWeightProfile,
 } from '../../../shared/competitionModelProfile.js';
+import {
+  finiteNumberOrNull,
+  recommendationToMarketKey,
+  offeredOddsForMarket,
+} from '../../../shared/marketKeys.js';
+import { DECISION } from '../../../shared/decisionStates.js';
+import { evaluateValue } from './valueEngine.js';
 
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
 export const TIERS = {
@@ -1431,10 +1438,13 @@ function detectBookieEdges(p1, p2, p4, chaos) {
 
 function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations = [], analysisQuality = null }) {
   const probs = poisson?.probabilities || {};
-  const homeWin = Number.isFinite(Number(probs.homeWin)) ? Number(probs.homeWin) : null;
-  const draw = Number.isFinite(Number(probs.draw)) ? Number(probs.draw) : null;
-  const awayWin = Number.isFinite(Number(probs.awayWin)) ? Number(probs.awayWin) : null;
-  const has1x2 = homeWin != null && draw != null && awayWin != null;
+  const homeWin = finiteNumberOrNull(probs.homeWin);
+  const draw = finiteNumberOrNull(probs.draw);
+  const awayWin = finiteNumberOrNull(probs.awayWin);
+  const oneXtwoSum = homeWin != null && draw != null && awayWin != null
+    ? homeWin + draw + awayWin
+    : null;
+  const has1x2 = oneXtwoSum != null && oneXtwoSum >= 99 && oneXtwoSum <= 101;
 
   let selectedOutcomeProbability = null;
   if (has1x2) {
@@ -1459,6 +1469,61 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
       meaning: 'Estimated match outcome chances (1X2) from the Poisson layer. This is not model confidence.',
     },
   };
+}
+
+function annotateRecommendationDecisions(recommendations = [], { home, away, odds } = {}) {
+  if (!Array.isArray(recommendations)) return [];
+  return recommendations.map((rec) => {
+    if (String(rec?.type || '').toUpperCase() === 'NO_BET') {
+      return {
+        ...rec,
+        marketKey: null,
+        decisionState: DECISION.NO_BET,
+        value: {
+          decision: DECISION.NO_BET,
+          reason: 'MODEL_NO_BET',
+          fairOdds: null,
+          minimumAcceptableOdds: null,
+          offeredOdds: null,
+          expectedValue: null,
+        },
+      };
+    }
+
+    const marketKey = recommendationToMarketKey(rec, { home, away });
+    if (!marketKey) {
+      return {
+        ...rec,
+        marketKey: null,
+        decisionState: DECISION.WATCH_LIVE,
+        value: {
+          decision: DECISION.WATCH_LIVE,
+          reason: 'MARKET_UNMAPPED',
+          fairOdds: null,
+          minimumAcceptableOdds: null,
+          offeredOdds: null,
+          expectedValue: null,
+        },
+      };
+    }
+
+    const offeredOdds = offeredOddsForMarket(odds || {}, marketKey);
+    const value = evaluateValue({
+      calibratedProbability: rec?.confidence,
+      offeredOdds,
+      minEv: 0.05,
+    });
+
+    return {
+      ...rec,
+      marketKey,
+      decisionState: value.decision,
+      value: {
+        ...value,
+        offeredOdds,
+      },
+    };
+  });
 }
 
 // ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
@@ -1722,6 +1787,11 @@ export function analyzeV9(matchData = {}) {
   recommendations = recalibrateRecommendations(recommendations, analysisQuality);
   recommendations = applyRecommendationSanityChecks(recommendations, { poisson: poi, p1, p4, p8 });
   recommendations = enforceStrictNoBetPolicy(recommendations, { analysisQuality, status, matchMinutes });
+  recommendations = annotateRecommendationDecisions(recommendations, {
+    home,
+    away,
+    odds: matchData.odds || null,
+  });
   recommendations = attachEvidenceToRecommendations(recommendations, {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
     poisson: poi,

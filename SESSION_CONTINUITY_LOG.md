@@ -79,3 +79,62 @@ Template:
 - Rollback:
   - Revert routing behavior by rolling back `shared/competitionModelProfile.js` and related `analyzeV9` changes.
   - Revert threshold/stake guardrails by removing `competitionRiskPolicy` integration from `saveAlert()` and `generateBetSlips()`.
+
+## 2026-07-18 - ChatGPT Audit Imported + Phase 0 Safety Hardening
+- Commit: pending
+- Summary:
+  - Imported external audit directive into repo docs and created continuity hardening guide.
+  - Implemented Phase 0 safety patch to enforce executable-market confidence and stop fake odds fallbacks.
+  - Added baseline Node test coverage for fail-closed behavior and market parsing.
+- Files:
+  - `docs/Sporty-Rabbi_Copilot_Hardening_Directive.md`
+  - `docs/PROJECT_CONTINUITY_AND_HARDENING.md`
+  - `shared/marketKeys.js`
+  - `backend/src/services/agent47Service.js`
+  - `backend/src/server.js`
+  - `backend/src/services/notificationService.js`
+  - `backend/test/safety.test.js`
+  - `backend/package.json`
+  - `frontend/package.json`
+  - `package.json`
+- Env:
+  - Twilio destination variable normalized: canonical `TWILIO_WHATSAPP_TO`; legacy alias `ALERT_PHONE_NUMBER` still accepted.
+- Rollback:
+  - Revert `shared/marketKeys.js` import + usage in `server.js` to restore previous confidence and odds behavior.
+  - Revert `agent47Service.js` null-safe 1X2 checks if needed.
+  - Revert `backend/test/safety.test.js` and package scripts if test rollout must pause.
+
+## 2026-07-18 - Phase 0.5 Cleanup
+- Commit: pending
+- Summary:
+  - Removed Node ESM warning by setting root package type to module.
+  - Added explicit shared `offeredOddsForMarket()` helper and test coverage for unknown market no-projection behavior.
+  - Re-verified local checks plus Railway/Netlify production endpoint health.
+- Files:
+  - `package.json`
+  - `shared/marketKeys.js`
+  - `backend/src/server.js`
+  - `backend/test/safety.test.js`
+- Production checks:
+  - `GET https://web-production-cccff.up.railway.app/api/health` → 200
+  - `GET https://web-production-cccff.up.railway.app/api/calibrate/results` → 200
+  - `GET https://sporty-rabbi.netlify.app` → 200
+
+## 2026-07-18 - Phase 1 Minimal Slice (Decision States + Value Engine)
+- Commit: pending
+- Summary:
+  - Added canonical decision-state constants and a pure value engine for fair odds, minimum acceptable odds, and EV-based decisioning.
+  - Annotated Agent 47 recommendations with `marketKey`, `decisionState`, and `value` snapshot without breaking existing response fields.
+  - Added value engine tests and kept production endpoint sanity green.
+- Files:
+  - `shared/decisionStates.js`
+  - `backend/src/services/valueEngine.js`
+  - `backend/src/services/agent47Service.js`
+  - `backend/test/valueEngine.test.js`
+- Verification:
+  - `npm run test` → pass (9 tests)
+  - `npm run build` → pass
+  - `npm run check-syntax --prefix backend` → pass
+  - `GET https://web-production-cccff.up.railway.app/api/health` → 200
+  - `GET https://web-production-cccff.up.railway.app/api/calibrate/results` → 200
+  - `GET https://sporty-rabbi.netlify.app` → 200

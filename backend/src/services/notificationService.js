@@ -14,8 +14,8 @@ const IS_PROD   = NODE_ENV === 'production';
 // FROM must be in format: whatsapp:+14155238886 (Twilio sandbox or approved sender)
 const FROM      = process.env.TWILIO_WHATSAPP_FROM || '';
 // TO must be your phone in format: whatsapp:+2348012345678
-// ALERT_PHONE_NUMBER can be stored with or without the whatsapp: prefix
-const _TO_RAW   = process.env.ALERT_PHONE_NUMBER || '';
+// TWILIO_WHATSAPP_TO is canonical; ALERT_PHONE_NUMBER remains backward compatible.
+const _TO_RAW   = process.env.TWILIO_WHATSAPP_TO || process.env.ALERT_PHONE_NUMBER || '';
 const TO        = _TO_RAW && !_TO_RAW.startsWith('whatsapp:') ? `whatsapp:${_TO_RAW}` : _TO_RAW;
 
 const anyTwilioConfig = Boolean(SID || TOKEN || FROM || TO);
@@ -23,7 +23,7 @@ const missingTwilioVars = [
   !SID && 'TWILIO_ACCOUNT_SID',
   !TOKEN && 'TWILIO_AUTH_TOKEN',
   !FROM && 'TWILIO_WHATSAPP_FROM',
-  !TO && 'ALERT_PHONE_NUMBER',
+  !TO && 'TWILIO_WHATSAPP_TO (or ALERT_PHONE_NUMBER)',
 ].filter(Boolean);
 
 if (IS_PROD && anyTwilioConfig && missingTwilioVars.length > 0) {
@@ -37,7 +37,7 @@ if (ENABLED) {
   client = twilio(SID, TOKEN);
   console.log(`[WhatsApp] Twilio ready → ${TO}`);
 } else {
-  console.warn('[WhatsApp] Twilio not configured — alerts disabled. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, ALERT_PHONE_NUMBER.');
+  console.warn('[WhatsApp] Twilio not configured — alerts disabled. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, and TWILIO_WHATSAPP_TO (or ALERT_PHONE_NUMBER).');
 }
 
 /**

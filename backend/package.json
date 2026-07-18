@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "build": "echo 'Backend ready'"
+    "build": "echo 'Backend ready'",
+    "test": "node --test test/**/*.test.js",
+    "check-syntax": "node --check src/server.js && node --check src/services/agent47Service.js && node --check src/services/geminiService.js && node --check src/services/liveAnalyticsService.js && node --check src/services/notificationService.js"
   },
   "dependencies": {
     "axios": "^1.6.7",

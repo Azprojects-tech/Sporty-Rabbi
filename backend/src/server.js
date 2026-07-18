@@ -37,6 +37,7 @@ import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
 import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
 import { detectCompetitionContext } from '../../shared/competitionModelProfile.js';
 import { getCompetitionRiskPolicy } from '../../shared/competitionRiskPolicy.js';
+import { MARKET, offeredOddsForMarket, getTopExecutableRecommendation } from '../../shared/marketKeys.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -805,7 +806,8 @@ function sanitizeMatch(match) {
     },
     status: String(match.status || ''),
     matchMinutes: Number(match.matchMinutes || 0),
-    confidence: Number(match.confidence || 50),
+    confidence: Number(match.confidence || 0),
+    decisionProbability: numOrNull(match.decisionProbability),
     opportunities: Array.isArray(match.opportunities) ? match.opportunities.map(String) : [],
     league: String(match.league || 'Unknown'),
     leagueId: Number(match.leagueId || 0),
@@ -1271,7 +1273,7 @@ async function analyzeMatch(match) {
       };
       try {
         analysisObj      = analyzeV9(matchData);
-        confidence       = analysisObj.overallScore || 50;
+        confidence       = getTopExecutableRecommendation({ home: teams.home?.name, away: teams.away?.name, analysis: analysisObj })?.probability || 0;
         opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
       } catch (v9Err) {
         console.warn(`[analyzeMatch] V9 error for ${teams.home?.name} vs ${teams.away?.name}: ${v9Err.message} — dropping match`);
@@ -1293,7 +1295,8 @@ async function analyzeMatch(match) {
       status: statusStr,
       isLive: normalizedStatus === 'LIVE',
       matchMinutes: liveElapsed || matchMinutesElapsed || 0,
-      confidence: Math.min(Math.max(Math.round(confidence), 10), 98),
+      confidence: confidence > 0 ? Math.min(Math.max(Math.round(confidence), 10), 98) : 0,
+      decisionProbability: confidence > 0 ? Math.min(Math.max(Math.round(confidence), 10), 98) : 0,
       opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
@@ -1864,28 +1867,16 @@ function applyModeAllocation(base, modeProfile) {
 
 function oddsForSelection(match, selType) {
   const o    = match.analysis?.odds || match.odds || {};
-  const conf = match.confidence || 50;
-  const poi  = match.analysis?.poisson?.probabilities;  // V9 Poisson-derived probabilities
-  // Use Gemini-estimated odds if available, otherwise derive from confidence/Poisson
-  const deriveOdds = (impliedProb) => Math.max(1.05, +(1 / Math.min(impliedProb, 0.97)).toFixed(2));
-  switch (selType) {
-    case 'home_win':  return o.homeWin  || deriveOdds(conf / 100);
-    case 'away_win':  return o.awayWin  || deriveOdds(conf / 100);
-    case 'over25':    return o.over25   || (poi?.over25 != null ? deriveOdds(poi.over25 / 100) : deriveOdds(0.62));
-    case 'btts':      return o.btts     || (poi?.btts   != null ? deriveOdds(poi.btts   / 100) : deriveOdds(0.55));
-    case 'draw':      return o.draw     || (poi?.draw   != null ? deriveOdds(poi.draw   / 100) : deriveOdds(0.28));
-    default:          return 1.5;
-  }
+  return offeredOddsForMarket(o, selType);
 }
 
 function bestSelection(match) {
-  const recs = match.analysis?.recommendations || [];
-  if (recs.length > 0) {
-    const top = recs[0];
-    return { label: top.selection || top.label || 'Win', type: top.type || 'home_win' };
-  }
-  // Fallback: home win if confidence high enough
-  return { label: `${match.home} Win`, type: 'home_win' };
+  const top = getTopExecutableRecommendation(match);
+  if (!top) return null;
+  return {
+    label: top.recommendation.selection || top.recommendation.label || top.marketKey,
+    type: top.marketKey,
+  };
 }
 
 function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
@@ -1904,9 +1895,16 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
       });
       const risk = getCompetitionRiskPolicy(ctx.family);
       const familyCalibration = getFamilyCalibrationAdjustment(ctx.family);
-      return { ...m, _competitionFamily: ctx.family, _riskPolicy: risk, _familyCalibration: familyCalibration };
+      const topExecutable = getTopExecutableRecommendation(m);
+      return {
+        ...m,
+        _competitionFamily: ctx.family,
+        _riskPolicy: risk,
+        _familyCalibration: familyCalibration,
+        _topExecutable: topExecutable,
+      };
     })
-    .filter((m) => m.status === 'NS' && (m.confidence || 0) >= Math.max(
+    .filter((m) => m.status === 'NS' && m._topExecutable && (m.decisionProbability || m.confidence || 0) >= Math.max(
       52,
       m._riskPolicy.confidenceFloor +
       modeProfile.confidenceFloorAdjustment +
@@ -1918,7 +1916,7 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
     return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
   }
 
-  pool.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  pool.sort((a, b) => (b.decisionProbability || b.confidence || 0) - (a.decisionProbability || a.confidence || 0));
 
   // ── Dynamic stake allocation: protect capital when bankroll is small ─────
   // Low bankroll → heavier weight on Tier 1 (safest), smaller Tiers 2+3.
@@ -1942,13 +1940,13 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   t2Pct = modeAllocation.tier2;
   t3Pct = modeAllocation.tier3;
 
-  // ── TIER 1: Singles ≥85% — fall back to top match if none qualify ─────────
-  const tier1Candidates = (pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3).length > 0
-    ? pool.filter(m => (m.confidence || 0) >= 85).slice(0, 3)
-    : pool.slice(0, 1)); // best available if no high-confidence match
+  // ── TIER 1: Singles ≥85% — no fallback forcing ───────────────────────────
+  const tier1Candidates = pool.filter(m => (m.decisionProbability || m.confidence || 0) >= 85).slice(0, 3);
   const tier1 = tier1Candidates.map(m => {
     const sel = bestSelection(m);
+    if (!sel) return null;
     const odds = oddsForSelection(m, sel.type);
+    if (odds == null) return null;
     const rawStake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
     const guardedStake = Math.round(Math.min(
       rawStake *
@@ -1966,22 +1964,27 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
       kickoffUTC: m.kickoffUTC,
       selection: sel.label,
       selectionType: sel.type,
-      confidence: m.confidence,
+      confidence: m.decisionProbability || m.confidence,
       odds: +odds.toFixed(2),
       stake: guardedStake,
       potentialReturn: Math.round(guardedStake * odds),
       potentialProfit: Math.round(guardedStake * (odds - 1)),
     };
-  });
+  }).filter(Boolean);
 
-  // ── TIER 2: Accumulator 2-3 legs, each ≥72% — fall back to top 3 available ─
-  const tier2Legs = (pool
-    .filter(m => (m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id))
-    .slice(0, 3).length >= 2
-      ? pool.filter(m => (m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id)).slice(0, 3)
-      : pool.filter(m => !tier1Candidates.find(t => t.id === m.id)).slice(0, 3));
+  // ── TIER 2: Accumulator 2-3 legs, each ≥72% — no fallback forcing ────────
+  const tier2Legs = pool
+    .filter(m => (m.decisionProbability || m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id))
+    .slice(0, 3)
+    .filter(m => {
+      const sel = bestSelection(m);
+      return sel && oddsForSelection(m, sel.type) != null;
+    });
   const tier2Combined = tier2Legs.reduce((acc, m) => {
     const sel = bestSelection(m);
+    if (!sel) return acc;
+    const legOdds = oddsForSelection(m, sel.type);
+    if (legOdds == null) return acc;
     return {
       legs: [...acc.legs, {
         match: `${m.home} vs ${m.away}`,
@@ -1991,10 +1994,10 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
         kickoffUTC: m.kickoffUTC,
         selection: sel.label,
         selectionType: sel.type,
-        confidence: m.confidence,
-        odds: +oddsForSelection(m, sel.type).toFixed(2),
+        confidence: m.decisionProbability || m.confidence,
+        odds: +legOdds.toFixed(2),
       }],
-      combinedOdds: +(acc.combinedOdds * oddsForSelection(m, sel.type)).toFixed(2),
+      combinedOdds: +(acc.combinedOdds * legOdds).toFixed(2),
     };
   }, { legs: [], combinedOdds: 1.0 });
   const tier2StakeRaw = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
@@ -2002,29 +2005,23 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
     ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier * (m._familyCalibration?.stakeMultiplierAdjustment || 1)))
     : 1;
   const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier * modeProfile.stakeMultiplier * (modeCalibration.stakeMultiplierAdjustment || 1));
-  const tier2 = tier2Legs.length >= 2 ? {
+  const tier2 = tier2Combined.legs.length >= 2 ? {
     ...tier2Combined,
     stake: tier2Stake,
     potentialReturn: Math.round(tier2Stake * tier2Combined.combinedOdds),
     potentialProfit: Math.round(tier2Stake * (tier2Combined.combinedOdds - 1)),
   } : null;
 
-  // ── TIER 3: Value combo 2-4 legs ≥65% — fall back to remaining pool ────────
-  const tier3Candidates = (pool
-    .filter(m => (m.confidence || 0) >= 65 && (m.confidence || 0) < 72)
-    .slice(0, 4).length >= 2
-      ? pool.filter(m => (m.confidence || 0) >= 65 && (m.confidence || 0) < 72).slice(0, 4)
-      : pool.filter(m => !tier1Candidates.find(t => t.id === m.id) && !tier2Legs.find(t => t.id === m.id)).slice(0, 4));
-  // Prefer Over2.5 / BTTS for attacking games, Win for dominant home sides
+  // ── TIER 3: Value combo 2-4 legs ≥65% and <72% — no fallback forcing ─────
+  const tier3Candidates = pool
+    .filter(m => (m.decisionProbability || m.confidence || 0) >= 65 && (m.decisionProbability || m.confidence || 0) < 72)
+    .filter(m => !tier1Candidates.find(t => t.id === m.id) && !tier2Legs.find(t => t.id === m.id))
+    .slice(0, 4);
   const tier3Legs = tier3Candidates.map(m => {
-    const recs = m.analysis?.recommendations || [];
-    // Pick highest-odds V9-backed rec that isn't straight win
-    const valueRec = recs.find(r =>
-      r.type === 'over25' || r.type === 'btts' || r.type === 'away_win'
-    ) || recs[0];
-    const sel = valueRec
-      ? { label: valueRec.selection || valueRec.label, type: valueRec.type || 'over25' }
-      : { label: `${m.home} or ${m.away} Over 2.5`, type: 'over25' };
+    const sel = bestSelection(m);
+    if (!sel) return null;
+    const odds = oddsForSelection(m, sel.type);
+    if (odds == null) return null;
     return {
       match: `${m.home} vs ${m.away}`,
       league: m.league,
@@ -2033,10 +2030,10 @@ function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
       kickoffUTC: m.kickoffUTC,
       selection: sel.label,
       selectionType: sel.type,
-      confidence: m.confidence,
-      odds: +oddsForSelection(m, sel.type).toFixed(2),
+      confidence: m.decisionProbability || m.confidence,
+      odds: +odds.toFixed(2),
     };
-  });
+  }).filter(Boolean);
   const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
   const tier3StakeRaw = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
   const tier3RiskMultiplier = tier3Candidates.length > 0
@@ -3624,7 +3621,8 @@ async function runCalibration() {
         xg: { home: f.home?.xgAvg || 1.2, away: f.away?.xgAvg || 1.0 },
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
-        confidence: analysis.overallScore || 50,
+        confidence: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,
+        decisionProbability: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,
         opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
@@ -3681,7 +3679,11 @@ async function runCalibration() {
     }
   }
 
-  const highConfidence = analyzed.filter(m => m.confidence >= getPhaseConfidencePolicy(m.status, m.matchMinutes || 0).premiumThreshold);
+  const highConfidence = analyzed.filter((m) => {
+    const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);
+    const executable = getTopExecutableRecommendation(m);
+    return Boolean(executable) && (m.decisionProbability || m.confidence || 0) >= policy.premiumThreshold;
+  });
   // ── Compute calibration health from settled bets ─────────────────────────
   const _settledBets = bets.filter(b => b.result === 'won' || b.result === 'lost');
   const calibrationHealth = computeCalibrationHealth(_settledBets);
@@ -3764,7 +3766,9 @@ async function runCalibration() {
             .map(a => `${a.home}|${a.away}`)
     );
     for (const m of analyzed) {
-      const conf = m.confidence || 0;
+      const topExecutable = getTopExecutableRecommendation(m);
+      if (!topExecutable) continue;
+      const conf = m.decisionProbability || m.confidence || 0;
       const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);
       if (conf < policy.standardThreshold) continue;
 
@@ -3773,7 +3777,7 @@ async function runCalibration() {
       alreadySentToday.add(matchKey);
 
       const isPremium = conf >= policy.premiumThreshold;
-      const topRec    = m.analysis?.recommendations?.[0];
+      const topRec    = topExecutable.recommendation;
       const alertType = isPremium ? 'calibration_premium' : 'calibration';
       const message   = isPremium
         ? `🏆 HIGH CONFIDENCE: ${topRec ? `${topRec.selection} — ${topRec.confidence}% confidence` : `${m.home} vs ${m.away} — ${conf}% overall`}`
