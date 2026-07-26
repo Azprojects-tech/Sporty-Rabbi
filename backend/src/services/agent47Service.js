@@ -1453,7 +1453,94 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
     else selectedOutcomeProbability = Math.max(homeWin, draw, awayWin);
   }
 
+  const topRec = Array.isArray(recommendations) ? recommendations[0] : null;
+  const topMarket = topRec?.marketKey || recommendationToMarketKey(topRec);
+  const topProbability = finiteNumberOrNull(topRec?.confidence);
+  const qualityScore = finiteNumberOrNull(analysisQuality?.score);
+  const paramCoverage = finiteNumberOrNull(analysisQuality?.paramCoverage);
+  const hasPoissonSignal = Boolean(analysisQuality?.hasPoisson);
+  const hasContradiction = Boolean(analysisQuality?.contradiction);
+
+  const dataCompletenessScore = paramCoverage != null
+    ? Math.max(0, Math.min(100, Math.round(paramCoverage * 100)))
+    : null;
+  const dataCompletenessLabel = dataCompletenessScore == null
+    ? 'Unknown'
+    : dataCompletenessScore >= 80
+      ? 'High'
+      : dataCompletenessScore >= 60
+        ? 'Medium'
+        : 'Low';
+
+  let recommendationConfidence = null;
+  if (topProbability != null && qualityScore != null) {
+    recommendationConfidence = Math.max(0, Math.min(99, Math.round((topProbability * 0.7) + (qualityScore * 0.3))));
+  } else if (topProbability != null) {
+    recommendationConfidence = topProbability;
+  } else if (qualityScore != null) {
+    recommendationConfidence = qualityScore;
+  }
+
+  const recommendationConfidenceLabel = recommendationConfidence == null
+    ? 'Unknown'
+    : recommendationConfidence >= 75
+      ? 'Strong'
+      : recommendationConfidence >= 60
+        ? 'Moderate'
+        : 'Weak';
+
+  let decisionStatus = 'INSUFFICIENT_DATA';
+  let decisionReason = 'No executable recommendation.';
+  const mappedDecisionState = String(topRec?.decisionState || '').toUpperCase();
+
+  if (dataCompletenessScore != null && dataCompletenessScore < 50) {
+    decisionStatus = 'INSUFFICIENT_DATA';
+    decisionReason = `Data completeness is low (${dataCompletenessScore}%).`;
+  } else if (mappedDecisionState === DECISION.BET) {
+    decisionStatus = 'PLAY';
+    decisionReason = 'Value checks passed for the selected market.';
+  } else if (mappedDecisionState === DECISION.NEEDS_PRICE) {
+    decisionStatus = 'WATCH';
+    decisionReason = 'Model setup is promising, but bookmaker price is missing.';
+  } else if (mappedDecisionState === DECISION.WATCH_LIVE) {
+    decisionStatus = 'WATCH';
+    decisionReason = 'Wait for stronger live confirmation before execution.';
+  } else if (mappedDecisionState === DECISION.NO_BET) {
+    decisionStatus = 'NO_PLAY';
+    decisionReason = 'No positive execution edge under current constraints.';
+  }
+
   return {
+    modelProbability: {
+      value: topProbability,
+      market: topMarket,
+      selection: topRec?.selection || null,
+      available: topProbability != null,
+      meaning: 'Estimated win probability for the currently selected market recommendation.',
+    },
+    dataCompleteness: {
+      score: dataCompletenessScore,
+      label: dataCompletenessLabel,
+      paramCoverage,
+      hasPoisson: hasPoissonSignal,
+      contradiction: hasContradiction,
+      meaning: 'How much required evidence is available and coherent for this match analysis.',
+    },
+    recommendationConfidence: {
+      score: recommendationConfidence,
+      label: recommendationConfidenceLabel,
+      components: {
+        recommendationProbability: topProbability,
+        qualityScore,
+      },
+      meaning: 'Execution confidence after combining market probability with data quality and consistency checks.',
+    },
+    decisionStatus: {
+      status: decisionStatus,
+      mappedFrom: mappedDecisionState || null,
+      reason: decisionReason,
+      meaning: 'Operational decision state for this recommendation: PLAY, WATCH, NO_PLAY, or INSUFFICIENT_DATA.',
+    },
     signalStrength: {
       score: overallScore,
       qualityScore: analysisQuality?.score ?? null,

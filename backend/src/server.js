@@ -37,7 +37,7 @@ import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
 import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
 import { detectCompetitionContext } from '../../shared/competitionModelProfile.js';
 import { getCompetitionRiskPolicy } from '../../shared/competitionRiskPolicy.js';
-import { MARKET, offeredOddsForMarket, getTopExecutableRecommendation } from '../../shared/marketKeys.js';
+import { MARKET, finiteNumberOrNull, offeredOddsForMarket, getTopExecutableRecommendation } from '../../shared/marketKeys.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -208,6 +208,11 @@ const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
 const API_DAILY_SOFT_STOP = Number(process.env.API_DAILY_SOFT_STOP || 50); // stop at 50 remaining (saves 50 for the day)
 const API_MINUTE_SOFT_STOP = Number(process.env.API_MINUTE_SOFT_STOP || 1);
+const API_DAILY_WARNING_THRESHOLD = (() => {
+  const parsed = Number(process.env.API_DAILY_WARNING_THRESHOLD || 120);
+  if (!Number.isFinite(parsed)) return Math.max(API_DAILY_SOFT_STOP, 120);
+  return Math.max(API_DAILY_SOFT_STOP, Math.floor(parsed));
+})();
 
 const quotaState = {
   dailyLimit: null,
@@ -220,6 +225,73 @@ const quotaState = {
   resumeAt: null,
   lastUpdatedAt: null,
 };
+
+const quotaNoticeState = {
+  warnedDate: null,
+  exhaustedDate: null,
+  lastKind: null,
+  lastSentAt: null,
+};
+
+function getUtcDateStamp(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getQuotaSummary() {
+  const status = quotaState.dailyRemaining === 0
+    ? 'EXHAUSTED'
+    : quotaState.isPaused
+      ? 'PAUSED'
+      : quotaState.dailyRemaining != null && quotaState.dailyRemaining <= API_DAILY_WARNING_THRESHOLD
+        ? 'LOW'
+        : 'OK';
+  return {
+    status,
+    dailyRemaining: quotaState.dailyRemaining,
+    dailyLimit: quotaState.dailyLimit,
+    minuteRemaining: quotaState.minuteRemaining,
+    minuteLimit: quotaState.minuteLimit,
+    softStops: {
+      daily: API_DAILY_SOFT_STOP,
+      minute: API_MINUTE_SOFT_STOP,
+    },
+    warningThreshold: API_DAILY_WARNING_THRESHOLD,
+    isPaused: quotaState.isPaused,
+    pauseReason: quotaState.pauseReason,
+    pausedAt: quotaState.pausedAt,
+    resumeAt: quotaState.resumeAt,
+    lastUpdatedAt: quotaState.lastUpdatedAt,
+    notifications: { ...quotaNoticeState },
+  };
+}
+
+function emitQuotaNotice(kind, message) {
+  const today = getUtcDateStamp();
+  if (kind === 'warning' && quotaNoticeState.warnedDate === today) return;
+  if (kind === 'exhausted' && quotaNoticeState.exhaustedDate === today) return;
+
+  if (kind === 'warning') quotaNoticeState.warnedDate = today;
+  if (kind === 'exhausted') quotaNoticeState.exhaustedDate = today;
+  quotaNoticeState.lastKind = kind;
+  quotaNoticeState.lastSentAt = new Date().toISOString();
+
+  const type = kind === 'exhausted' ? 'quota_expired' : 'quota_warning';
+  saveAlert({
+    type,
+    home: 'SYSTEM',
+    away: 'API-FOOTBALL',
+    league: 'Quota Monitor',
+    status: 'NS',
+    matchMinutes: 0,
+    confidence: 0,
+    message,
+    sentAt: new Date().toISOString(),
+  }).catch((err) => {
+    console.warn(`[Quota] Failed to persist ${type} alert: ${err.message}`);
+  });
+
+  broadcast({ type: 'QUOTA_STATUS', payload: getQuotaSummary() });
+}
 
 function getNextUtcMidnightIso() {
   const now = new Date();
@@ -279,6 +351,24 @@ function updateQuotaFromHeaders(headers = {}) {
   if (minuteLimit !== null) quotaState.minuteLimit = minuteLimit;
   if (minuteRemaining !== null) quotaState.minuteRemaining = minuteRemaining;
   quotaState.lastUpdatedAt = new Date().toISOString();
+
+  if (
+    quotaState.dailyRemaining != null
+    && quotaState.dailyRemaining > API_DAILY_SOFT_STOP
+    && quotaState.dailyRemaining <= API_DAILY_WARNING_THRESHOLD
+  ) {
+    emitQuotaNotice(
+      'warning',
+      `Quota warning: API-Football daily calls remaining = ${quotaState.dailyRemaining}. Approaching limit.`
+    );
+  }
+
+  if (quotaState.dailyRemaining === 0) {
+    emitQuotaNotice(
+      'exhausted',
+      'Quota expired: API-Football daily quota is exhausted. API calls are paused until next UTC day.'
+    );
+  }
 
   if (quotaState.dailyRemaining !== null && quotaState.dailyRemaining <= API_DAILY_SOFT_STOP) {
     setQuotaPause(
@@ -467,7 +557,20 @@ async function fetchLiveMatches() {
         ? new Date(Date.now() + 2 * 60 * 1000).toISOString()  // 2-min cooldown
         : getNextUtcMidnightIso();                              // truly exhausted → midnight
       setQuotaPause('Received 429 from API-Football', resumeAt);
+      if (!dailyOk || quotaState.dailyRemaining === 0) {
+        emitQuotaNotice(
+          'exhausted',
+          'Quota expired: API-Football daily quota is exhausted. API calls are paused until next UTC day.'
+        );
+      }
       console.error(`⚠️  API 429 — pause until ${resumeAt} (daily remaining: ${quotaState.dailyRemaining ?? 'unknown'})`);
+    }
+    if (error.response?.status === 402) {
+      setQuotaPause('API-Football subscription quota exhausted', getNextUtcMidnightIso());
+      emitQuotaNotice(
+        'exhausted',
+        'Quota expired: API-Football subscription quota is exhausted. API calls are paused until next UTC day.'
+      );
     }
     return [];
   }
@@ -546,6 +649,12 @@ async function fetchTodayFixturesFromApi() {
         ? getNextUtcMidnightIso()
         : new Date(Date.now() + 2 * 60 * 1000).toISOString();
       setQuotaPause('API-Football suspended/rate-limited', resumeAt);
+      if (err.response?.status === 402 || !dailyOk || quotaState.dailyRemaining === 0) {
+        emitQuotaNotice(
+          'exhausted',
+          'Quota expired: API-Football daily quota is exhausted. API calls are paused until next UTC day.'
+        );
+      }
     }
     return [];
   }
@@ -766,6 +875,19 @@ async function fetchUpcomingMatches() {
         ? new Date(Date.now() + 2 * 60 * 1000).toISOString()
         : getNextUtcMidnightIso();
       setQuotaPause('Received 429 from API-Football', resumeAt);
+      if (!dailyOk || quotaState.dailyRemaining === 0) {
+        emitQuotaNotice(
+          'exhausted',
+          'Quota expired: API-Football daily quota is exhausted. API calls are paused until next UTC day.'
+        );
+      }
+    }
+    if (error.response?.status === 402) {
+      setQuotaPause('API-Football subscription quota exhausted', getNextUtcMidnightIso());
+      emitQuotaNotice(
+        'exhausted',
+        'Quota expired: API-Football subscription quota is exhausted. API calls are paused until next UTC day.'
+      );
     }
 
     // Error-path fallback: if API-Football times out or fails, still try
@@ -2241,6 +2363,10 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+app.get('/api/quota-status', (req, res) => {
+  res.json(getQuotaSummary());
+});
+
 // ── WhatsApp test endpoint ─────────────────────────────────────────────────
 app.post('/api/test-whatsapp', async (req, res) => {
   const msg = req.body?.message || `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
@@ -2941,7 +3067,7 @@ app.post('/api/analyze', async (req, res) => {
     const matchMins  = body.matchMinutes || 0;
     const fixtureId  = body.fixtureId || body.id || null;
 
-    const hasMetricValue = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
+    const hasMetricValue = (v) => finiteNumberOrNull(v) != null;
     const hasAnyMetric = (obj) => hasMetricValue(obj?.home) || hasMetricValue(obj?.away);
     const preLiveStats = {
       possession: hasAnyMetric(body.possession),

@@ -435,7 +435,7 @@ export default function App() {
  display: 'flex', alignItems: 'center', gap: 12,
  }}>
  <span style={{ fontSize: 12, color: '#8b9ab3', fontWeight: 600 }}>
- {filter === 'high' ? ' High Confidence Picks (>=80%)' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
+ {filter === 'high' ? ' 80%+ Signal Candidates' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
  </span>
  <span style={{ fontSize: 11, color: '#4a5568' }}>
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}

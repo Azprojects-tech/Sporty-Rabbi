@@ -28,6 +28,13 @@ function scoreColor(s) {
   return s >= 70 ? '#00b859' : s >= 55 ? '#fbbf24' : '#ef4444';
 }
 
+function statusPillStyle(status) {
+  if (status === 'PLAY') return { color: '#00b859', bg: '#001f0e', border: '#00683355' };
+  if (status === 'WATCH') return { color: '#fbbf24', bg: '#1c1200', border: '#78350f55' };
+  if (status === 'NO_PLAY') return { color: '#ef4444', bg: '#1a0000', border: '#7f1d1d55' };
+  return { color: '#94a3b8', bg: '#0f1117', border: '#1e2535' };
+}
+
 function ScoreBar({ score }) {
   if (score == null) {
     return (
@@ -418,10 +425,21 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
   const winCall = analysis?.winCall || null;
   const decisionMetrics = analysis?.decisionMetrics || {};
+  const modelProbability = decisionMetrics?.modelProbability || {};
+  const dataCompleteness = decisionMetrics?.dataCompleteness || {};
+  const recommendationConfidence = decisionMetrics?.recommendationConfidence || {};
+  const decisionStatusObj = decisionMetrics?.decisionStatus || {};
   const signalStrength = decisionMetrics?.signalStrength || {};
   const outcomeProbabilities = decisionMetrics?.outcomeProbabilities || {};
   const modelSignalScore = signalStrength?.score ?? overallScore;
   const selectedOutcomeProbability = outcomeProbabilities?.selectedOutcomeProbability;
+  const modelProbabilityValue = modelProbability?.value ?? null;
+  const dataCompletenessScore = dataCompleteness?.score ?? null;
+  const dataCompletenessLabel = dataCompleteness?.label || (dataCompletenessScore == null ? 'Unknown' : dataCompletenessScore >= 80 ? 'High' : dataCompletenessScore >= 60 ? 'Medium' : 'Low');
+  const recommendationConfidenceScore = recommendationConfidence?.score ?? null;
+  const recommendationConfidenceLabel = recommendationConfidence?.label || (recommendationConfidenceScore == null ? 'Unknown' : recommendationConfidenceScore >= 75 ? 'Strong' : recommendationConfidenceScore >= 60 ? 'Moderate' : 'Weak');
+  const decisionStatus = decisionStatusObj?.status || 'INSUFFICIENT_DATA';
+  const decisionStatusStyle = statusPillStyle(decisionStatus);
   const probs = poisson?.probabilities || {};
 
   const topPicks = recommendations
@@ -452,6 +470,18 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               </span>
               <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title="Model signal strength: how coherent the evidence is. Not match outcome probability.">
                 Signal {modelSignalScore}%
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Model probability for the selected recommendation market.">
+                Model P {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Data completeness from resolved input coverage.">
+                Data {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataCompletenessLabel ? ` (${dataCompletenessLabel})` : ''}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Recommendation confidence after probability + data quality checks.">
+                Rec {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}%` : 'Unavailable'}{recommendationConfidenceLabel ? ` (${recommendationConfidenceLabel})` : ''}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 800, color: decisionStatusStyle.color, background: decisionStatusStyle.bg, border: `1px solid ${decisionStatusStyle.border}`, borderRadius: 4, padding: '2px 6px' }} title={decisionStatusObj?.reason || 'Decision status'}>
+                {decisionStatus.replace('_', ' ')}
               </span>
               <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Outcome probability (1X2) from Poisson. This is not model signal strength.">
                 1X2 {selectedOutcomeProbability != null ? `${selectedOutcomeProbability}%` : 'Unavailable'}
@@ -492,9 +522,14 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             AGENT RECOMMENDATION
           </div>
           <div style={{ fontSize: 10, color: '#8b9ab3', marginBottom: 8, lineHeight: 1.5 }}>
-            Signal strength and outcome probability are shown separately below.
-            Signal: {modelSignalScore}%{selectedOutcomeProbability != null ? ` | 1X2: ${selectedOutcomeProbability}%` : ' | 1X2: Unavailable'}
+            Signal strength, model probability, data completeness, recommendation confidence, and decision status are separated.
+            Signal: {modelSignalScore}% | Model P: {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'} | Rec: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}%` : 'Unavailable'}
           </div>
+          {decisionStatusObj?.reason && (
+            <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8 }}>
+              Decision: {decisionStatus.replace('_', ' ')} - {decisionStatusObj.reason}
+            </div>
+          )}
           {outcomeProbabilities?.available && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
               <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Home {outcomeProbabilities.homeWin}%</span>
@@ -575,7 +610,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
             <span style={{ fontSize: 9, color: '#4a5568' }}>· AI</span>
             {analysis.narrative.confidence && (
               <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: scoreColor(analysis.narrative.confidence) }}>
-                {analysis.narrative.confidence}% assurance
+                LLM narrative confidence {analysis.narrative.confidence}%
               </span>
             )}
           </div>

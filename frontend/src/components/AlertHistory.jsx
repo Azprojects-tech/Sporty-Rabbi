@@ -92,7 +92,7 @@ export default function AlertHistory() {
       }}>
         {[
           { id: 'all', label: 'All' },
-          { id: 'high', label: '80%+ Confidence' },
+          { id: 'high', label: '80%+ Signal' },
           { id: 'medium', label: '65–79%' },
         ].map((f) => (
           <button

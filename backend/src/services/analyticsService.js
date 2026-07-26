@@ -11,10 +11,15 @@ import axios from 'axios';
 
 const API_BASE = 'https://v3.football.api-sports.io';
 const API_KEY = process.env.API_FOOTBALL_KEY;
-const API_AVAILABLE = Boolean(API_KEY);
+const API_OFFLINE_MODE = String(process.env.API_FOOTBALL_OFFLINE_MODE || '').toLowerCase() === 'true';
+const API_AVAILABLE = Boolean(API_KEY) && !API_OFFLINE_MODE;
 
 if (!API_AVAILABLE) {
-  console.warn('⚠️  analyticsService: API_FOOTBALL_KEY not set — running in offline mode. Historical form/H2H endpoints will return placeholder data.');
+  console.warn(
+    API_OFFLINE_MODE
+      ? '⚠️  analyticsService: API_FOOTBALL_OFFLINE_MODE=true — forcing offline mode. Historical form/H2H endpoints will return placeholder data.'
+      : '⚠️  analyticsService: API_FOOTBALL_KEY not set — running in offline mode. Historical form/H2H endpoints will return placeholder data.'
+  );
 }
 
 const axiosInstance = axios.create({

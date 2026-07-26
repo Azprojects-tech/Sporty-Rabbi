@@ -102,6 +102,8 @@ npm run dev
 **`backend/.env`**
 ```
 API_FOOTBALL_KEY=your_api_football_key
+API_FOOTBALL_OFFLINE_MODE=false
+API_DAILY_WARNING_THRESHOLD=120
 GOOGLE_AI_API_KEY=your_gemini_api_key
 OPENROUTER_API_KEY=your_openrouter_api_key
 OPENROUTER_MODEL=qwen/qwen3-32b:free
@@ -113,6 +115,10 @@ TWILIO_WHATSAPP_TO=whatsapp:+1234567890
 NODE_ENV=development
 PORT=3000
 ```
+
+Set `API_FOOTBALL_OFFLINE_MODE=true` when your daily API quota is exhausted.
+This keeps the backend running with structured fallbacks and avoids additional API-Football requests until quota resets.
+Set `API_DAILY_WARNING_THRESHOLD` to choose when the "quota about to expire" warning should trigger.
 
 > Firebase credentials come from `backend/firebase-service-account.json` (not committed — add to Railway as env var or file mount in production).
 
@@ -137,6 +143,7 @@ VITE_API_BASE_URL=http://localhost:3000/api
 | POST | `/api/calibrate` | Trigger manual calibration run |
 | GET | `/api/calibrate/results` | Read latest calibration results/status |
 | GET | `/api/alerts` | Recent alerts from Firestore |
+| GET | `/api/quota-status` | Quota status snapshot (remaining, paused state, warning/exhausted notices) |
 | POST | `/api/bets` | Log a bet |
 | GET | `/api/bets` | Bet history |
 | GET | `/api/bets/slips` | Tiered bet slip suggestions |
