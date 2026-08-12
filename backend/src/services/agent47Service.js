@@ -519,7 +519,10 @@ function scoreCompetitiveContext(leagueId = 0, matchType = 'League') {
 }
 
 // P14 — LEAGUE LIFECYCLE
-function scoreLifecycle(gameWeek = 30, totalGW = 38) {
+function scoreLifecycle(gameWeek = null, totalGW = null) {
+  if (gameWeek == null || totalGW == null || totalGW <= 0) {
+    return { score: null, available: false, evidenceStatus: 'MISSING', edge: 'NEUTRAL', assessment: 'Required inputs unavailable — gameWeek/totalGW missing.' };
+  }
   const pct  = gameWeek / totalGW;
   let phase  = 'Build Phase', mult = 1.0;
   if (pct >= 0.90) { phase = 'Death Run';         mult = 1.50; }

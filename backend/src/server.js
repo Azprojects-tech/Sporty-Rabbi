@@ -1234,8 +1234,8 @@ async function analyzeMatch(match) {
       let homeFormStr = null;
       let awayFormStr = null;
       let h2hHistory = [];
-      let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20;
-      let gameWeek = 30;
+      let homePosition = null, awayPosition = null, homePoints = null, awayPoints = null, totalTeams = null;
+      let gameWeek = null;
       let homeAvgGF = null, homeAvgGA = null, awayAvgGF = null, awayAvgGA = null;
       let homeGoalDrought = 0, awayGoalDrought = 0, homeRecentLosses = 0, awayRecentLosses = 0;
       let homeConversionPct = null, awayConversionPct = null;
@@ -1248,8 +1248,8 @@ async function analyzeMatch(match) {
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
         const [hRes, aRes, h2hRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
-          getTeamForm(homeTeamId, league.id),
-          getTeamForm(awayTeamId, league.id),
+          getTeamForm(homeTeamId, league.id, league.season ?? null),
+          getTeamForm(awayTeamId, league.id, league.season ?? null),
           getH2H(homeTeamId, awayTeamId),
           getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, league.id, league.season ?? null),
@@ -1348,12 +1348,18 @@ async function analyzeMatch(match) {
           const hXgaAvg = isLive && homeAvgGA ? phaseBlendCountStat(homeAvgGA, xg.away, liveMin, 90) : (xg.away > 0 ? xg.away : homeAvgGA);
           const aXgaAvg = isLive && awayAvgGA ? phaseBlendCountStat(awayAvgGA, xg.home, liveMin, 90) : (xg.home > 0 ? xg.home : awayAvgGA);
           // Shots per game — N=180 (moderately stable; tactical changes take time)
-          const baseHomeShots = homeSeasonShots || leagueDefaults.homeShotsPerGame;
-          const baseAwayShots = awaySeasonShots || leagueDefaults.awayShotsPerGame;
-          const hShots  = isLive ? phaseBlendCountStat(baseHomeShots, totalShots.home, liveMin, 180) : baseHomeShots;
-          const aShots  = isLive ? phaseBlendCountStat(baseAwayShots, totalShots.away, liveMin, 180) : baseAwayShots;
-          // Possession — N=360 (very stable; a team's style rarely shifts mid-match)
-          const hPoss   = isLive ? phaseBlendPctStat(homeSeasonPossession || 50, possession.home, liveMin, 360) : (homeSeasonPossession || 50);
+          const baseHomeShots = homeSeasonShots ?? null;
+          const baseAwayShots = awaySeasonShots ?? null;
+          const hShots  = isLive && totalShots.home != null
+            ? (baseHomeShots != null ? phaseBlendCountStat(baseHomeShots, totalShots.home, liveMin, 180) : null)
+            : baseHomeShots;
+          const aShots  = isLive && totalShots.away != null
+            ? (baseAwayShots != null ? phaseBlendCountStat(baseAwayShots, totalShots.away, liveMin, 180) : null)
+            : baseAwayShots;
+          // Possession: only blend if we have a season baseline; live-only when baseline is missing
+          const hPoss   = isLive && possession.home != null
+            ? (homeSeasonPossession != null ? phaseBlendPctStat(homeSeasonPossession, possession.home, liveMin, 360) : possession.home)
+            : (homeSeasonPossession ?? null);
           return {
             homeXgAvg: hXgAvg, awayXgAvg: aXgAvg,
             homeXgaAvg: hXgaAvg, awayXgaAvg: aXgaAvg,
@@ -1377,8 +1383,7 @@ async function analyzeMatch(match) {
         awayPoints,
         totalTeams,
         gameWeek,
-        // Derive total game weeks from league size: (n-1)*2 rounds in a round-robin
-        totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38,
+        totalGW: (totalTeams != null && totalTeams > 1) ? (totalTeams - 1) * 2 : null,
         homeSquadIntegrity,
         awaySquadIntegrity,
         homeKeyAbsences,
@@ -3083,8 +3088,8 @@ app.post('/api/analyze', async (req, res) => {
     let enriched = { ...body };
     if (homeTeamId && awayTeamId) {
       const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
-        getTeamForm(homeTeamId, leagueId),
-        getTeamForm(awayTeamId, leagueId),
+        getTeamForm(homeTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
+        getTeamForm(awayTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
         getH2H(homeTeamId, awayTeamId),
         getStandings({ leagueId, season: body.season ?? body.fixtureContext?.season ?? null, homeTeamId, awayTeamId }),
       ]);
@@ -3247,16 +3252,17 @@ app.post('/api/analyze', async (req, res) => {
       const norm  = matchMins > 0 ? (90 / matchMins) : 1;
       if (hShots > 0) {
         const liveShotsH = hShots * norm;
-        const baseH = enriched.homeShotsPerGame || 12;
-        enriched.homeShotsPerGame = parseFloat(phaseBlendCountStat(baseH, liveShotsH, matchMins, 180).toFixed(1));
+        const baseH = enriched.homeShotsPerGame ?? null;
+        if (baseH != null) enriched.homeShotsPerGame = parseFloat(phaseBlendCountStat(baseH, liveShotsH, matchMins, 180).toFixed(1));
       }
       if (aShots > 0) {
         const liveShotsA = aShots * norm;
-        const baseA = enriched.awayShotsPerGame || 10;
-        enriched.awayShotsPerGame = parseFloat(phaseBlendCountStat(baseA, liveShotsA, matchMins, 180).toFixed(1));
+        const baseA = enriched.awayShotsPerGame ?? null;
+        if (baseA != null) enriched.awayShotsPerGame = parseFloat(phaseBlendCountStat(baseA, liveShotsA, matchMins, 180).toFixed(1));
       }
       if (hPoss != null && hPoss > 0) {
-        enriched.homePossession = parseFloat(phaseBlendPctStat(enriched.homePossession || 50, hPoss, matchMins, 360).toFixed(1));
+        const basePoss = enriched.homePossession ?? null;
+        enriched.homePossession = parseFloat(phaseBlendPctStat(basePoss ?? 50, hPoss, matchMins, 360).toFixed(1));
       }
     }
 
@@ -3381,9 +3387,8 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     const liveShotsAway = match.shots?.away || 0;
     const liveXgHome    = match.xg?.home || 0;
     const liveXgAway    = match.xg?.away || 0;
-    const leagueDefaults = getLeagueStatDefaults(leagueId);
-    const baseHomeShots = homeSeasonShots || leagueDefaults.homeShotsPerGame;
-    const baseAwayShots = awaySeasonShots || leagueDefaults.awayShotsPerGame;
+    const baseHomeShots = homeSeasonShots ?? null;
+    const baseAwayShots = awaySeasonShots ?? null;
 
     const matchData = {
       home: match.home, away: match.away, league: match.league, leagueId,
@@ -3393,14 +3398,16 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       notes: match.notes || '',
       matchType: match.matchType || 'League',
       status: 'LIVE', matchMinutes: liveMin, score: match.score || '0-0',
-      gameWeek, totalGW: totalTeams > 1 ? (totalTeams - 1) * 2 : 38, totalTeams,
+      gameWeek, totalGW: (totalTeams != null && totalTeams > 1) ? (totalTeams - 1) * 2 : null, totalTeams,
       homePosition, awayPosition, homePoints, awayPoints,
       homeSquadIntegrity, awaySquadIntegrity,
       homeKeyAbsences, awayKeyAbsences,
       homeConversionPct, awayConversionPct,
-      homePossession:   isLive ? phaseBlendPctStat(homeSeasonPossession || 50, livePoss, liveMin, 360) : (homeSeasonPossession || 50),
-      homeShotsPerGame: isLive ? phaseBlendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
-      awayShotsPerGame: isLive ? phaseBlendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
+      homePossession:   isLive && livePoss > 0
+        ? (homeSeasonPossession != null ? phaseBlendPctStat(homeSeasonPossession, livePoss, liveMin, 360) : livePoss)
+        : (homeSeasonPossession ?? null),
+      homeShotsPerGame: isLive && liveShotsHome > 0 && baseHomeShots != null ? phaseBlendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
+      awayShotsPerGame: isLive && liveShotsAway > 0 && baseAwayShots != null ? phaseBlendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
       homeLateGoalPct,
       awayLateGoalPct,
       // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
@@ -3667,9 +3674,8 @@ async function runCalibration() {
       const aLookup    = calTeamIdMap.get(awayName.toLowerCase());
       const hRealStats = hLookup ? calTeamStats.get(hLookup.id) : null;
       const aRealStats = aLookup ? calTeamStats.get(aLookup.id) : null;
-      const calTotalTeams = f.context?.totalTeams || matchMeta.totalTeams || 20;
-      const calTotalGW    = f.context?.totalGameWeeks || matchMeta.totalGW ||
-        (calTotalTeams > 1 ? (calTotalTeams - 1) * 2 : 38);
+      const calTotalTeams = f.context?.totalTeams ?? matchMeta.totalTeams ?? null;
+      const calTotalGW    = (calTotalTeams != null && calTotalTeams > 1) ? (calTotalTeams - 1) * 2 : null;
 
       const matchData = {
         home: homeName,
@@ -3684,11 +3690,11 @@ async function runCalibration() {
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
-        // ── Competition context (from Gemini/Groq enrichment) ──
-        homePosition:      f.home?.leaguePosition  || f.context?.homePosition  || matchMeta.homePosition  || 10,
-        awayPosition:      f.away?.leaguePosition  || f.context?.awayPosition  || matchMeta.awayPosition  || 10,
-        homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
-        awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 40,
+        // ── Competition context — null when not supplied for this fixture season ──
+        homePosition:      f.home?.leaguePosition  ?? f.context?.homePosition  ?? matchMeta.homePosition  ?? null,
+        awayPosition:      f.away?.leaguePosition  ?? f.context?.awayPosition  ?? matchMeta.awayPosition  ?? null,
+        homePoints:        f.context?.homePoints   ?? matchMeta.homePoints   ?? null,
+        awayPoints:        f.context?.awayPoints   ?? matchMeta.awayPoints   ?? null,
         totalTeams:        calTotalTeams,
         gameWeek:          f.context?.gameWeek     ?? matchMeta.gameWeek     ?? null,
         totalGW:           calTotalGW,
@@ -3699,9 +3705,9 @@ async function runCalibration() {
         awayForm: Array.isArray(f.away?.recentForm)
           ? f.away.recentForm.join('-')
           : (matchMeta.awayForm || null),
-        // ── Squad quality: real API-Football injuries → integrity, Gemini as fallback ──
-        homeSquadIntegrity: hRealStats?.squadIntegrity ?? f.home?.squadIntegrity ?? 85,
-        awaySquadIntegrity: aRealStats?.squadIntegrity ?? f.away?.squadIntegrity ?? 85,
+        // ── Squad quality: real API-Football injuries → integrity, no fake fallback ──
+        homeSquadIntegrity: hRealStats?.squadIntegrity ?? f.home?.squadIntegrity ?? null,
+        awaySquadIntegrity: aRealStats?.squadIntegrity ?? f.away?.squadIntegrity ?? null,
         // ── Goal expectation ──────────────────────────────────────────────────
         homeXgAvg:  f.home?.xgAvg  || null,
         awayXgAvg:  f.away?.xgAvg  || null,
@@ -3769,14 +3775,14 @@ async function runCalibration() {
         awayGoalsAvgFor:     matchData.awayGoalsAvgFor     ?? null,
         homeGoalsAvgAgainst: matchData.homeGoalsAvgAgainst ?? null,
         awayGoalsAvgAgainst: matchData.awayGoalsAvgAgainst ?? null,
-        homePosition:        matchData.homePosition        ?? 10,
-        awayPosition:        matchData.awayPosition        ?? 10,
-        homePoints:          matchData.homePoints          ?? 40,
-        awayPoints:          matchData.awayPoints          ?? 40,
-        totalTeams:          matchData.totalTeams          ?? 20,
-        gameWeek:            matchData.gameWeek            ?? 30,
-        homeSquadIntegrity:  matchData.homeSquadIntegrity  ?? 85,
-        awaySquadIntegrity:  matchData.awaySquadIntegrity  ?? 85,
+        homePosition:        matchData.homePosition        ?? null,
+        awayPosition:        matchData.awayPosition        ?? null,
+        homePoints:          matchData.homePoints          ?? null,
+        awayPoints:          matchData.awayPoints          ?? null,
+        totalTeams:          matchData.totalTeams          ?? null,
+        gameWeek:            matchData.gameWeek            ?? null,
+        homeSquadIntegrity:  matchData.homeSquadIntegrity  ?? null,
+        awaySquadIntegrity:  matchData.awaySquadIntegrity  ?? null,
         homeConversionPct:   matchData.homeConversionPct   ?? null,
         awayConversionPct:   matchData.awayConversionPct   ?? null,
         homeShotsPerGame:    matchData.homeShotsPerGame    ?? null,

@@ -146,17 +146,23 @@ async function getSquadPositionMap(teamId) {
 }
 
 /**
- * Get team's last 10 matches and calculate form stats
+ * Get team's last 10 matches within a specific season and calculate form stats.
+ * When season is supplied, results are filtered to that season only.
  */
-export async function getTeamForm(teamId, league = null) {
+export async function getTeamForm(teamId, league = null, season = null) {
   if (!API_AVAILABLE) return offlineFallback('teamForm', teamId, league);
   try {
-    const key = cacheKey('form', teamId, league);
+    const key = cacheKey('form', teamId, league, season ?? '');
     const cached = getCache(key);
-    if (cached) return cached;
-
+    if (cached) {
+      // Reject a cached entry if it was for a different season.
+      if (season != null && cached.season !== season) statsCache.delete(key);
+      else return cached;
+    }
     const params = { team: teamId, last: 10 };
     if (league) params.league = league;
+    // Filter to the exact fixture season — prevents cross-season form contamination.
+    if (season != null) params.season = season;
 
     const response = await axiosInstance.get('/fixtures', { params });
     const matches = response.data.response || [];
@@ -252,6 +258,7 @@ export async function getTeamForm(teamId, league = null) {
         recentLosses,
         recentOpposition: summarizeRecentOpposition(teamId, matches, standings),
       },
+      season: season ?? null,
     };
 
     setCache(key, result);

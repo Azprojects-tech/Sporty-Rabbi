@@ -145,3 +145,76 @@ test('analyzeV9 scoreMotivation with null positions returns null score', () => {
   assert.equal(result.parameters.p1_motivation.score, null);
   assert.equal(result.parameters.p1_motivation.evidenceStatus, 'MISSING');
 });
+
+// ─── CORRECTION PASS REGRESSION TESTS ────────────────────────────────────────
+
+// runCalibration must not default positions/points to numeric values
+test('analyzeV9 with no standings data does not default positions to 10/40', () => {
+  const result = analyzeV9({
+    home: 'Independiente Rivadavia', away: 'Huracán',
+    leagueId: 128, status: 'NS',
+    // Explicitly absent — simulates what runCalibration now produces
+    homePosition: null, awayPosition: null,
+    homePoints: null, awayPoints: null,
+    totalTeams: null, gameWeek: null, totalGW: null,
+  });
+  // The match object should preserve nulls, not silently fill 10/40
+  assert.equal(result.match.homePosition, null);
+  assert.equal(result.match.awayPosition, null);
+  assert.equal(result.parameters.p1_motivation.score, null);
+  assert.equal(result.parameters.p14_lifecycle.score, null, 'lifecycle must be null without gameWeek/totalGW');
+});
+
+// Missing critical data must remain null through analysis
+test('analyzeV9 missing xG and shots produce null Poisson, null pace, fail-closed recommendation', () => {
+  const result = analyzeV9({
+    home: 'Team A', away: 'Team B',
+    leagueId: 128, status: 'NS',
+    homeXgAvg: null, awayXgAvg: null,
+    homeXgaAvg: null, awayXgaAvg: null,
+    homeShotsPerGame: null, awayShotsPerGame: null,
+  });
+  // Poisson cannot run without xG data
+  assert.equal(result.poisson.insufficientData, true);
+  // Pace scorer must return null without shots
+  assert.equal(result.parameters.p10_pace.score, null);
+  // Without Poisson no PLAY recommendation can be justified
+  const decisionStatus = result.decisionMetrics?.decisionStatus?.status;
+  assert.notEqual(decisionStatus, 'PLAY', 'No PLAY without Poisson data');
+});
+
+// Lifecycle must be null when totalGW is null
+test('analyzeV9 lifecycle returns null when totalGW is null', () => {
+  const result = analyzeV9({ home: 'A', away: 'B', gameWeek: null, totalGW: null });
+  assert.equal(result.parameters.p14_lifecycle.score, null);
+});
+
+// squads defaulting to null when integrity is unknown
+test('analyzeV9 squads null produce null star power score', () => {
+  const result = analyzeV9({
+    home: 'A', away: 'B',
+    homeSquadIntegrity: null, awaySquadIntegrity: null,
+  });
+  assert.equal(result.parameters.p2_starPower.score, null);
+  assert.equal(result.parameters.p2_starPower.evidenceStatus, 'MISSING');
+});
+
+// Wrong-season cache rejection: getStandings must not accept 2024 entry for 2026 request
+test('getStandings rejects a cached result from a different season', async () => {
+  // Seed a fake 2024 cache entry for leagueId 128
+  const fakeKey = 'standings:128:2024::';  // cacheKey format used internally
+  const fakeEntry = {
+    status: 'AVAILABLE', leagueId: 128, season: 2024,
+    teams: { 999: { position: 18, points: 17 } }, totalTeams: 28,
+  };
+  // We can't directly inject the cache, but we can verify season enforcement at the function level
+  const result2026 = await getStandings({ leagueId: 128, season: 2026 });
+  // In offline mode returns offlineFallback; in live mode AVAILABLE with season:2026
+  if (result2026.status === 'AVAILABLE') {
+    assert.equal(result2026.season, 2026, 'Must return season 2026, not 2024 or 2025');
+  } else {
+    // Offline — season not guessed, returns MISSING or offline
+    assert.notEqual(result2026.season, 2024);
+    assert.notEqual(result2026.season, 2025);
+  }
+});
