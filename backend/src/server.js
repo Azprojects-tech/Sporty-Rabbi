@@ -902,6 +902,18 @@ async function fetchUpcomingMatches() {
   }
 }
 
+/**
+ * Pure helper: build the possession/shots/xg snapshot for a calibration fixture.
+ * Exported so tests can assert no synthetic values are substituted.
+ */
+export function buildCalibrationSnapshotStats(f) {
+  return {
+    possession: { home: null, away: null },
+    shots:      { home: null, away: null },
+    xg:         { home: f?.home?.xgAvg ?? null, away: f?.away?.xgAvg ?? null },
+  };
+}
+
 // Strip non-primitive values from match object (prevents React errors)
 function sanitizeMatch(match) {
   const numOrNull = (v) => {
@@ -1340,13 +1352,12 @@ async function analyzeMatch(match) {
         // See blendCountStat / blendPctStat for derivation and prior-strength rationale.
         ...(() => {
           const isLive = normalizedStatus === 'LIVE' && liveMin > 0;
-          const leagueDefaults = getLeagueStatDefaults(league.id || 0);
-          // Phase logic: early uses baseline-heavy priors, mid blends, late uses live-only values.
-          const hXgAvg  = isLive && homeAvgGF ? phaseBlendCountStat(homeAvgGF, xg.home, liveMin, 90) : (xg.home > 0 ? xg.home : homeAvgGF);
-          const aXgAvg  = isLive && awayAvgGF ? phaseBlendCountStat(awayAvgGF, xg.away, liveMin, 90) : (xg.away > 0 ? xg.away : awayAvgGF);
-          // xGA / defensive quality — away xG against home defense.
-          const hXgaAvg = isLive && homeAvgGA ? phaseBlendCountStat(homeAvgGA, xg.away, liveMin, 90) : (xg.away > 0 ? xg.away : homeAvgGA);
-          const aXgaAvg = isLive && awayAvgGA ? phaseBlendCountStat(awayAvgGA, xg.home, liveMin, 90) : (xg.home > 0 ? xg.home : awayAvgGA);
+          // homeXgAvg: genuine in-play xG from API-Football only; null otherwise.
+          // Goals-per-game (homeAvgGF) is fed to homeGoalsAvgFor below — not here.
+          const hXgAvg  = xg.home != null && xg.home > 0 ? xg.home : null;
+          const aXgAvg  = xg.away != null && xg.away > 0 ? xg.away : null;
+          const hXgaAvg = xg.away != null && xg.away > 0 ? xg.away : null;
+          const aXgaAvg = xg.home != null && xg.home > 0 ? xg.home : null;
           // Shots per game — N=180 (moderately stable; tactical changes take time)
           const baseHomeShots = homeSeasonShots ?? null;
           const baseAwayShots = awaySeasonShots ?? null;
@@ -3096,10 +3107,11 @@ app.post('/api/analyze', async (req, res) => {
       if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
         const hs = hRes.value.stats;
         if (hs.form) enriched.homeForm = hs.form.split('').join('-');
-        if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsFor)     > 0) enriched.homeXgAvg           = parseFloat(hs.avgGoalsFor);
-        if (!enriched.hasLiveXg && parseFloat(hs.avgGoalsAgainst) > 0) enriched.homeXgaAvg          = parseFloat(hs.avgGoalsAgainst);
-        enriched.homeGoalsAvgFor      = parseFloat(hs.avgGoalsFor)     || enriched.homeXgAvg;
-        enriched.homeGoalsAvgAgainst  = parseFloat(hs.avgGoalsAgainst) || enriched.homeXgaAvg;
+        // Goals-per-game stays in goals fields only — never written into xG fields.
+        const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
+        const homeGoalsAgainst = Number.parseFloat(hs.avgGoalsAgainst);
+        if (Number.isFinite(homeGoalsFor))     enriched.homeGoalsAvgFor      = homeGoalsFor;
+        if (Number.isFinite(homeGoalsAgainst)) enriched.homeGoalsAvgAgainst  = homeGoalsAgainst;
         if (hs.goalDrought  != null) enriched.homeGoalDrought  = hs.goalDrought;
         if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
         if (hs.recentOpposition) enriched.homeRecentOpposition = hs.recentOpposition;
@@ -3107,10 +3119,11 @@ app.post('/api/analyze', async (req, res) => {
       if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
         const as = aRes.value.stats;
         if (as.form) enriched.awayForm = as.form.split('').join('-');
-        if (!enriched.hasLiveXg && parseFloat(as.avgGoalsFor)     > 0) enriched.awayXgAvg           = parseFloat(as.avgGoalsFor);
-        if (!enriched.hasLiveXg && parseFloat(as.avgGoalsAgainst) > 0) enriched.awayXgaAvg          = parseFloat(as.avgGoalsAgainst);
-        enriched.awayGoalsAvgFor      = parseFloat(as.avgGoalsFor)     || enriched.awayXgAvg;
-        enriched.awayGoalsAvgAgainst  = parseFloat(as.avgGoalsAgainst) || enriched.awayXgaAvg;
+        // Goals-per-game stays in goals fields only — never written into xG fields.
+        const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
+        const awayGoalsAgainst = Number.parseFloat(as.avgGoalsAgainst);
+        if (Number.isFinite(awayGoalsFor))     enriched.awayGoalsAvgFor      = awayGoalsFor;
+        if (Number.isFinite(awayGoalsAgainst)) enriched.awayGoalsAvgAgainst  = awayGoalsAgainst;
         if (as.goalDrought  != null) enriched.awayGoalDrought  = as.goalDrought;
         if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
         if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
@@ -3740,14 +3753,15 @@ async function runCalibration() {
         || analysis?.match?.competitionContext?.family?.includes('KNOCKOUT')
         ? 'Cup'
         : (matchData.matchType || 'League');
+      const snapshotStats = buildCalibrationSnapshotStats(f);
       const matchObj = sanitizeMatch({
         id: `cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50),
         home: matchMeta.home || 'Unknown',
         away: matchMeta.away || 'Unknown',
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
-        possession: { home: 50, away: 50 },
-        shots: { home: 0, away: 0 },
-        xg: { home: f.home?.xgAvg || 1.2, away: f.away?.xgAvg || 1.0 },
+        possession: snapshotStats.possession,
+        shots:      snapshotStats.shots,
+        xg:         snapshotStats.xg,
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         confidence: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,

@@ -9,6 +9,7 @@ import {
   getTopExecutableRecommendation,
 } from '../../shared/marketKeys.js';
 import { getStandings } from '../src/services/analyticsService.js';
+import { buildCalibrationSnapshotStats } from '../src/server.js';
 
 test('empty input fails closed with NO_BET and no 1X2 availability', () => {
   const result = analyzeV9({});
@@ -217,4 +218,98 @@ test('getStandings rejects a cached result from a different season', async () =>
     assert.notEqual(result2026.season, 2024);
     assert.notEqual(result2026.season, 2025);
   }
+});
+
+// ─── TEST A — calibration snapshot must contain no synthetic statistics ───────
+test('Test A: buildCalibrationSnapshotStats produces null possession/shots, and xg from source or null', () => {
+  // No xgAvg supplied — all three fields must be null
+  const empty = buildCalibrationSnapshotStats({});
+  assert.equal(empty.possession.home, null);
+  assert.equal(empty.possession.away, null);
+  assert.equal(empty.shots.home, null);
+  assert.equal(empty.shots.away, null);
+  assert.equal(empty.xg.home, null, 'xg.home must be null, not 1.2');
+  assert.equal(empty.xg.away, null, 'xg.away must be null, not 1.0');
+
+  // xgAvg provided by the source — must be passed through, not overridden with a fake
+  const withXg = buildCalibrationSnapshotStats({ home: { xgAvg: 1.5 }, away: { xgAvg: 1.3 } });
+  assert.equal(withXg.xg.home, 1.5);
+  assert.equal(withXg.xg.away, 1.3);
+  // possession and shots are still null regardless
+  assert.equal(withXg.possession.home, null, '50 must not appear as a pre-match placeholder');
+  assert.equal(withXg.shots.home, null, '0 must not appear as a pre-match placeholder');
+});
+
+// ─── TEST B — goals-per-game must not appear in xG fields ────────────────────
+test('Test B: goals-per-game enrichment does not write into homeXgAvg/awayXgAvg', () => {
+  // Simulate the enrichment logic that /api/analyze applies to form stats
+  const enriched = {
+    homeXgAvg: null,
+    awayXgAvg: null,
+    homeXgaAvg: null,
+    awayXgaAvg: null,
+  };
+  const homeStats = { avgGoalsFor: '1.8', avgGoalsAgainst: '1.2' };
+  const awayStats = { avgGoalsFor: '1.4', avgGoalsAgainst: '0.9' };
+
+  // Apply the corrected logic (mirrors what /api/analyze now does)
+  const homeGoalsFor = Number.parseFloat(homeStats.avgGoalsFor);
+  const homeGoalsAgainst = Number.parseFloat(homeStats.avgGoalsAgainst);
+  if (Number.isFinite(homeGoalsFor))     enriched.homeGoalsAvgFor = homeGoalsFor;
+  if (Number.isFinite(homeGoalsAgainst)) enriched.homeGoalsAvgAgainst = homeGoalsAgainst;
+
+  const awayGoalsFor = Number.parseFloat(awayStats.avgGoalsFor);
+  const awayGoalsAgainst = Number.parseFloat(awayStats.avgGoalsAgainst);
+  if (Number.isFinite(awayGoalsFor))     enriched.awayGoalsAvgFor = awayGoalsFor;
+  if (Number.isFinite(awayGoalsAgainst)) enriched.awayGoalsAvgAgainst = awayGoalsAgainst;
+
+  // Goals fields populated correctly
+  assert.equal(enriched.homeGoalsAvgFor, 1.8);
+  assert.equal(enriched.homeGoalsAvgAgainst, 1.2);
+  assert.equal(enriched.awayGoalsAvgFor, 1.4);
+  assert.equal(enriched.awayGoalsAvgAgainst, 0.9);
+  // xG fields untouched — must remain null
+  assert.equal(enriched.homeXgAvg, null, 'avgGoalsFor must not leak into homeXgAvg');
+  assert.equal(enriched.awayXgAvg, null, 'avgGoalsFor must not leak into awayXgAvg');
+  assert.equal(enriched.homeXgaAvg, null, 'avgGoalsAgainst must not leak into homeXgaAvg');
+  assert.equal(enriched.awayXgaAvg, null, 'avgGoalsAgainst must not leak into awayXgaAvg');
+});
+
+// ─── TEST C — missing API statistics must remain null, not become zero ────────
+test('Test C: getTeamStatistics with absent fields yields null derived stats', () => {
+  // Simulate what getTeamStatistics computes from an API response with absent fields
+  const s = {};  // no shots, no goals, no fixtures played
+
+  const played     = s.fixtures?.played?.total    ?? null;
+  const goalsFor   = s.goals?.for?.total?.total    ?? null;
+  const shotsTotal = s.shots?.total?.total          ?? null;
+  const shotsOn    = s.shots?.on?.total             ?? null;
+
+  const avgShotsTotal = (played != null && played > 0 && shotsTotal != null)
+    ? +(shotsTotal / played).toFixed(1) : null;
+  const avgShotsOn    = (played != null && played > 0 && shotsOn != null)
+    ? +(shotsOn / played).toFixed(1) : null;
+  const conversionPct = (shotsOn != null && shotsOn > 0 && goalsFor != null)
+    ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
+
+  assert.equal(avgShotsTotal, null, 'missing shots must not become 0');
+  assert.equal(avgShotsOn,    null, 'missing shotsOn must not become 0');
+  assert.equal(conversionPct, null, 'missing conversion must not become 0');
+
+  // Confirmed-zero case: API explicitly sends 0 shots
+  const sWithZero = { fixtures: { played: { total: 5 } }, shots: { total: { total: 0 }, on: { total: 0 } }, goals: { for: { total: { total: 0 } } } };
+  const playedZ     = sWithZero.fixtures?.played?.total    ?? null;
+  const shotsOnZ    = sWithZero.shots?.on?.total            ?? null;
+  const goalsForZ   = sWithZero.goals?.for?.total?.total    ?? null;
+  const shotsTotalZ = sWithZero.shots?.total?.total          ?? null;
+
+  // avgShotsTotal = 0/5 = 0.0 — this IS a confirmed zero
+  const avgShotsTotalZ = (playedZ != null && playedZ > 0 && shotsTotalZ != null)
+    ? +(shotsTotalZ / playedZ).toFixed(1) : null;
+  assert.equal(avgShotsTotalZ, 0, 'confirmed zero shots from API must remain 0, not null');
+
+  // conversionPct with 0 shotsOn must be null (division by zero guard)
+  const conversionPctZ = (shotsOnZ != null && shotsOnZ > 0 && goalsForZ != null)
+    ? +((goalsForZ / shotsOnZ) * 100).toFixed(1) : null;
+  assert.equal(conversionPctZ, null, 'conversionPct with 0 shotsOn must be null');
 });

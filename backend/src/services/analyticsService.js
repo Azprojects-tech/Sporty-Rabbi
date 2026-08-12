@@ -503,22 +503,25 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     const s = response.data.response;
     if (!s) return offlineFallback('teamStats', teamId, leagueId);
 
-    const played        = s.fixtures?.played?.total ?? 1;
-    const goalsFor      = s.goals?.for?.total?.total ?? 0;
-    const shotsTotal    = s.shots?.total?.total ?? 0;
-    const shotsOn       = s.shots?.on?.total ?? 0;
+    const played        = s.fixtures?.played?.total    ?? null;
+    const goalsFor      = s.goals?.for?.total?.total    ?? null;
+    const shotsTotal    = s.shots?.total?.total          ?? null;
+    const shotsOn       = s.shots?.on?.total             ?? null;
     const possessionRaw = s.ball_possession ?? null;
 
-    const avgShotsTotal = played > 0 ? +(shotsTotal / played).toFixed(1) : null;
-    const avgShotsOn    = played > 0 ? +(shotsOn    / played).toFixed(1) : null;
-    const conversionPct = shotsOn > 0 ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
+    const avgShotsTotal = (played != null && played > 0 && shotsTotal != null)
+      ? +(shotsTotal / played).toFixed(1) : null;
+    const avgShotsOn    = (played != null && played > 0 && shotsOn != null)
+      ? +(shotsOn / played).toFixed(1) : null;
+    const conversionPct = (shotsOn != null && shotsOn > 0 && goalsFor != null)
+      ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
     const avgPossession = possessionRaw ? parseFloat(possessionRaw) : null;
 
-    // Late-goal % from minute-bucket data — API-Football goals.for.minute
-    const goalsByMinute = s.goals?.for?.minute || {};
-    const late76_90  = goalsByMinute['76-90']?.total  ?? 0;
-    const late91_105 = goalsByMinute['91-105']?.total ?? 0;
-    const lateGoalPct = goalsFor > 0 ? +((late76_90 + late91_105) / goalsFor).toFixed(3) : null;
+    // Late-goal % — only compute when the minute-bucket structure AND goal count are present.
+    const goalsByMinute = s.goals?.for?.minute ?? null;
+    const lateGoalPct = (goalsByMinute != null && goalsFor != null && goalsFor > 0)
+      ? +((( goalsByMinute['76-90']?.total ?? 0) + (goalsByMinute['91-105']?.total ?? 0)) / goalsFor).toFixed(3)
+      : null;
 
     const result = {
       teamId, leagueId,
@@ -568,8 +571,9 @@ export async function getTeamInjuries(teamId, leagueId, season = null) {
       position: positionMap[i.player?.id] || null,
     }));
 
-    // squadIntegrity = 100 (full-strength baseline); scoreStarPower() reduces it
-    // via positionWeighted penalties from keyAbsences.
+    // squadIntegrity starts at 100 after a verified API call; scoreStarPower()
+    // applies position-weighted penalties from keyAbsences to reduce it.
+    // 100 = "no recorded absences per this API response", not "observably full strength".
     const result = { teamId, leagueId, injuryCount, squadIntegrity: 100, keyAbsences };
     // 2-hour cache
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 2 * 3600000) });
