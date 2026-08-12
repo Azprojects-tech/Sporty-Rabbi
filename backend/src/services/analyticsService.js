@@ -160,7 +160,8 @@ export async function getTeamForm(teamId, league = null) {
 
     const response = await axiosInstance.get('/fixtures', { params });
     const matches = response.data.response || [];
-    const standings = league ? await getStandings(league).catch(() => null) : null;
+    // Season is not available in a form-only fetch; do not guess from current date.
+    const standings = null;
 
     if (matches.length === 0) {
       return {
@@ -347,41 +348,103 @@ export async function getH2H(teamA, teamB) {
 }
 
 /**
- * Get league standings — extracts each team’s position, points, and games played.
- * Cached for 6 hours (standings change at most once per matchday).
+ * Get league standings with full multi-group/table resolution.
+ *
+ * @param {object} opts
+ * @param {number}  opts.leagueId
+ * @param {number}  opts.season      - Required; must come from fixture context, never inferred.
+ * @param {number}  [opts.homeTeamId] - Used to select the relevant standings group.
+ * @param {number}  [opts.awayTeamId]
  */
-export async function getStandings(leagueId, season = null) {
+export async function getStandings({ leagueId, season, homeTeamId = null, awayTeamId = null } = {}) {
+  // Season must be checked before API availability — a missing season is always invalid.
+  if (season == null) {
+    return { status: 'MISSING', reason: 'FIXTURE_SEASON_NOT_AVAILABLE', leagueId, season: null, teams: {}, totalTeams: 0 };
+  }
   if (!API_AVAILABLE) return offlineFallback('standings', leagueId);
-  try {
-    // Football seasons run Aug–May; before August use the previous calendar year.
-    const year = season || (new Date().getMonth() < 7
-      ? new Date().getFullYear() - 1
-      : new Date().getFullYear());
-    const key = cacheKey('standings', leagueId, year);
-    const cached = getCache(key);
-    if (cached) return cached;
 
-    const response = await axiosInstance.get('/standings', {
-      params: { league: leagueId, season: year },
-    });
-    const standings = response.data.response?.[0]?.league?.standings?.[0] || [];
-    if (standings.length === 0) return offlineFallback('standings', leagueId);
+  const key = cacheKey('standings', leagueId, season, homeTeamId ?? '', awayTeamId ?? '');
+  const cached = getCache(key);
+  if (cached) {
+    // Reject stale cache entries for a different season or league.
+    if (cached.season !== season || cached.leagueId !== leagueId) {
+      statsCache.delete(key);
+    } else {
+      return cached;
+    }
+  }
+
+  try {
+    const response = await axiosInstance.get('/standings', { params: { league: leagueId, season } });
+
+    // API-Football may return multiple groups/tables — never assume groups[0] is relevant.
+    const allGroups = response.data.response?.[0]?.league?.standings || [];
+    if (!allGroups.length) {
+      return { status: 'MISSING', reason: 'RELEVANT_STANDINGS_TABLE_NOT_RESOLVED', leagueId, season, teams: {}, totalTeams: 0 };
+    }
+
+    // Find the group that contains both fixture teams.
+    let selectedGroup = null;
+    let selectedGroupName = null;
+    if (homeTeamId != null && awayTeamId != null) {
+      for (const group of allGroups) {
+        const ids = new Set(group.map(e => e.team.id));
+        if (ids.has(homeTeamId) && ids.has(awayTeamId)) { selectedGroup = group; selectedGroupName = group[0]?.group || null; break; }
+      }
+      // If no group holds both teams, try for either team.
+      if (!selectedGroup) {
+        for (const group of allGroups) {
+          const ids = new Set(group.map(e => e.team.id));
+          if (ids.has(homeTeamId) || ids.has(awayTeamId)) { selectedGroup = group; selectedGroupName = group[0]?.group || null; break; }
+        }
+      }
+    }
+    // Without team IDs use the first group; note the ambiguity.
+    if (!selectedGroup) {
+      if (homeTeamId == null && awayTeamId == null) {
+        selectedGroup = allGroups[0]; selectedGroupName = allGroups[0][0]?.group || null;
+      } else {
+        return { status: 'MISSING', reason: 'RELEVANT_STANDINGS_TABLE_NOT_RESOLVED', leagueId, season, teams: {}, totalTeams: 0 };
+      }
+    }
 
     const teamMap = {};
-    standings.forEach((entry) => {
+    selectedGroup.forEach((entry) => {
       teamMap[entry.team.id] = {
-        position:   entry.rank   || 0,
-        points:     entry.points || 0,
-        played:     entry.all?.played || 0,
+        position:       entry.rank               ?? null,
+        points:         entry.points             ?? null,
+        played:         entry.all?.played        ?? null,
+        wins:           entry.all?.win           ?? null,
+        draws:          entry.all?.draw          ?? null,
+        losses:         entry.all?.lose          ?? null,
+        goalsFor:       entry.all?.goals?.for    ?? null,
+        goalsAgainst:   entry.all?.goals?.against ?? null,
+        goalDifference: entry.goalsDiff          ?? null,
+        form:           entry.form               ?? null,
       };
     });
 
-    const result = { leagueId, season: year, totalTeams: standings.length, teams: teamMap };
-    // Override cache TTL to 6 hours for standings
+    const bothResolved = (homeTeamId != null && awayTeamId != null)
+      ? (teamMap[homeTeamId] != null && teamMap[awayTeamId] != null)
+      : true;
+
+    const result = {
+      status:     bothResolved ? 'AVAILABLE' : 'MISSING',
+      reason:     bothResolved ? null : 'RELEVANT_STANDINGS_TABLE_NOT_RESOLVED',
+      source:     'API_FOOTBALL',
+      leagueId,
+      season,
+      tableName:  selectedGroupName,
+      groupName:  selectedGroupName,
+      teams:      teamMap,
+      totalTeams: selectedGroup.length,
+      retrievedAt: new Date().toISOString(),
+    };
+    // 6-hour TTL
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 6 * 3600000) });
     return result;
   } catch (error) {
-    console.error('❌ Error fetching standings:', error.message);
+    console.error('Error fetching standings:', error.message);
     return offlineFallback('standings', leagueId);
   }
 }
@@ -415,11 +478,14 @@ export async function getFixturePreview(fixtureId, homeTeamId, awayTeamId, leagu
  * Get season team statistics: shots per game, conversion rate, possession average.
  * Cached 6 hours — season aggregates change slowly.
  */
-export async function getTeamStatistics(teamId, leagueId) {
+export async function getTeamStatistics(teamId, leagueId, season = null) {
   if (!API_AVAILABLE) return offlineFallback('teamStats', teamId, leagueId);
   if (!teamId || !leagueId) return offlineFallback('teamStats', teamId, leagueId);
+  if (season == null) {
+    return { status: 'MISSING', reason: 'FIXTURE_SEASON_NOT_AVAILABLE', teamId, leagueId };
+  }
   try {
-    const year = new Date().getMonth() < 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+    const year = season;
     const key = cacheKey('teamStats', teamId, leagueId, year);
     const cached = getCache(key);
     if (cached) return cached;
@@ -464,11 +530,14 @@ export async function getTeamStatistics(teamId, leagueId) {
  * Get active injury/suspension count and derive squad integrity score.
  * Cached 2 hours — squad availability can change before match day.
  */
-export async function getTeamInjuries(teamId, leagueId) {
+export async function getTeamInjuries(teamId, leagueId, season = null) {
   if (!API_AVAILABLE) return offlineFallback('injuries', teamId, leagueId);
   if (!teamId || !leagueId) return offlineFallback('injuries', teamId, leagueId);
+  if (season == null) {
+    return { status: 'MISSING', reason: 'FIXTURE_SEASON_NOT_AVAILABLE', teamId, leagueId };
+  }
   try {
-    const year = new Date().getMonth() < 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+    const year = season;
     const key = cacheKey('injuries', teamId, leagueId, year);
     const cached = getCache(key);
     if (cached) return cached;

@@ -940,6 +940,7 @@ function sanitizeMatch(match) {
     homePoints: numOrNull(match.homePoints),
     awayPoints: numOrNull(match.awayPoints),
     totalTeams: numOrNull(match.totalTeams),
+    season: match.season ?? null,
     homeTeamId: match.homeTeamId || null,
     awayTeamId: match.awayTeamId || null,
     cards: {
@@ -1241,7 +1242,7 @@ async function analyzeMatch(match) {
       let homeSeasonShots = null, awaySeasonShots = null;
       let homeSeasonPossession = null;
       let homeLateGoalPct = null, awayLateGoalPct = null;
-      let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
+      let homeSquadIntegrity = null, awaySquadIntegrity = null;
       let homeKeyAbsences = [], awayKeyAbsences = [];
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
@@ -1250,11 +1251,11 @@ async function analyzeMatch(match) {
           getTeamForm(homeTeamId, league.id),
           getTeamForm(awayTeamId, league.id),
           getH2H(homeTeamId, awayTeamId),
-          getStandings(league.id),
-          getTeamStatistics(homeTeamId, league.id),
-          getTeamStatistics(awayTeamId, league.id),
-          getTeamInjuries(homeTeamId, league.id),
-          getTeamInjuries(awayTeamId, league.id),
+          getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
+          getTeamStatistics(homeTeamId, league.id, league.season ?? null),
+          getTeamStatistics(awayTeamId, league.id, league.season ?? null),
+          getTeamInjuries(homeTeamId, league.id, league.season ?? null),
+          getTeamInjuries(awayTeamId, league.id, league.season ?? null),
         ]);
         // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
@@ -1288,11 +1289,11 @@ async function analyzeMatch(match) {
           for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
         }
         // Real league standings — position, points and gameWeek for P1/P14
-        if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+        if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
           const tms = standingsRes.value.teams;
-          totalTeams = standingsRes.value.totalTeams || 20;
-          if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position; homePoints = tms[homeTeamId].points; }
-          if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position; awayPoints = tms[awayTeamId].points; }
+          totalTeams = standingsRes.value.totalTeams || null;
+          if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position ?? null; homePoints = tms[homeTeamId].points ?? null; }
+          if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position ?? null; awayPoints = tms[awayTeamId].points ?? null; }
           const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
           if (played > 0) gameWeek = played;
         }
@@ -1422,6 +1423,7 @@ async function analyzeMatch(match) {
       opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
+      season: league.season ?? null,
       matchType,
       leagueCountry: league.country || '',
       homePosition,
@@ -3084,7 +3086,7 @@ app.post('/api/analyze', async (req, res) => {
         getTeamForm(homeTeamId, leagueId),
         getTeamForm(awayTeamId, leagueId),
         getH2H(homeTeamId, awayTeamId),
-        getStandings(leagueId),
+        getStandings({ leagueId, season: body.season ?? body.fixtureContext?.season ?? null, homeTeamId, awayTeamId }),
       ]);
       if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
         const hs = hRes.value.stats;
@@ -3120,11 +3122,11 @@ app.post('/api/analyze', async (req, res) => {
         for (let i = 0; i < (s.teamBWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gH+1, winner: 'away' });
         for (let i = 0; i < (s.draws    || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gA,   winner: 'draw' });
       }
-      if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+      if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
         const tms = standingsRes.value.teams;
-        enriched.totalTeams = standingsRes.value.totalTeams || 20;
-        if (tms[homeTeamId]) { enriched.homePosition = tms[homeTeamId].position; enriched.homePoints = tms[homeTeamId].points; }
-        if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position; enriched.awayPoints = tms[awayTeamId].points; }
+        enriched.totalTeams = standingsRes.value.totalTeams || null;
+        if (tms[homeTeamId]) { enriched.homePosition = tms[homeTeamId].position ?? null; enriched.homePoints = tms[homeTeamId].points ?? null; }
+        if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position ?? null; enriched.awayPoints = tms[awayTeamId].points ?? null; }
         const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
         if (played > 0) enriched.gameWeek = played;
         standingsStatus = { status: 'available', source: 'api-football-standings' };
@@ -3151,12 +3153,8 @@ app.post('/api/analyze', async (req, res) => {
       if (enriched.awayGoalsAvgFor     == null) enriched.awayGoalsAvgFor     = ci.awayGoalsAvgFor;
       if (enriched.homeGoalsAvgAgainst == null) enriched.homeGoalsAvgAgainst = ci.homeGoalsAvgAgainst;
       if (enriched.awayGoalsAvgAgainst == null) enriched.awayGoalsAvgAgainst = ci.awayGoalsAvgAgainst;
-      if (!enriched.homePosition)              enriched.homePosition        = ci.homePosition;
-      if (!enriched.awayPosition)              enriched.awayPosition        = ci.awayPosition;
-      if (!enriched.homePoints)                enriched.homePoints          = ci.homePoints;
-      if (!enriched.awayPoints)                enriched.awayPoints          = ci.awayPoints;
-      if (!enriched.totalTeams)                enriched.totalTeams          = ci.totalTeams;
-      if (!enriched.gameWeek)                  enriched.gameWeek            = ci.gameWeek;
+      // standings (position/points/totalTeams/gameWeek) must never be restored from
+      // a calibration cache — those values may belong to a different season.
       if (enriched.homeSquadIntegrity  == null) enriched.homeSquadIntegrity  = ci.homeSquadIntegrity;
       if (enriched.awaySquadIntegrity  == null) enriched.awaySquadIntegrity  = ci.awaySquadIntegrity;
       if (enriched.homeConversionPct   == null) enriched.homeConversionPct   = ci.homeConversionPct;
@@ -3166,10 +3164,9 @@ app.post('/api/analyze', async (req, res) => {
       if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
 
       if (
-        standingsStatus.status !== 'available' &&
-        ((enriched.homePosition != null && enriched.homePosition > 0) || (enriched.awayPosition != null && enriched.awayPosition > 0))
+        standingsStatus.status !== 'available'
       ) {
-        standingsStatus = { status: 'fallback', source: 'calibrated-inputs' };
+        // calibrated-inputs no longer provide standings — position/season context is required
       }
     }
 
@@ -3337,24 +3334,24 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     const leagueId   = match.leagueId;
 
     const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
-      getStandings(leagueId),
-      getTeamStatistics(homeTeamId, leagueId),
-      getTeamStatistics(awayTeamId, leagueId),
-      getTeamInjuries(homeTeamId, leagueId),
-      getTeamInjuries(awayTeamId, leagueId),
+      getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
+      getTeamStatistics(homeTeamId, leagueId, match.season ?? null),
+      getTeamStatistics(awayTeamId, leagueId, match.season ?? null),
+      getTeamInjuries(homeTeamId, leagueId, match.season ?? null),
+      getTeamInjuries(awayTeamId, leagueId, match.season ?? null),
     ]);
 
-    let homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40, totalTeams = 20, gameWeek = 30;
-    if (standingsRes.status === 'fulfilled' && !standingsRes.value?.offline && standingsRes.value?.teams) {
+    let homePosition = null, awayPosition = null, homePoints = null, awayPoints = null, totalTeams = null, gameWeek = null;
+    if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
       const tms = standingsRes.value.teams;
-      totalTeams = standingsRes.value.totalTeams || 20;
-      if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position; homePoints = tms[homeTeamId].points; }
-      if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position; awayPoints = tms[awayTeamId].points; }
+      totalTeams = standingsRes.value.totalTeams || null;
+      if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position ?? null; homePoints = tms[homeTeamId].points ?? null; }
+      if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position ?? null; awayPoints = tms[awayTeamId].points ?? null; }
       const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
       if (played > 0) gameWeek = played;
     }
 
-    let homeSquadIntegrity = 85, awaySquadIntegrity = 85;
+    let homeSquadIntegrity = null, awaySquadIntegrity = null;
     let homeConversionPct = null, awayConversionPct = null;
     let homeSeasonShots = null, awaySeasonShots = null, homeSeasonPossession = null;
     let homeLateGoalPct = null, awayLateGoalPct = null;
@@ -3693,7 +3690,7 @@ async function runCalibration() {
         homePoints:        f.context?.homePoints   || matchMeta.homePoints   || 40,
         awayPoints:        f.context?.awayPoints   || matchMeta.awayPoints   || 40,
         totalTeams:        calTotalTeams,
-        gameWeek:          f.context?.gameWeek     || matchMeta.gameWeek     || 30,
+        gameWeek:          f.context?.gameWeek     ?? matchMeta.gameWeek     ?? null,
         totalGW:           calTotalGW,
         // ── Team form strings ──────────────────────────────────────────────────
         homeForm: Array.isArray(f.home?.recentForm)
@@ -3715,7 +3712,7 @@ async function runCalibration() {
         awayConversionPct: aRealStats?.conversionPct ?? f.away?.conversionPct ?? null,
         homeShotsPerGame:  hRealStats?.avgShotsTotal ?? f.home?.shotsPerGame  ?? null,
         awayShotsPerGame:  aRealStats?.avgShotsTotal ?? f.away?.shotsPerGame  ?? null,
-        homePossession:    hRealStats?.avgPossession ?? 50,
+        homePossession:    hRealStats?.avgPossession ?? null,
         homeStats: f.home,
         awayStats: f.away,
         h2h: f.h2h,

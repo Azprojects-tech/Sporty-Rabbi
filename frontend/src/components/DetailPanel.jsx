@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { apiService } from '../services/api';
-import { getLeagueStatDefaults } from '../../../shared/leagueDefaults.js';
 
 const TIER_COLORS = { 1: '#f59e0b', 2: '#00b859', 3: '#fbbf24', 4: '#f97316' };
 const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
@@ -335,7 +334,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     setError(null);
     try {
       const _lid = match.leagueId || 0;
-      const leagueDefaults = getLeagueStatDefaults(_lid);
       const matchData = {
         home:             match.home,
         away:             match.away,
@@ -364,14 +362,16 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         homePoints:       match.homePoints ?? null,
         awayPoints:       match.awayPoints ?? null,
         totalTeams:       match.totalTeams ?? null,
+        season:           match.season ?? null,
         homePossession:   (match.possession?.home != null && Number.isFinite(Number(match.possession.home))) ? Number(match.possession.home) : null,
         hasLiveXg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) || (match.xg?.away != null && Number.isFinite(Number(match.xg.away))),
-        homeXgAvg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : leagueDefaults.homeXgAvg,
-        awayXgAvg:        (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : leagueDefaults.awayXgAvg,
-        homeXgaAvg:       (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : leagueDefaults.awayXgAvg,
-        awayXgaAvg:       (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : leagueDefaults.homeXgAvg,
-        homeShotsPerGame: (match.shots?.home != null && Number.isFinite(Number(match.shots.home))) ? Number(match.shots.home) : leagueDefaults.homeShotsPerGame,
-        awayShotsPerGame: (match.shots?.away != null && Number.isFinite(Number(match.shots.away))) ? Number(match.shots.away) : leagueDefaults.awayShotsPerGame,
+        // Return null when team-specific xG is unknown — never substitute a league average as a team observation.
+        homeXgAvg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : null,
+        awayXgAvg:        (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : null,
+        homeXgaAvg:       (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : null,
+        awayXgaAvg:       (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : null,
+        homeShotsPerGame: (match.shots?.home != null && Number.isFinite(Number(match.shots.home))) ? Number(match.shots.home) : null,
+        awayShotsPerGame: (match.shots?.away != null && Number.isFinite(Number(match.shots.away))) ? Number(match.shots.away) : null,
         matchType:        match.matchType || 'League',
         homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
         awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },

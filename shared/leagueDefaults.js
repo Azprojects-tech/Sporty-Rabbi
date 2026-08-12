@@ -29,7 +29,7 @@ const HIGH_SHOT_LEAGUES = new Set([2, 3, 848, 39, 78, 88]);
 const MID_SHOT_LEAGUES = new Set([140, 135, 61, 94]);
 
 export function getLeagueStatDefaults(leagueId = 0) {
-  const [homeXgAvg, awayXgAvg] = LEAGUE_XG_MAP[leagueId] || [1.3, 1.15];
+  const [homeGoalsRateAvg, awayGoalsRateAvg] = LEAGUE_XG_MAP[leagueId] || [1.3, 1.15];
 
   const homeShotsPerGame = HIGH_SHOT_LEAGUES.has(leagueId)
     ? 15
@@ -44,8 +44,9 @@ export function getLeagueStatDefaults(leagueId = 0) {
       : 9;
 
   return {
-    homeXgAvg,
-    awayXgAvg,
+    // Goal rate averages per league — NOT team-specific xG; label accordingly.
+    homeGoalsRateAvg,
+    awayGoalsRateAvg,
     homeShotsPerGame,
     awayShotsPerGame,
   };

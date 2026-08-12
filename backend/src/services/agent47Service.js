@@ -228,7 +228,15 @@ function parseForm(raw) {
 
 // P1 — MOTIVATION GAP
 function scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, totalTeams = 20, gameWeek, totalGW = 38 }) {
-  const lifecycle = gameWeek / totalGW;
+  if (homePosition == null || awayPosition == null) {
+    return {
+      score: null, available: false, evidenceStatus: 'MISSING',
+      home: { motivation: null, situation: 'unknown' }, away: { motivation: null, situation: 'unknown' },
+      gap: null, edge: 'NEUTRAL', mwvIndex: 0,
+      assessment: 'Required inputs unavailable — league positions missing.',
+    };
+  }
+  const lifecycle = (gameWeek != null && totalGW != null && totalGW > 0) ? gameWeek / totalGW : 0;
   const late = lifecycle > 0.75;
 
   function classify(pos, pts) {
@@ -272,7 +280,10 @@ function scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, t
 }
 
 // P2 — STAR POWER
-function scoreStarPower(homeIntegrity = 85, awayIntegrity = 85, homeAbsences = [], awayAbsences = []) {
+function scoreStarPower(homeIntegrity = null, awayIntegrity = null, homeAbsences = [], awayAbsences = []) {
+  if (homeIntegrity == null || awayIntegrity == null) {
+    return { score: null, available: false, evidenceStatus: 'MISSING', homeEffective: null, awayEffective: null, edge: 'NEUTRAL', assessment: 'Required inputs unavailable — squad integrity missing.' };
+  }
   const impactMap = { striker: 15, goalkeeper: 12, 'center-back': 10, midfielder: 8, winger: 7, default: 8 };
 
   const penalty = (absences) =>
@@ -467,7 +478,10 @@ function scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg, leagueAvgGA = 1.35) {
 }
 
 // P10 — PACE & CONVERSION
-function scorePace(homeConv = 10, awayConv = 10, homeShotsPerGame = 12, awayShotsPerGame = 10) {
+function scorePace(homeConv = null, awayConv = null, homeShotsPerGame = null, awayShotsPerGame = null) {
+  if (homeShotsPerGame == null || awayShotsPerGame == null) {
+    return { score: null, available: false, evidenceStatus: 'MISSING', edge: 'NEUTRAL', assessment: 'Required inputs unavailable — shots data missing.' };
+  }
   const combined = homeShotsPerGame + awayShotsPerGame;
   const avgConv  = (homeConv + awayConv) / 2;
   const pace     = Math.min((combined / 22) * 65 + (avgConv / 15) * 35, 100);
@@ -1614,7 +1628,7 @@ function annotateRecommendationDecisions(recommendations = [], { home, away, odd
 }
 
 // ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
-function scoreHomeAdvantage(homePossession = 50, homeShotsPerGame = 11, awayShotsPerGame = 11, venue = null, status = 'NS') {
+function scoreHomeAdvantage(homePossession = null, homeShotsPerGame = 11, awayShotsPerGame = 11, venue = null, status = 'NS') {
   let score = 55; // Baseline: ~5% home win rate boost (literature consensus)
   if (status !== 'NS' && homePossession > 0) {
     // Live match: possession dominance is a real pressure signal
@@ -1728,9 +1742,9 @@ export function analyzeV9(matchData = {}) {
     home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0, matchType = 'League',
     country = '', round = null, isKnockout = false, notes = null,
     gameWeek = 30, totalGW = 38, totalTeams = 20,
-    homePosition = 10, awayPosition = 10, homePoints = 40, awayPoints = 40,
+    homePosition = null, awayPosition = null, homePoints = null, awayPoints = null,
     status = 'NS', matchMinutes = 0, score = '0-0',
-    homeSquadIntegrity = 90, awaySquadIntegrity = 90,
+    homeSquadIntegrity = null, awaySquadIntegrity = null,
     homeKeyAbsences = [], awayKeyAbsences = [],
     homeForm = null, awayForm = null,
     homeGoalsAvgFor = null, awayGoalsAvgFor = null,
@@ -1739,8 +1753,8 @@ export function analyzeV9(matchData = {}) {
     homeXgaAvg = null, awayXgaAvg = null,
     h2hHistory = [],
     homeLateGoalPct = 0.20, awayLateGoalPct = 0.20,
-    homeConversionPct = 10, awayConversionPct = 10,
-    homeShotsPerGame = 12, awayShotsPerGame = 10,
+    homeConversionPct = null, awayConversionPct = null,
+    homeShotsPerGame = null, awayShotsPerGame = null,
     earlyGoalScored = false, earlyGoalMinute = null,
     homeTacticalHighLine = false, awayCounterThreat = false,
     homePossession = 50,
