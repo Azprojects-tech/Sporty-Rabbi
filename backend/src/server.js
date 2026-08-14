@@ -1070,6 +1070,7 @@ function parseLightFixture(match) {
       league:        league.name  || 'Unavailable',
       leagueId:      league.id    || 0,
       leagueCountry: league.country || '',
+      season:         league.season ?? null,
       confidence:    null,
       opportunities: [],
       possession:    { home: null, away: null },
@@ -1249,6 +1250,7 @@ async function analyzeMatch(match) {
       let homePosition = null, awayPosition = null, homePoints = null, awayPoints = null, totalTeams = null;
       let gameWeek = null;
       let homeAvgGF = null, homeAvgGA = null, awayAvgGF = null, awayAvgGA = null;
+      let homeSampleSize = null, awaySampleSize = null;
       let homeGoalDrought = 0, awayGoalDrought = 0, homeRecentLosses = 0, awayRecentLosses = 0;
       let homeConversionPct = null, awayConversionPct = null;
       let homeSeasonShots = null, awaySeasonShots = null;
@@ -1273,8 +1275,9 @@ async function analyzeMatch(match) {
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
           const hs = hRes.value.stats;
           if (hs.form)  homeFormStr      = hs.form.split('').join('-');
-          if (parseFloat(hs.avgGoalsFor)     > 0) homeAvgGF        = parseFloat(hs.avgGoalsFor);
-          if (parseFloat(hs.avgGoalsAgainst) > 0) homeAvgGA        = parseFloat(hs.avgGoalsAgainst);
+          homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
+          if (parseFloat(hs.avgGoalsFor)     >= 0) homeAvgGF        = parseFloat(hs.avgGoalsFor);
+          if (parseFloat(hs.avgGoalsAgainst) >= 0) homeAvgGA = parseFloat(hs.avgGoalsAgainst);
           if (hs.goalDrought  != null) homeGoalDrought  = hs.goalDrought;
           if (hs.recentLosses != null) homeRecentLosses = hs.recentLosses;
           if (hs.recentOpposition) match.homeRecentOpposition = hs.recentOpposition;
@@ -1282,24 +1285,17 @@ async function analyzeMatch(match) {
         if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
           const as = aRes.value.stats;
           if (as.form)  awayFormStr      = as.form.split('').join('-');
-          if (parseFloat(as.avgGoalsFor)     > 0) awayAvgGF        = parseFloat(as.avgGoalsFor);
-          if (parseFloat(as.avgGoalsAgainst) > 0) awayAvgGA        = parseFloat(as.avgGoalsAgainst);
+          awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
+          if (parseFloat(as.avgGoalsFor)     >= 0) awayAvgGF        = parseFloat(as.avgGoalsFor);
+          if (parseFloat(as.avgGoalsAgainst) >= 0) awayAvgGA = parseFloat(as.avgGoalsAgainst);
           if (as.goalDrought  != null) awayGoalDrought  = as.goalDrought;
           if (as.recentLosses != null) awayRecentLosses = as.recentLosses;
           if (as.recentOpposition) match.awayRecentOpposition = as.recentOpposition;
         }
-        // Build h2h history from aggregate stats for scoreH2H()
-        if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
-          const s = h2hRes.value.stats;
-          const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-          // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
-          const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
-          const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
-          const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
-          for (let i = 0; i < (s.teamAWins || 0); i++) h2hHistory.push({ homeGoals: gH + 1, awayGoals: gA, winner: 'home' });
-          for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
-          for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
-        }
+        // V10.1: aggregate H2H counts are not converted into invented scorelines.
+        // H2H remains optional until exact historical fixture rows are oriented safely
+        // relative to the current home/away teams.
+        h2hHistory = [];
         // Real league standings — position, points and gameWeek for P1/P14
         if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
           const tms = standingsRes.value.teams;
@@ -1339,6 +1335,7 @@ async function analyzeMatch(match) {
         away: teams.away?.name || 'Unknown',
         league: league.name || 'Unknown',
         leagueId: league.id || 0,
+        season: league.season ?? null,
         country: league.country || '',
         round: league.round || '',
         isKnockout: round.includes('knockout') || round.includes('round of') || round.includes('quarter') || round.includes('semi') || round.includes('final'),
@@ -1381,6 +1378,8 @@ async function analyzeMatch(match) {
         // Season goal averages fed to P4 coiled spring and P6 defensive gap (unchanged)
         homeGoalsAvgFor:     homeAvgGF,
         awayGoalsAvgFor:     awayAvgGF,
+        homeSampleSize,
+        awaySampleSize,
         homeGoalsAvgAgainst: homeAvgGA,
         awayGoalsAvgAgainst: awayAvgGA,
         homeConversionPct,
@@ -1442,14 +1441,14 @@ async function analyzeMatch(match) {
       season: league.season ?? null,
       matchType,
       leagueCountry: league.country || '',
-      homePosition,
-      awayPosition,
-      homePoints,
-      awayPoints,
-      totalTeams,
+      homePosition: analysisObj?.match?.homePosition ?? calMatch?.homePosition ?? null,
+      awayPosition: analysisObj?.match?.awayPosition ?? calMatch?.awayPosition ?? null,
+      homePoints: analysisObj?.match?.homePoints ?? calMatch?.homePoints ?? null,
+      awayPoints: analysisObj?.match?.awayPoints ?? calMatch?.awayPoints ?? null,
+      totalTeams: analysisObj?.match?.totalTeams ?? calMatch?.totalTeams ?? null,
       cards,
-      homeConversionPct,
-      awayConversionPct,
+      homeConversionPct: analysisObj?.predictionCore?.inputSummary?.homeConversionPct ?? null,
+      awayConversionPct: analysisObj?.predictionCore?.inputSummary?.awayConversionPct ?? null,
     };
     
     const result = sanitizeMatch(analyzed);
@@ -1483,7 +1482,8 @@ async function analyzeMatch(match) {
       xg: { home: null, away: null },
       status: statusStr,
       matchMinutes: typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0,
-      confidence: 50,
+      confidence: 0,
+      decisionProbability: null,
       opportunities: [],
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
@@ -3107,6 +3107,7 @@ app.post('/api/analyze', async (req, res) => {
       if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
         const hs = hRes.value.stats;
         if (hs.form) enriched.homeForm = hs.form.split('').join('-');
+        enriched.homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
         // Goals-per-game stays in goals fields only — never written into xG fields.
         const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
         const homeGoalsAgainst = Number.parseFloat(hs.avgGoalsAgainst);
@@ -3119,6 +3120,7 @@ app.post('/api/analyze', async (req, res) => {
       if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
         const as = aRes.value.stats;
         if (as.form) enriched.awayForm = as.form.split('').join('-');
+        enriched.awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
         // Goals-per-game stays in goals fields only — never written into xG fields.
         const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
         const awayGoalsAgainst = Number.parseFloat(as.avgGoalsAgainst);
@@ -3128,18 +3130,8 @@ app.post('/api/analyze', async (req, res) => {
         if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
         if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
       }
-      if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
-        const s = h2hRes.value.stats;
-        const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-        // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
-        const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
-        const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
-        const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
-        enriched.h2hHistory = [];
-        for (let i = 0; i < (s.teamAWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gH+1, awayGoals: gA,   winner: 'home' });
-        for (let i = 0; i < (s.teamBWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gH+1, winner: 'away' });
-        for (let i = 0; i < (s.draws    || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gA,   winner: 'draw' });
-      }
+      // V10.1: do not synthesize historical scorelines from aggregate H2H counts.
+      enriched.h2hHistory = [];
       if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
         const tms = standingsRes.value.teams;
         enriched.totalTeams = standingsRes.value.totalTeams || null;
@@ -3161,30 +3153,16 @@ app.post('/api/analyze', async (req, res) => {
     );
     if (calFb?.calibratedInputs) {
       const ci = calFb.calibratedInputs;
-      if (!enriched.homeForm)                  enriched.homeForm            = ci.homeForm;
-      if (!enriched.awayForm)                  enriched.awayForm            = ci.awayForm;
-      if (enriched.homeXgAvg           == null) enriched.homeXgAvg           = ci.homeXgAvg;
-      if (enriched.awayXgAvg           == null) enriched.awayXgAvg           = ci.awayXgAvg;
-      if (enriched.homeXgaAvg          == null) enriched.homeXgaAvg          = ci.homeXgaAvg;
-      if (enriched.awayXgaAvg          == null) enriched.awayXgaAvg          = ci.awayXgaAvg;
-      if (enriched.homeGoalsAvgFor     == null) enriched.homeGoalsAvgFor     = ci.homeGoalsAvgFor;
-      if (enriched.awayGoalsAvgFor     == null) enriched.awayGoalsAvgFor     = ci.awayGoalsAvgFor;
-      if (enriched.homeGoalsAvgAgainst == null) enriched.homeGoalsAvgAgainst = ci.homeGoalsAvgAgainst;
-      if (enriched.awayGoalsAvgAgainst == null) enriched.awayGoalsAvgAgainst = ci.awayGoalsAvgAgainst;
-      // standings (position/points/totalTeams/gameWeek) must never be restored from
-      // a calibration cache — those values may belong to a different season.
-      if (enriched.homeSquadIntegrity  == null) enriched.homeSquadIntegrity  = ci.homeSquadIntegrity;
-      if (enriched.awaySquadIntegrity  == null) enriched.awaySquadIntegrity  = ci.awaySquadIntegrity;
-      if (enriched.homeConversionPct   == null) enriched.homeConversionPct   = ci.homeConversionPct;
-      if (enriched.awayConversionPct   == null) enriched.awayConversionPct   = ci.awayConversionPct;
-      if (!enriched.homeShotsPerGame)           enriched.homeShotsPerGame    = ci.homeShotsPerGame;
-      if (!enriched.awayShotsPerGame)           enriched.awayShotsPerGame    = ci.awayShotsPerGame;
-      if (!enriched.h2hHistory?.length)         enriched.h2hHistory          = ci.h2hHistory;
-
-      if (
-        standingsStatus.status !== 'available'
-      ) {
-        // calibrated-inputs no longer provide standings — position/season context is required
+      const requestedSeason = body.season ?? body.fixtureContext?.season ?? null;
+      if (ci.source === 'API_FOOTBALL' && requestedSeason != null && ci.season === requestedSeason) {
+        if (!enriched.homeForm) enriched.homeForm = ci.homeForm;
+        if (!enriched.awayForm) enriched.awayForm = ci.awayForm;
+        if (enriched.homeGoalsAvgFor == null) enriched.homeGoalsAvgFor = ci.homeGoalsAvgFor;
+        if (enriched.awayGoalsAvgFor == null) enriched.awayGoalsAvgFor = ci.awayGoalsAvgFor;
+        if (enriched.homeGoalsAvgAgainst == null) enriched.homeGoalsAvgAgainst = ci.homeGoalsAvgAgainst;
+        if (enriched.awayGoalsAvgAgainst == null) enriched.awayGoalsAvgAgainst = ci.awayGoalsAvgAgainst;
+        if (enriched.homeSampleSize == null) enriched.homeSampleSize = ci.homeSampleSize;
+        if (enriched.awaySampleSize == null) enriched.awaySampleSize = ci.awaySampleSize;
       }
     }
 
@@ -3275,7 +3253,9 @@ app.post('/api/analyze', async (req, res) => {
       }
       if (hPoss != null && hPoss > 0) {
         const basePoss = enriched.homePossession ?? null;
-        enriched.homePossession = parseFloat(phaseBlendPctStat(basePoss ?? 50, hPoss, matchMins, 360).toFixed(1));
+        enriched.homePossession = basePoss != null
+          ? parseFloat(phaseBlendPctStat(basePoss, hPoss, matchMins, 360).toFixed(1))
+          : hPoss;
       }
     }
 
@@ -3573,6 +3553,7 @@ async function runCalibration() {
         awayTeamId: f.teams?.away?.id,
         league: f.league?.name,
         leagueId: f.league?.id || 0,
+        season: f.league?.season ?? null,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
       }))
@@ -3580,76 +3561,79 @@ async function runCalibration() {
 
     // Build name→ID map and pre-fetch team stats/injuries in parallel (all cached 2–6 h)
     for (const f of fixtureList) {
-      if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId });
-      if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId });
+      if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId, season: f.season });
+      if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId, season: f.season });
     }
     if (calTeamIdMap.size > 0) {
-      const uniqueTeams = [...new Map([...calTeamIdMap.values()].map(v => [v.id, v])).values()];
-      await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId }) => {
+      const uniqueTeams = [
+        ...new Map(
+          [...calTeamIdMap.values()].map((v) => [`${v.id}:${v.leagueId}:${v.season}`, v])
+        ).values(),
+      ];
+
+      await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId, season }) => {
+        if (season == null) return;
         try {
-          const [statsRes, injRes] = await Promise.all([
-            getTeamStatistics(id, leagueId),
-            getTeamInjuries(id, leagueId),
-          ]);
-          calTeamStats.set(id, {
-            conversionPct:  statsRes?.stats?.conversionPct ?? null,
-            avgShotsTotal:  statsRes?.stats?.avgShotsTotal ?? null,
-            avgPossession:  statsRes?.stats?.avgPossession ?? null,
-            squadIntegrity: injRes?.squadIntegrity         ?? null,
+          const formRes = await getTeamForm(id, leagueId, season);
+          const stats = formRes?.stats || null;
+          if (!stats || stats.error) return;
+          calTeamStats.set(`${id}:${leagueId}:${season}`, {
+            source: 'API_FOOTBALL',
+            season,
+            form: stats.form || null,
+            avgGoalsFor: Number.isFinite(Number(stats.avgGoalsFor)) ? Number(stats.avgGoalsFor) : null,
+            avgGoalsAgainst: Number.isFinite(Number(stats.avgGoalsAgainst)) ? Number(stats.avgGoalsAgainst) : null,
+            sampleSize: Array.isArray(formRes.matches) ? formRes.matches.length : null,
           });
         } catch (_) {}
       }));
-      console.log(`[Calibrate] Pre-fetched real API stats for ${calTeamStats.size} teams`);
+      console.log(`[Calibrate] Pre-fetched verified current-season form/goals for ${calTeamStats.size} team contexts`);
     }
 
-    console.log(`[Calibrate] ${fixtureList.length} whitelisted fixtures from API-Football — enriching with Gemini...`);
-    if (fixtureList.length > 0) {
-      const enriched = await enrichFixturesWithGemini(fixtureList).catch(() => null);
-      if (enriched && enriched.length > 0) {
-        raw = enriched;
-        dataSource = 'API-Football + Gemini';
-      } else {
-        console.log('[Calibrate] Enrichment unavailable for API-Football fixtures — trying next source');
-      }
-    }
+    console.log(`[Calibrate] ${fixtureList.length} authoritative API-Football fixtures — using verified core evidence only`);
+    raw = fixtureList.map((f) => ({
+      match: {
+        home: f.home,
+        away: f.away,
+        homeTeamId: f.homeTeamId,
+        awayTeamId: f.awayTeamId,
+        league: f.league,
+        leagueId: f.leagueId,
+        season: f.season,
+        country: f.country,
+        kickoffUTC: f.kickoffUTC,
+        status: 'NS',
+        minute: 0,
+      },
+    }));
+    dataSource = 'API-Football verified core';
   }
 
   // ── Step 2: TheSportsDB (free, no API key) ─────────────────────────────────
   if (raw.length === 0) {
-    console.log('[Calibrate] API-Football unavailable — trying TheSportsDB (free)...');
+    console.log('[Calibrate] API-Football unavailable — TheSportsDB may supply fixture discovery only.');
     const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
-    if (sportsDbFixtures.length > 0) {
-      const fixtureList = sportsDbFixtures.map(f => ({
+    raw = sportsDbFixtures.map((f) => ({
+      match: {
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,
+        homeTeamId: f.teams?.home?.id ?? null,
+        awayTeamId: f.teams?.away?.id ?? null,
         league: f.league?.name,
         leagueId: f.league?.id || 0,
+        season: f.league?.season ?? null,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
-        isKnockout: f.league?.isKnockout || false,
-        round: f.league?.round || null,
-        notes: f.league?.notes || null,
-      })).filter(f => f.home && f.away);
-
-      console.log(`[Calibrate] ${fixtureList.length} fixtures from TheSportsDB — enriching with Gemini...`);
-      if (fixtureList.length > 0) {
-        const enriched = await enrichFixturesWithGemini(fixtureList).catch(() => null);
-        if (enriched && enriched.length > 0) {
-          raw = enriched;
-          dataSource = 'TheSportsDB + Gemini';
-        } else {
-          console.log('[Calibrate] Enrichment unavailable for TheSportsDB fixtures — trying Gemini Search');
-        }
-      }
-    }
+        status: 'NS',
+        minute: 0,
+      },
+    })).filter((f) => f.match.home && f.match.away);
+    dataSource = 'TheSportsDB fixture-only';
   }
 
   // ── Step 3: Gemini Search grounding (last resort) ──────────────────────────
   if (raw.length === 0) {
-    console.log('[Calibrate] Both fixture APIs unavailable — falling back to Gemini Search grounding...');
-    const fixtures = await calibrateDay();
-    raw = fixtures || [];
-    dataSource = 'Gemini Search';
+    console.log('[Calibrate] No authoritative fixture source available — no predictive scan generated.');
   }
 
   console.log(`[Calibrate] Processing ${raw.length} fixtures from ${dataSource}`);
@@ -3671,7 +3655,8 @@ async function runCalibration() {
       homeKeyAbsences:    [],
       awayKeyAbsences:    [],
     }));
-    contextAdjMap = await fetchAndReasonContextAdjustments(fixturesForCtx);
+    // V10.1: LLMs do not mutate model-critical numeric inputs.
+    contextAdjMap = new Map();
   } catch (err) {
     console.warn('[Calibrate] Context adjustment step failed (non-fatal):', err.message);
   }
@@ -3685,8 +3670,8 @@ async function runCalibration() {
       // Look up real API-Football stats for this match (available when data source is API-Football)
       const hLookup    = calTeamIdMap.get(homeName.toLowerCase());
       const aLookup    = calTeamIdMap.get(awayName.toLowerCase());
-      const hRealStats = hLookup ? calTeamStats.get(hLookup.id) : null;
-      const aRealStats = aLookup ? calTeamStats.get(aLookup.id) : null;
+      const hRealStats = hLookup ? calTeamStats.get(`${hLookup.id}:${hLookup.leagueId}:${hLookup.season}`) : null;
+      const aRealStats = aLookup ? calTeamStats.get(`${aLookup.id}:${aLookup.leagueId}:${aLookup.season}`) : null;
       const calTotalTeams = f.context?.totalTeams ?? matchMeta.totalTeams ?? null;
       const calTotalGW    = (calTotalTeams != null && calTotalTeams > 1) ? (calTotalTeams - 1) * 2 : null;
 
@@ -3695,6 +3680,7 @@ async function runCalibration() {
         away: awayName,
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
+        season: matchMeta.season ?? null,
         country: matchMeta.country || '',
         round: matchMeta.round || '',
         isKnockout: Boolean(matchMeta.isKnockout) || String(matchMeta.round || '').toLowerCase().includes('knockout') || String(matchMeta.round || '').toLowerCase().includes('round of') || String(matchMeta.round || '').toLowerCase().includes('quarter') || String(matchMeta.round || '').toLowerCase().includes('semi') || String(matchMeta.round || '').toLowerCase().includes('final'),
@@ -3704,34 +3690,36 @@ async function runCalibration() {
         matchMinutes: matchMeta.minute || 0,
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
         // ── Competition context — null when not supplied for this fixture season ──
-        homePosition:      f.home?.leaguePosition  ?? f.context?.homePosition  ?? matchMeta.homePosition  ?? null,
-        awayPosition:      f.away?.leaguePosition  ?? f.context?.awayPosition  ?? matchMeta.awayPosition  ?? null,
-        homePoints:        f.context?.homePoints   ?? matchMeta.homePoints   ?? null,
-        awayPoints:        f.context?.awayPoints   ?? matchMeta.awayPoints   ?? null,
+        homePosition:      null,
+        awayPosition:      null,
+        homePoints:        null,
+        awayPoints:        null,
         totalTeams:        calTotalTeams,
         gameWeek:          f.context?.gameWeek     ?? matchMeta.gameWeek     ?? null,
         totalGW:           calTotalGW,
-        // ── Team form strings ──────────────────────────────────────────────────
-        homeForm: Array.isArray(f.home?.recentForm)
-          ? f.home.recentForm.join('-')
-          : (matchMeta.homeForm || null),
-        awayForm: Array.isArray(f.away?.recentForm)
-          ? f.away.recentForm.join('-')
-          : (matchMeta.awayForm || null),
+        // ── Verified current-season core evidence ───────────────────────────────
+        homeForm: hRealStats?.form ? hRealStats.form.split('').join('-') : null,
+        awayForm: aRealStats?.form ? aRealStats.form.split('').join('-') : null,
+        homeGoalsAvgFor: hRealStats?.avgGoalsFor ?? null,
+        homeGoalsAvgAgainst: hRealStats?.avgGoalsAgainst ?? null,
+        awayGoalsAvgFor: aRealStats?.avgGoalsFor ?? null,
+        awayGoalsAvgAgainst: aRealStats?.avgGoalsAgainst ?? null,
+        homeSampleSize: hRealStats?.sampleSize ?? null,
+        awaySampleSize: aRealStats?.sampleSize ?? null,
         // ── Squad quality: real API-Football injuries → integrity, no fake fallback ──
-        homeSquadIntegrity: hRealStats?.squadIntegrity ?? f.home?.squadIntegrity ?? null,
-        awaySquadIntegrity: aRealStats?.squadIntegrity ?? f.away?.squadIntegrity ?? null,
+        homeSquadIntegrity: null,
+        awaySquadIntegrity: null,
         // ── Goal expectation ──────────────────────────────────────────────────
-        homeXgAvg:  f.home?.xgAvg  || null,
-        awayXgAvg:  f.away?.xgAvg  || null,
-        homeXgaAvg: f.home?.xgaAvg || null,
-        awayXgaAvg: f.away?.xgaAvg || null,
+        homeXgAvg:  null,
+        awayXgAvg:  null,
+        homeXgaAvg: null,
+        awayXgaAvg: null,
         // ── Conversion / shots: real API-Football stats, Gemini as fallback ──
-        homeConversionPct: hRealStats?.conversionPct ?? f.home?.conversionPct ?? null,
-        awayConversionPct: aRealStats?.conversionPct ?? f.away?.conversionPct ?? null,
-        homeShotsPerGame:  hRealStats?.avgShotsTotal ?? f.home?.shotsPerGame  ?? null,
-        awayShotsPerGame:  aRealStats?.avgShotsTotal ?? f.away?.shotsPerGame  ?? null,
-        homePossession:    hRealStats?.avgPossession ?? null,
+        homeConversionPct: null,
+        awayConversionPct: null,
+        homeShotsPerGame:  null,
+        awayShotsPerGame:  null,
+        homePossession:    null,
         homeStats: f.home,
         awayStats: f.away,
         h2h: f.h2h,
@@ -3764,11 +3752,14 @@ async function runCalibration() {
         xg:         snapshotStats.xg,
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
-        confidence: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,
+        confidence: analysis?.dailySignal?.score ?? 0,
         decisionProbability: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,
         opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
+        season: matchMeta.season ?? null,
+        homeTeamId: matchMeta.homeTeamId ?? null,
+        awayTeamId: matchMeta.awayTeamId ?? null,
         matchType: resolvedMatchType,
         leagueCountry: matchMeta.country || '',
       });
@@ -3779,35 +3770,16 @@ async function runCalibration() {
       // Preserve V9 inputs so they survive as fallbacks when the user clicks and API-Football is offline.
       // API-Football wins when available; these values are only used to fill gaps.
       matchObj.calibratedInputs = {
-        homeForm:            matchData.homeForm            ?? null,
-        awayForm:            matchData.awayForm            ?? null,
-        homeXgAvg:           matchData.homeXgAvg           ?? null,
-        awayXgAvg:           matchData.awayXgAvg           ?? null,
-        homeXgaAvg:          matchData.homeXgaAvg          ?? null,
-        awayXgaAvg:          matchData.awayXgaAvg          ?? null,
-        homeGoalsAvgFor:     matchData.homeGoalsAvgFor     ?? null,
-        awayGoalsAvgFor:     matchData.awayGoalsAvgFor     ?? null,
+        source: 'API_FOOTBALL',
+        season: matchData.season ?? null,
+        homeForm: matchData.homeForm ?? null,
+        awayForm: matchData.awayForm ?? null,
+        homeGoalsAvgFor: matchData.homeGoalsAvgFor ?? null,
+        awayGoalsAvgFor: matchData.awayGoalsAvgFor ?? null,
         homeGoalsAvgAgainst: matchData.homeGoalsAvgAgainst ?? null,
         awayGoalsAvgAgainst: matchData.awayGoalsAvgAgainst ?? null,
-        homePosition:        matchData.homePosition        ?? null,
-        awayPosition:        matchData.awayPosition        ?? null,
-        homePoints:          matchData.homePoints          ?? null,
-        awayPoints:          matchData.awayPoints          ?? null,
-        totalTeams:          matchData.totalTeams          ?? null,
-        gameWeek:            matchData.gameWeek            ?? null,
-        homeSquadIntegrity:  matchData.homeSquadIntegrity  ?? null,
-        awaySquadIntegrity:  matchData.awaySquadIntegrity  ?? null,
-        homeConversionPct:   matchData.homeConversionPct   ?? null,
-        awayConversionPct:   matchData.awayConversionPct   ?? null,
-        homeShotsPerGame:    matchData.homeShotsPerGame    ?? null,
-        awayShotsPerGame:    matchData.awayShotsPerGame    ?? null,
-        h2hHistory:          matchData.h2hHistory          ?? [],
-        homeLateGoalPct:     matchData.homeLateGoalPct     ?? null,
-        awayLateGoalPct:     matchData.awayLateGoalPct     ?? null,
-        homeGoalDrought:     matchData.homeGoalDrought     ?? 0,
-        awayGoalDrought:     matchData.awayGoalDrought     ?? 0,
-        homeRecentLosses:    matchData.homeRecentLosses    ?? 0,
-        awayRecentLosses:    matchData.awayRecentLosses    ?? 0,
+        homeSampleSize: matchData.homeSampleSize ?? null,
+        awaySampleSize: matchData.awaySampleSize ?? null,
       };
       // Store context adjustments for transparency (null if none applied this cycle)
       matchObj.contextAdjustments = ctxAdj || null;
@@ -3822,11 +3794,9 @@ async function runCalibration() {
     }
   }
 
-  const highConfidence = analyzed.filter((m) => {
-    const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);
-    const executable = getTopExecutableRecommendation(m);
-    return Boolean(executable) && (m.decisionProbability || m.confidence || 0) >= policy.premiumThreshold;
-  });
+  const highConfidence = analyzed.filter((m) =>
+    m.analysis?.dailySignal?.eligible === true
+  );
   // ── Compute calibration health from settled bets ─────────────────────────
   const _settledBets = bets.filter(b => b.result === 'won' || b.result === 'lost');
   const calibrationHealth = computeCalibrationHealth(_settledBets);
@@ -3911,7 +3881,7 @@ async function runCalibration() {
     for (const m of analyzed) {
       const topExecutable = getTopExecutableRecommendation(m);
       if (!topExecutable) continue;
-      const conf = m.decisionProbability || m.confidence || 0;
+      const conf = m.analysis?.dailySignal?.score ?? m.confidence ?? 0;
       const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);
       if (conf < policy.standardThreshold) continue;
 
@@ -4092,12 +4062,14 @@ app.get('/api/search', async (req, res) => {
       return res.json({ type: 'matches', matches, liveIntent, query: q });
     }
 
-    // ── Step 2: nothing in cache — LLM synthesis ──────────────────────────
-    console.log(`[Search] "${q}" → no cache hits, falling back to LLM`);
-    const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(q);
-    const analysis = analyzeV9(matchData);
-    analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: q };
-    return res.json({ type: 'synthetic', analysis, query: q });
+    // ── Step 2: no authoritative fixture found — fail closed ─────────────
+    console.log(`[Search] "${q}" → no authoritative cache hit`);
+    return res.status(404).json({
+      type: 'not_found',
+      matches: [],
+      query: q,
+      message: 'No authoritative fixture found in the current live/upcoming pool.',
+    });
   } catch (err) {
     console.error('[Search] Error:', err.message);
     res.status(500).json({ error: err.message });

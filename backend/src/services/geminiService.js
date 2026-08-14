@@ -12,113 +12,58 @@ import { getLeagueGoalsAvg } from './agent47Service.js';
 import { getNarrativePhaseModel } from '../../../shared/confidencePolicy.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-3.5-flash'}:generateContent?key=${GEMINI_API_KEY}`;
 
-// ─── OpenAI-compatible LLM providers (OpenRouter + Groq) ────────────────────
-// OpenRouter is preferred for free open-source model access.
+// ─── Analyst LLM providers ─────────────────────────────────────────────────
+// Primary: Gemini. Fallback: exactly ONE OpenRouter free-router request.
+// Groq is intentionally disabled; stale per-model fallback ladders caused repeated 404/429 calls.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions';
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'qwen/qwen3-32b:free';
-const OPENROUTER_FALLBACK_MODELS = [
-  'meta-llama/llama-3.3-70b-instruct:free',
-  'deepseek/deepseek-r1-0528:free',
-  'qwen/qwen3-14b:free',
-];
+const OPENROUTER_MODEL = 'openrouter/free';
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_URL = process.env.GROQ_URL || 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-const GROQ_FALLBACK_MODELS = [
-  'llama-3.1-8b-instant',
-  'gemma2-9b-it',
-  'mixtral-8x7b-32768',
-];
-
-const LLM_PRIMARY_PROVIDER = (process.env.LLM_PRIMARY_PROVIDER || '').toLowerCase();
-const OPENAI_COMPAT_AVAILABLE = Boolean(OPENROUTER_API_KEY || GROQ_API_KEY);
-
+const OPENAI_COMPAT_AVAILABLE = Boolean(OPENROUTER_API_KEY);
 const AVAILABLE = Boolean(GEMINI_API_KEY || OPENAI_COMPAT_AVAILABLE);
 
 if (!AVAILABLE) {
-  console.warn('[LLM] No provider configured. Set GEMINI_API_KEY and/or OPENROUTER_API_KEY/GROQ_API_KEY.');
+  console.warn('[LLM] No provider configured. Set GEMINI_API_KEY and/or OPENROUTER_API_KEY.');
 } else {
-  const providers = [OPENROUTER_API_KEY && 'OpenRouter', GROQ_API_KEY && 'Groq', GEMINI_API_KEY && 'Gemini'].filter(Boolean);
+  const providers = [GEMINI_API_KEY && `Gemini(${GEMINI_MODEL})`, OPENROUTER_API_KEY && `OpenRouter(${OPENROUTER_MODEL})`].filter(Boolean);
   console.log(`[LLM] Active providers: ${providers.join(', ')}`);
 }
 
-// ─── OpenAI-compatible helper (OpenRouter/Groq) ─────────────────────────────
-async function groqChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = true } = {}) {
-  if (!OPENAI_COMPAT_AVAILABLE) return null;
-
-  const openrouterProvider = {
-    name: 'OpenRouter',
-    enabled: Boolean(OPENROUTER_API_KEY),
-    url: OPENROUTER_URL,
-    apiKey: OPENROUTER_API_KEY,
-    models: [OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS.filter(m => m !== OPENROUTER_MODEL)],
-    extraHeaders: {
-      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://sporty-rabbi.netlify.app',
-      'X-Title': process.env.OPENROUTER_APP_NAME || 'SportyRabbi',
-    },
-  };
-  const groqProvider = {
-    name: 'Groq',
-    enabled: Boolean(GROQ_API_KEY),
-    url: GROQ_URL,
-    apiKey: GROQ_API_KEY,
-    models: [GROQ_MODEL, ...GROQ_FALLBACK_MODELS.filter(m => m !== GROQ_MODEL)],
-    extraHeaders: {},
-  };
-
-  const providerOrder = (LLM_PRIMARY_PROVIDER === 'groq')
-    ? [groqProvider, openrouterProvider]
-    : [openrouterProvider, groqProvider];
-
-  for (const provider of providerOrder) {
-    if (!provider.enabled) continue;
-
-    for (const model of provider.models) {
-      try {
-        const response = await axios.post(provider.url, {
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userText },
-          ],
-          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-          temperature: 0.15,
-          max_tokens: maxTokens,
-        }, {
-          headers: {
-            Authorization: `Bearer ${provider.apiKey}`,
-            'Content-Type': 'application/json',
-            ...provider.extraHeaders,
-          },
-          timeout: 30000,
-        });
-
-        const content = response.data?.choices?.[0]?.message?.content || null;
-        if (content) {
-          if (model !== provider.models[0]) {
-            console.log(`[LLM] Used fallback model on ${provider.name}: ${model}`);
-          }
-          return content;
-        }
-      } catch (err) {
-        const status = err.response?.status;
-        const msg = err.response?.data?.error?.message || err.message;
-        if (status === 404 || status === 400 || status === 429) {
-          console.warn(`[LLM] ${provider.name} model ${model} unavailable (${status}): ${msg.slice(0, 80)} — trying next`);
-          continue;
-        }
-        console.warn(`[LLM] ${provider.name} request failed (${status ?? 'network'}): ${msg.slice(0, 120)}`);
-        break;
-      }
+// ─── Single OpenRouter free-router fallback ─────────────────────────────────
+async function openRouterChat(systemPrompt, userText, { maxTokens = 2000, jsonMode = true } = {}) {
+  if (!OPENROUTER_API_KEY) return null;
+  try {
+    const response = await axios.post(OPENROUTER_URL, {
+      model: OPENROUTER_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userText },
+      ],
+      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      max_tokens: maxTokens,
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://sporty-rabbi.netlify.app',
+        'X-Title': process.env.OPENROUTER_APP_NAME || 'SportyRabbi',
+      },
+      timeout: 30000,
+    });
+    const content = response.data?.choices?.[0]?.message?.content || null;
+    if (content) {
+      console.log(`[LLM] OpenRouter fallback used: ${response.data?.model || OPENROUTER_MODEL}`);
     }
+    return content;
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.error?.message || err.message;
+    console.warn(`[LLM] OpenRouter free-router unavailable (${status ?? 'network'}): ${String(msg).slice(0, 120)}`);
+    return null;
   }
-
-  console.warn('[LLM] All OpenAI-compatible models failed — falling back to Gemini');
-  return null;
 }
 
 // ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
@@ -220,7 +165,7 @@ Rules:
  */
 export async function naturalLanguageToMatchData(userText) {
   if (!AVAILABLE) {
-    throw new Error('No LLM configured. Add OPENROUTER_API_KEY/GROQ_API_KEY or GEMINI_API_KEY to backend/.env.');
+    throw new Error('No LLM configured. Add OPENROUTER_API_KEY or GEMINI_API_KEY to backend/.env.');
   }
 
   // Helper to parse and return the standard response shape
@@ -235,77 +180,78 @@ export async function naturalLanguageToMatchData(userText) {
     return { matchData, geminiConfidence, geminiNotes };
   }
 
-  // ── Try Groq first (free tier, fast) ────────────────────────────────────────
-  if (OPENAI_COMPAT_AVAILABLE) {
-    try {
-      const raw = await groqChat(SYSTEM_PROMPT, `Analyse this match: ${userText}`, { maxTokens: 1500 });
-      if (raw) {
-        const result = parseLLMText(raw);
-        console.log('[LLM] naturalLanguageToMatchData: success via OpenAI-compatible provider');
-        return result;
-      }
-    } catch (err) {
-      console.warn('[LLM] naturalLanguageToMatchData OpenAI-compatible call failed:', err.message.slice(0, 120));
-    }
-  }
-
-  // ── Fallback: Gemini ─────────────────────────────────────────────────────────
-  if (!GEMINI_API_KEY) {
-    throw new Error('OpenAI-compatible provider failed and GEMINI_API_KEY not configured.');
-  }
-
-  const body = {
-    contents: [
-      {
+  // ── Gemini primary ─────────────────────────────────────────────────────────
+  if (GEMINI_API_KEY) {
+    const body = {
+      contents: [{
         role: 'user',
         parts: [
           { text: SYSTEM_PROMPT },
           { text: `\n\nAnalyse this match: ${userText}` },
         ],
+      }],
+      generationConfig: {
+        maxOutputTokens: 1500,
+        responseMimeType: 'application/json',
       },
-    ],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 1500,
-      responseMimeType: 'application/json',
-    },
-  };
+    };
 
-  let rawText;
-  try {
-    const response = await axios.post(GEMINI_URL, body, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 20000,
-    });
-    const parts = response.data?.candidates?.[0]?.content?.parts || [];
-    rawText = parts.map(p => p.text || '').join('');
-  } catch (err) {
-    const status = err.response?.status;
-    const msg = err.response?.data?.error?.message || err.message;
-    throw new Error(`Gemini API error (${status ?? 'network'}): ${msg}`);
+    try {
+      const response = await axios.post(GEMINI_URL, body, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 20000,
+      });
+      const parts = response.data?.candidates?.[0]?.content?.parts || [];
+      const rawText = parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
+      if (rawText) return parseLLMText(rawText);
+    } catch (err) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.error?.message || err.message;
+      console.warn(`[LLM] Gemini primary failed (${status ?? 'network'}): ${String(msg).slice(0, 120)}`);
+    }
   }
 
-  if (!rawText) {
-    throw new Error('Gemini returned an empty response.');
+  // ── One free-router fallback only ──────────────────────────────────────────
+  if (OPENAI_COMPAT_AVAILABLE) {
+    const raw = await openRouterChat(SYSTEM_PROMPT, `Analyse this match: ${userText}`, { maxTokens: 1500 });
+    if (raw) return parseLLMText(raw);
   }
 
-  try {
-    return parseLLMText(rawText);
-  } catch (err) {
-    throw new Error(`Gemini response parse error: ${err.message}`);
-  }
+  throw new Error('Gemini and OpenRouter free-router were unavailable.');
 }
 
 // ─── GEMINI SPORTS FEED (replaces API-Football when key is expired) ──────────
 // Uses Gemini 2.5 Flash knowledge of the 2025-26 football season to generate
 // realistic fixture data. Fast (~5s), no search grounding needed.
 
-const GEMINI_SPORTS_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-flash-latest',
-  'gemini-2.0-flash',
-];
+const GEMINI_SPORTS_MODELS = [GEMINI_MODEL];
+
+async function geminiJson(systemPrompt, userPrompt, { maxOutputTokens = 1200 } = {}) {
+  if (!GEMINI_API_KEY) return null;
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const response = await axios.post(
+      url,
+      {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          maxOutputTokens,
+          responseMimeType: 'application/json',
+        },
+      },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 },
+    );
+    const parts = response.data?.candidates?.[0]?.content?.parts || [];
+    const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch (err) {
+    const msg = err.response?.data?.error?.message || err.message;
+    console.warn(`[Gemini] JSON request failed: ${String(msg).slice(0, 120)}`);
+    return null;
+  }
+}
 
 /**
  * Ask Gemini (no search tool) for fixture data. Returns clean JSON via responseMimeType.
@@ -322,7 +268,6 @@ async function geminiFetch(systemPrompt, userPrompt) {
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
           generationConfig: {
-            temperature: 0.3,
             maxOutputTokens: 5000,
             responseMimeType: 'application/json',
           },
@@ -383,24 +328,8 @@ const STATIC_LIVE_FIXTURES = [
  * NOTE: Live data is estimated; for truly real-time scores renew the API-Football subscription.
  */
 export async function fetchLiveMatchesViaGemini() {
-  const now = new Date();
-  const dayOfWeek = now.toLocaleDateString('en-GB', { weekday: 'long' });
-  const dateStr = now.toISOString().split('T')[0];
-  const hourUTC = now.getUTCHours();
-
-  const prompt = `Today is ${dateStr} (${dayOfWeek}), current UTC hour is ${hourUTC}:00.
-Based on the 2025-26 football season schedule, generate 0-8 matches that would realistically be LIVE (in-progress) right now.
-Consider typical kick-off times (15:00, 17:30, 19:45, 20:00, 20:45 CET). Only include matches from the whitelisted leagues.
-Return a JSON array (may be empty []) where each object has EXACTLY these fields:
-{"id":10001,"home":"Team A","away":"Team B","score":"1-0","possession":{"home":58,"away":42},"shots":{"home":7,"away":3},"xg":{"home":1.2,"away":0.6},"status":"LIVE","matchMinutes":67,"confidence":72,"opportunities":[],"league":"Premier League","leagueId":39,"matchType":"League","leagueCountry":"England"}`;
-
-  const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
-  if (matches === null) {
-    console.warn('[Gemini Sports] Quota exhausted — returning empty live match list (no fabricated data shown to users)');
-    return [];
-  }
-  console.log(`[Gemini Sports] Generated ${matches.length} live matches (AI-estimated)`);
-  return matches;
+  console.warn('[Gemini Sports] Synthetic live-match generation is disabled. Live data requires an authoritative real-time source.');
+  return [];
 }
 
 // ─── CALIBRATE TODAY (SEARCH GROUNDING) ──────────────────────────────────────
@@ -625,8 +554,8 @@ export async function enrichFixturesWithGemini(fixtureList) {
       // ── Gemini failed — try OpenAI-compatible provider (OpenRouter/Groq) ──
       if (OPENAI_COMPAT_AVAILABLE) {
         try {
-          const enrichSysPrompt = 'You are a football analytics AI. Return only a valid JSON array with no markdown and no extra text. Use your training knowledge of football teams to provide realistic current-season stats for each fixture in the list.';
-          const raw = await groqChat(enrichSysPrompt, buildEnrichPrompt(batch, today), { maxTokens: 8000, jsonMode: false });
+          const enrichSysPrompt = 'Return an empty JSON array []. Ungrounded current-season numeric football statistics must never be invented.';
+          const raw = await openRouterChat(enrichSysPrompt, buildEnrichPrompt(batch, today), { maxTokens: 8000, jsonMode: false });
           if (raw) {
             const start = raw.indexOf('[');
             const end   = raw.lastIndexOf(']');
@@ -667,23 +596,8 @@ export async function enrichFixturesWithGemini(fixtureList) {
  * Returns an array already in the app's internal sanitizeMatch-compatible format.
  */
 export async function fetchUpcomingMatchesViaGemini() {
-  const now = new Date();
-  const dateStr = now.toISOString().split('T')[0];
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-  const prompt = `Today is ${dateStr}, tomorrow is ${tomorrow}.
-Based on the 2025-26 football season schedule, generate 10-25 matches scheduled to kick off in the next 24 hours.
-Include matches from Premier League, La Liga, Bundesliga, Ligue 1, Champions League, Europa League, Conference League, and other whitelisted competitions if matches are scheduled.
-Return a JSON array where each object has EXACTLY these fields:
-{"id":20001,"home":"Team A","away":"Team B","score":"0-0","possession":{"home":50,"away":50},"shots":{"home":0,"away":0},"xg":{"home":0.0,"away":0.0},"status":"NS","matchMinutes":0,"confidence":60,"opportunities":[],"league":"Premier League","leagueId":39,"matchType":"League","leagueCountry":"England"}`;
-
-  const matches = await geminiFetch(SPORTS_SYSTEM_PROMPT, prompt);
-  if (matches === null) {
-    console.warn('[Gemini Sports] Quota exhausted — returning empty upcoming match list (no fabricated data shown to users)');
-    return [];
-  }
-  console.log(`[Gemini Sports] Generated ${matches.length} upcoming matches (AI-estimated)`);
-  return matches;
+  console.warn('[Gemini Sports] Synthetic upcoming-fixture generation is disabled. Use an authoritative fixture source.');
+  return [];
 }
 
 // ─── CONTEXTUAL PARAMETER ADJUSTMENT (Gemini Search + Groq Reasoning) ────────
@@ -783,7 +697,7 @@ export async function fetchAndReasonContextAdjustments(fixtureList) {
   }
 
   // Step 2: Groq — parallel reasoning, only for fixtures with news
-  const GROQ_SYS = `You are an Agent 47 V9 parameter adjustment specialist.
+  const CONTEXT_REASONING_SYS = `You are an Agent 47 V9 parameter adjustment specialist.
 Given CONFIRMED news about a football match, decide if and how to adjust specific V9 input parameters before analysis runs.
 RULES:
 - Only adjust based on confirmed facts in the news. Never guess or infer.
@@ -820,7 +734,7 @@ Confirmed news: ${JSON.stringify(news)}
 
 Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsencesAdd":[],"awayKeyAbsencesAdd":[],"contextWarnings":[],"adjustmentReasoning":""}`;
 
-        const raw = await groqChat(GROQ_SYS, userPrompt, { maxTokens: 400, jsonMode: true });
+        const raw = await openRouterChat(CONTEXT_REASONING_SYS, userPrompt, { maxTokens: 400, jsonMode: true });
         if (!raw) return [key, null];
         const parsed = JSON.parse(raw);
         if (parsed.adjustmentReasoning) {
@@ -828,7 +742,7 @@ Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsenc
         }
         return [key, parsed];
       } catch (err) {
-        console.warn(`[ContextAdjust] Groq failed for ${fixture.home} vs ${fixture.away}: ${err.message.slice(0, 80)}`);
+        console.warn(`[ContextAdjust] OpenRouter failed for ${fixture.home} vs ${fixture.away}: ${err.message.slice(0, 80)}`);
         return [key, null];
       }
     })());
@@ -843,7 +757,7 @@ Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsenc
     }
   }
 
-  console.log(`[ContextAdjust] Groq reasoning complete: ${resultMap.size} fixtures adjusted`);
+  console.log(`[ContextAdjust] OpenRouter reasoning complete: ${resultMap.size} fixtures adjusted`);
   return resultMap;
 }
 
@@ -987,17 +901,35 @@ Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topPar
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
 No strong directional edge. Write 2-3 sentences describing what the data shows.`;
 
-  const raw = await groqChat(systemPrompt, userText, { maxTokens: 240, jsonMode: true });
+  // Primary analyst writer: Gemini. Fallback: one OpenRouter free-router request.
+  if (GEMINI_API_KEY) {
+    try {
+      const parsedGemini = await geminiJson(systemPrompt, userText, { maxOutputTokens: 320 });
+      if (parsedGemini?.text) {
+        return {
+          text: buildStructuredNarrative(parsedGemini.text),
+          confidence: parsedGemini.confidence || topRec?.confidence || overallScore,
+          provider: `Gemini:${GEMINI_MODEL}`,
+        };
+      }
+    } catch (err) {
+      console.warn('[Narrative] Gemini unavailable:', err.message.slice(0, 100));
+    }
+  }
 
-  // Deterministic fallback when Groq is unavailable — build from V9 data directly
+  const raw = await openRouterChat(systemPrompt, userText, { maxTokens: 240, jsonMode: true });
   if (!raw) {
     const fallback = buildStructuredNarrative(topRec?.logic || poisson?.assessment || 'The current data sets the edge.');
-    return { text: fallback, confidence: topRec?.confidence || overallScore };
+    return { text: fallback, confidence: topRec?.confidence || overallScore, provider: 'deterministic' };
   }
   try {
     const parsed = JSON.parse(raw);
-    return { text: buildStructuredNarrative(parsed.text || raw), confidence: parsed.confidence || topRec?.confidence || overallScore };
+    return {
+      text: buildStructuredNarrative(parsed.text || raw),
+      confidence: parsed.confidence || topRec?.confidence || overallScore,
+      provider: `OpenRouter:${OPENROUTER_MODEL}`,
+    };
   } catch {
-    return { text: buildStructuredNarrative(raw), confidence: topRec?.confidence || overallScore };
+    return { text: buildStructuredNarrative(raw), confidence: topRec?.confidence || overallScore, provider: `OpenRouter:${OPENROUTER_MODEL}` };
   }
 }
