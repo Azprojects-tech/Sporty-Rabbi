@@ -78,6 +78,15 @@ async function singleFlightGet(url, config = {}) {
 
     await waitForAnalyticsLaunchSlot();
 
+    // A previous queued request may have opened the 429 circuit while this
+    // request was waiting for its launch slot. Re-check immediately before I/O.
+    if (Date.now() < analyticsRateLimitedUntil) {
+      const waitMs = analyticsRateLimitedUntil - Date.now();
+      const err = new Error(`API_FOOTBALL_RATE_LIMIT_COOLDOWN:${waitMs}`);
+      err.code = 'API_FOOTBALL_RATE_LIMIT_COOLDOWN';
+      throw err;
+    }
+
     try {
       return await axiosInstance.request({
         method: 'get',

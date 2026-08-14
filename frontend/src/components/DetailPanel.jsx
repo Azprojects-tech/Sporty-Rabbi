@@ -309,9 +309,15 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   const panelScrollRef = useRef(null);
 
   useEffect(() => {
-    // Always run fresh analysis on click — calibrated or not
-    // If we already have preloaded data it stays visible while the refresh runs in background
-    loadAnalysis();
+    // Reset immediately to the newly selected match. This prevents a fast click
+    // between fixtures from briefly showing the previous match's analysis.
+    const initialAnalysis = preloadedAnalysis || null;
+    setAnalysis(initialAnalysis);
+    setError(null);
+    setLoading(!initialAnalysis);
+
+    // Refresh in the background; the new match's preloaded analysis stays visible.
+    loadAnalysis(initialAnalysis);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id]);
 
@@ -369,9 +375,9 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id, match?.status, match?.isLive, match?.score, match?.matchMinutes]);
 
-  async function loadAnalysis() {
-    // Show spinner only when there is no existing analysis to display
-    if (!analysis && !preloadedAnalysis) setLoading(true);
+  async function loadAnalysis(existingAnalysis = analysis || preloadedAnalysis) {
+    // Show spinner only when there is no analysis for the selected match to display.
+    if (!existingAnalysis) setLoading(true);
     setError(null);
     try {
       const _lid = match.leagueId || 0;
@@ -422,7 +428,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     } catch (err) {
       // Stale-while-revalidate: never replace a usable cached/preloaded analysis
       // with a red error panel just because a background refresh timed out.
-      if (!analysis && !preloadedAnalysis) {
+      if (!existingAnalysis) {
         setError(err.response?.data?.error || err.message || 'Analysis failed');
       }
     } finally {

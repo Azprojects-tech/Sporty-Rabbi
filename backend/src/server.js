@@ -1279,10 +1279,9 @@ async function analyzeMatch(match) {
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
-        const [hRes, aRes, h2hRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
+        const [hRes, aRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
           getTeamForm(homeTeamId, league.id, league.season ?? null),
           getTeamForm(awayTeamId, league.id, league.season ?? null),
-          getH2H(homeTeamId, awayTeamId),
           getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, league.id, league.season ?? null),
           getTeamStatistics(awayTeamId, league.id, league.season ?? null),
@@ -3224,10 +3223,9 @@ app.post('/api/analyze', async (req, res) => {
     // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
     let enriched = { ...body };
     if (homeTeamId && awayTeamId) {
-      const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
+      const [hRes, aRes, standingsRes] = await Promise.allSettled([
         getTeamForm(homeTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
         getTeamForm(awayTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
-        getH2H(homeTeamId, awayTeamId),
         getStandings({ leagueId, season: body.season ?? body.fixtureContext?.season ?? null, homeTeamId, awayTeamId }),
       ]);
       if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
@@ -3306,36 +3304,39 @@ app.post('/api/analyze', async (req, res) => {
             ? `quota_guard_paused: ${quotaState.pauseReason || 'unknown'}`
             : 'api_calls_temporarily_skipped',
         };
-      }
-      const directStats = await fetchFixtureStatistics(fixtureId);
-      if (directStats) {
-        directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
-        if (directStats.possession?.home != null || directStats.possession?.away != null) {
-          enriched.possession = {
-            home: directStats.possession?.home ?? enriched.possession?.home ?? null,
-            away: directStats.possession?.away ?? enriched.possession?.away ?? null,
-          };
-        }
-        if (directStats.shots?.home != null || directStats.shots?.away != null) {
-          enriched.shots = {
-            home: directStats.shots?.home ?? enriched.shots?.home ?? null,
-            away: directStats.shots?.away ?? enriched.shots?.away ?? null,
-          };
-        }
-        if (directStats.xg?.home != null || directStats.xg?.away != null) {
-          enriched.xg = {
-            home: directStats.xg?.home ?? enriched.xg?.home ?? null,
-            away: directStats.xg?.away ?? enriched.xg?.away ?? null,
-          };
-          enriched.hasLiveXg = true;
-        }
-        if (directStats.cards) {
-          enriched.homeCards = directStats.cards.home;
-          enriched.awayCards = directStats.cards.away;
-        }
       } else {
-        if (!directFixtureStatsStatus.reason) {
-          directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'provider_returned_no_stats_for_fixture' };
+        const directStats = await fetchFixtureStatistics(fixtureId);
+        if (directStats) {
+          directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
+          if (directStats.possession?.home != null || directStats.possession?.away != null) {
+            enriched.possession = {
+              home: directStats.possession?.home ?? enriched.possession?.home ?? null,
+              away: directStats.possession?.away ?? enriched.possession?.away ?? null,
+            };
+          }
+          if (directStats.shots?.home != null || directStats.shots?.away != null) {
+            enriched.shots = {
+              home: directStats.shots?.home ?? enriched.shots?.home ?? null,
+              away: directStats.shots?.away ?? enriched.shots?.away ?? null,
+            };
+          }
+          if (directStats.xg?.home != null || directStats.xg?.away != null) {
+            enriched.xg = {
+              home: directStats.xg?.home ?? enriched.xg?.home ?? null,
+              away: directStats.xg?.away ?? enriched.xg?.away ?? null,
+            };
+            enriched.hasLiveXg = true;
+          }
+          if (directStats.cards) {
+            enriched.homeCards = directStats.cards.home;
+            enriched.awayCards = directStats.cards.away;
+          }
+        } else {
+          directFixtureStatsStatus = {
+            status: 'unavailable',
+            source: 'fixture-statistics',
+            reason: 'provider_returned_no_stats_for_fixture',
+          };
         }
       }
     } else if (isLive && !fixtureId) {

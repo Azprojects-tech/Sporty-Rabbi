@@ -44,7 +44,7 @@ test('Gemini has a cooldown circuit for quota or demand spikes', () => {
 });
 
 test('frontend keeps cached analysis visible during refresh failures', () => {
-  assert.match(panel, /if \(!analysis && !preloadedAnalysis\)/);
+  assert.match(panel, /if \(!existingAnalysis\)/);
   assert.match(panel, /apiService\.analyzeMatch\(matchData\)/);
 });
 
@@ -52,4 +52,37 @@ test('analyst narrative is polled separately from football analysis', () => {
   assert.match(api, /getNarrative:/);
   assert.match(panel, /pollNarrative/);
   assert.match(panel, /Generating in background/);
+});
+
+test('queued analytics requests re-check the 429 circuit after pacing wait', () => {
+  const waitIdx = analytics.indexOf('await waitForAnalyticsLaunchSlot();');
+  const requestIdx = analytics.indexOf('return await axiosInstance.request({', waitIdx);
+  const secondCircuitIdx = analytics.indexOf('if (Date.now() < analyticsRateLimitedUntil)', waitIdx + 1);
+  assert.ok(waitIdx >= 0);
+  assert.ok(secondCircuitIdx > waitIdx && secondCircuitIdx < requestIdx);
+});
+
+test('direct fixture statistics obey the API quota guard', () => {
+  const liveBlockStart = server.indexOf('if (isLive && fixtureId) {');
+  const fetchIdx = server.indexOf('const directStats = await fetchFixtureStatistics(fixtureId);', liveBlockStart);
+  const allowedElseIdx = server.lastIndexOf('} else {', fetchIdx);
+  const skipIdx = server.indexOf('else if (shouldSkipApiCalls())', liveBlockStart);
+  assert.ok(liveBlockStart >= 0 && skipIdx > liveBlockStart);
+  assert.ok(allowedElseIdx > skipIdx && fetchIdx > allowedElseIdx);
+});
+
+test('unused aggregate H2H is not fetched on automatic analysis hot paths', () => {
+  const backgroundStart = server.indexOf('async function analyzeMatch(match)');
+  const backgroundEnd = server.indexOf('// ─── LIVE POLLER', backgroundStart);
+  const clickStart = server.indexOf("app.post('/api/analyze'");
+  const clickEnd = server.indexOf("app.get('/api/analyze/live/", clickStart);
+  assert.equal(server.slice(backgroundStart, backgroundEnd).includes('getH2H('), false);
+  assert.equal(server.slice(clickStart, clickEnd).includes('getH2H('), false);
+  assert.match(server, /app\.get\('\/api\/h2h\/:homeTeamId\/:awayTeamId'/);
+});
+
+test('changing selected match resets DetailPanel before background refresh', () => {
+  assert.match(panel, /const initialAnalysis = preloadedAnalysis \|\| null/);
+  assert.match(panel, /setAnalysis\(initialAnalysis\)/);
+  assert.match(panel, /loadAnalysis\(initialAnalysis\)/);
 });
