@@ -23,6 +23,7 @@ import {
 } from '../../../shared/marketKeys.js';
 import { DECISION } from '../../../shared/decisionStates.js';
 import { evaluateValue } from './valueEngine.js';
+import { buildPredictionCore } from './predictionEngineV10.js';
 
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
 export const TIERS = {
@@ -389,7 +390,10 @@ function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeG
 }
 
 // P5 — SCORING TIMING
-function scoreTiming(homeLateGoalPct = 0.20, awayLateGoalPct = 0.20) {
+function scoreTiming(homeLateGoalPct = null, awayLateGoalPct = null) {
+  if (homeLateGoalPct == null || awayLateGoalPct == null) {
+    return { score: null, available: false, evidenceStatus: 'MISSING', lateGoalRisk: null, assessment: 'Scoring-timing evidence unavailable.' };
+  }
   const avg = (homeLateGoalPct + awayLateGoalPct) / 2;
   const ratio = avg / 0.22;  // relative to league baseline
   const assessment =
@@ -978,12 +982,13 @@ function tierFromConfidence(conf = 50) {
 }
 
 const STRICT_NO_BET_POLICY = {
-  minQualityPreMatch: 62,
-  minQualityLive: 60,
-  minCoveragePreMatch: 0.72,
-  minCoverageLive: 0.68,
-  minTopConfidencePreMatch: 64,
-  minTopConfidenceLive: 61,
+  // V10.1 gates on CORE prediction evidence, not completion of 15 legacy explainers.
+  minQualityPreMatch: 55,
+  minQualityLive: 55,
+  minCoveragePreMatch: 1.0,
+  minCoverageLive: 1.0,
+  minTopConfidencePreMatch: 55,
+  minTopConfidenceLive: 55,
 };
 
 function forceNoBet(reason, analysisQuality = null, baselineConfidence = 50) {
@@ -1023,9 +1028,9 @@ function enforceStrictNoBetPolicy(recommendations = [], { analysisQuality = null
     );
   }
 
-  if (coverage < minCoverage) {
+  if (analysisQuality?.coreReady === false || coverage < minCoverage) {
     return forceNoBet(
-      `Signal coverage ${Math.round(coverage * 100)}% is below required ${Math.round(minCoverage * 100)}%. Better to pass.`,
+      `Core prediction evidence is incomplete (${Math.round(coverage * 100)}% of required goals-rate inputs).`,
       analysisQuality,
       50,
     );
@@ -1072,7 +1077,7 @@ function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8,
   const drawProb = Number(probs.draw || 0);
 
   // True NO_BET mode: low coverage/quality should not force a market pick.
-  if (!analysisQuality || (analysisQuality.paramCoverage ?? 0) < 0.6 || (analysisQuality.score ?? 0) < 56) {
+  if (!analysisQuality || analysisQuality.coreReady === false || (analysisQuality.score ?? 0) < 55) {
     return {
       type: 'NO_BET',
       selection: 'No Bet',
@@ -1296,14 +1301,10 @@ function applyRecommendationSanityChecks(recommendations = [], context = {}) {
   return recommendations
     .map((r) => {
       const ev = recommendationEVSanity(r, context);
-      const floor = r.type === 'NO_BET' ? 30 : 45;
-      const adjustedConfidence = Math.max(floor, Math.min(97, Math.round((r.confidence || 50) - ev.penalty)));
-      const tier = tierFromConfidence(adjustedConfidence);
       return {
         ...r,
-        confidence: adjustedConfidence,
-        tier,
-        tierName: TIERS[tier].name,
+        // Do not mutate the model probability. Sanity is an execution flag.
+        modelProbability: r.modelProbability ?? r.confidence,
         evSanity: ev,
       };
     })
@@ -1631,23 +1632,38 @@ function annotateRecommendationDecisions(recommendations = [], { home, away, odd
 }
 
 // ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
-function scoreHomeAdvantage(homePossession = null, homeShotsPerGame = 11, awayShotsPerGame = 11, venue = null, status = 'NS') {
-  let score = 55; // Baseline: ~5% home win rate boost (literature consensus)
-  if (status !== 'NS' && homePossession > 0) {
-    // Live match: possession dominance is a real pressure signal
-    const possDiff = homePossession - 50;
-    score += Math.round(possDiff * 0.6);
+function scoreHomeAdvantage(homePossession = null, homeShotsPerGame = null, awayShotsPerGame = null, venue = null, status = 'NS') {
+  // Structural home advantage is already represented as an explicit prior in V10.1.
+  // This legacy parameter only scores OBSERVED evidence; it must not turn a prior into data.
+  const hasShots = homeShotsPerGame != null && awayShotsPerGame != null;
+  const hasLivePossession = status !== 'NS' && homePossession != null;
+
+  if (!hasShots && !hasLivePossession) {
+    return {
+      score: null,
+      available: false,
+      evidenceStatus: 'PRIOR_ONLY',
+      prior: 55,
+      assessment: venue
+        ? `Home venue prior applies in V10.1 core (${venue}); no additional observed home-advantage evidence.`
+        : 'Home advantage is an explicit V10.1 prior; no observed home-advantage evidence available.',
+    };
   }
-  if (homeShotsPerGame > 0 && awayShotsPerGame > 0) {
+
+  let score = 55;
+  if (hasLivePossession) {
+    score += Math.round((homePossession - 50) * 0.6);
+  }
+  if (hasShots && homeShotsPerGame + awayShotsPerGame > 0) {
     const shotRatio = homeShotsPerGame / (homeShotsPerGame + awayShotsPerGame);
     if (shotRatio > 0.58) score += 8;
     else if (shotRatio < 0.40) score -= 10;
   }
   return {
     score: Math.min(Math.max(Math.round(score), 20), 90),
-    assessment: status !== 'NS'
-      ? `Live home advantage. Possession: ${homePossession}%. SoT ratio: ${homeShotsPerGame}v${awayShotsPerGame}.`
-      : venue ? `Home venue: ${venue}. Standard home advantage applied.` : 'Standard home advantage applied.',
+    available: true,
+    evidenceStatus: 'OBSERVED',
+    assessment: `Observed home-advantage evidence. Possession: ${homePossession ?? 'Unavailable'}. Shots: ${homeShotsPerGame ?? '?'}v${awayShotsPerGame ?? '?'}.`,
   };
 }
 
@@ -1657,7 +1673,7 @@ function scoreHomeAdvantage(homePossession = null, homeShotsPerGame = 11, awaySh
 // Negative divergence = market prices more goals = Under 2.5 value.
 function scoreMarketSignal(odds = null, poissonProbs = null) {
   if (!odds || (!odds.over25 && !odds.home && !odds.homeWin)) {
-    return { score: 50, assessment: 'No market odds — cannot compute divergence. Neutral signal applied.' };
+    return { score: null, available: false, evidenceStatus: 'MISSING', assessment: 'No market odds — market divergence not scored.' };
   }
   // Primary: Over 2.5 model vs market divergence
   if (odds.over25 && poissonProbs) {
@@ -1675,10 +1691,13 @@ function scoreMarketSignal(odds = null, poissonProbs = null) {
           : `Market prices ${Math.round(-divergence*100)}pp more goals than model — Under 2.5 may offer value.`,
     };
   }
-  // Fallback: overround as market-quality signal when O2.5 odds absent
-  const homeOdds = parseFloat(odds.home || odds.homeWin || 2.0);
-  const drawOdds = parseFloat(odds.draw || 3.5);
-  const awayOdds = parseFloat(odds.away || odds.awayWin || 3.5);
+  // 1X2 overround is only valid when all three actual prices are supplied.
+  const homeOdds = parseFloat(odds.home ?? odds.homeWin);
+  const drawOdds = parseFloat(odds.draw);
+  const awayOdds = parseFloat(odds.away ?? odds.awayWin);
+  if (![homeOdds, drawOdds, awayOdds].every((v) => Number.isFinite(v) && v > 1)) {
+    return { score: null, available: false, evidenceStatus: 'MISSING', assessment: 'Incomplete market prices — market divergence not scored.' };
+  }
   const overround = (1 / homeOdds) + (1 / drawOdds) + (1 / awayOdds);
   const margin = Math.round((overround - 1) * 100);
   return {
@@ -1744,7 +1763,7 @@ export function analyzeV9(matchData = {}) {
   const {
     home = 'Home Team', away = 'Away Team', league = 'Unknown', leagueId = 0, matchType = 'League',
     country = '', round = null, isKnockout = false, notes = null,
-    gameWeek = 30, totalGW = 38, totalTeams = 20,
+    gameWeek = null, totalGW = null, totalTeams = null,
     homePosition = null, awayPosition = null, homePoints = null, awayPoints = null,
     status = 'NS', matchMinutes = 0, score = '0-0',
     homeSquadIntegrity = null, awaySquadIntegrity = null,
@@ -1755,12 +1774,12 @@ export function analyzeV9(matchData = {}) {
     homeXgAvg = null, awayXgAvg = null,
     homeXgaAvg = null, awayXgaAvg = null,
     h2hHistory = [],
-    homeLateGoalPct = 0.20, awayLateGoalPct = 0.20,
+    homeLateGoalPct = null, awayLateGoalPct = null,
     homeConversionPct = null, awayConversionPct = null,
     homeShotsPerGame = null, awayShotsPerGame = null,
     earlyGoalScored = false, earlyGoalMinute = null,
     homeTacticalHighLine = false, awayCounterThreat = false,
-    homePossession = 50,
+    homePossession = null,
     homeCBInjured = false, awayGKError = false,
     referee = null, venue = null,
     // P15 Crisis/Drought Mode inputs
@@ -1795,7 +1814,8 @@ export function analyzeV9(matchData = {}) {
   const p4  = scoreForm(homeForm, awayForm, homeXgAvg, awayXgAvg, homeGoalsAvgFor, awayGoalsAvgFor, homeXgTrend, awayXgTrend);
   const p5  = scoreTiming(homeLateGoalPct, awayLateGoalPct);
   const p6  = scoreDefensiveGap(homeGoalsAvgAgainst, awayGoalsAvgAgainst, getLeagueGoalsAvg(leagueId), homeCBInjured, awayGKError);
-  const poi = runPoisson(homeXgAvg, awayXgAvg, homeXgaAvg, awayXgaAvg, leagueId);
+  const predictionCore = buildPredictionCore(matchData, getLeagueGoalsAvg(leagueId));
+  const poi = predictionCore.poisson;
 
   // ── Live match: replace pre-match "Most likely: X-Y" with projected FINAL score ──
   // The Poisson lambdas are full-game averages. For a live match we scale them to
@@ -1866,8 +1886,10 @@ export function analyzeV9(matchData = {}) {
   const rawScore = totalWeight > 0
     ? paramScores.reduce((acc, [s, w]) => acc + s * (w / totalWeight), 0)
     : 50;
-  const overall = Math.round(Math.max(0, Math.min(rawScore * scalar + (competitionModelProfile.overallAdjustment ?? 0), 100)));
-  const analysisQuality = computeAnalysisQuality({
+  const legacyOverallScore = Math.round(Math.max(0, Math.min(rawScore * scalar + (competitionModelProfile.overallAdjustment ?? 0), 100)));
+  const overall = predictionCore.signalScore ?? legacyOverallScore;
+
+  const legacyQuality = computeAnalysisQuality({
     p1,
     p4,
     p8,
@@ -1876,8 +1898,18 @@ export function analyzeV9(matchData = {}) {
     status,
     matchMinutes,
     scalar,
-    paramCoverage: paramScores.length / 15,
+    paramCoverage: predictionCore.dataQuality?.coreCoverage ?? 0,
   });
+  const analysisQuality = {
+    ...legacyQuality,
+    score: predictionCore.reliability,
+    paramCoverage: predictionCore.dataQuality?.coreCoverage ?? 0,
+    coreReady: predictionCore.coreReady,
+    modelBasis: predictionCore.modelBasis,
+    optionalXgAvailable: predictionCore.dataQuality?.optionalXgAvailable ?? false,
+    homeSampleSize: predictionCore.dataQuality?.homeSampleSize ?? null,
+    awaySampleSize: predictionCore.dataQuality?.awaySampleSize ?? null,
+  };
 
   // ── Chaos variables ────────────────────────────────────────────────────────
   const chaos = evaluateChaos({ motivation: p1, form: p4, matchMinutes, earlyGoalScored, earlyGoalMinute,
@@ -1888,7 +1920,8 @@ export function analyzeV9(matchData = {}) {
   if (!Array.isArray(recommendations) || recommendations.length === 0) {
     recommendations = [fallbackRecommendation({ home, away, overallScore: overall, poisson: poi, p1, p4, p8, analysisQuality })];
   }
-  recommendations = recalibrateRecommendations(recommendations, analysisQuality);
+  // Keep model probability as probability. Reliability and Signal are separate fields.
+  recommendations = recommendations.map((r) => ({ ...r, modelProbability: r.confidence }));
   recommendations = applyRecommendationSanityChecks(recommendations, { poisson: poi, p1, p4, p8 });
   recommendations = enforceStrictNoBetPolicy(recommendations, { analysisQuality, status, matchMinutes });
   recommendations = annotateRecommendationDecisions(recommendations, {
@@ -1948,6 +1981,10 @@ export function analyzeV9(matchData = {}) {
     poisson: poi,
     chaosVariables: chaos,
     overallScore: overall,
+    legacyOverallScore,
+    predictionCore,
+    dailySignal: predictionCore.dailySignal,
+    teamEdge: predictionCore.teamEdge,
     winCall: winCallLiveAware,
     decisionMetrics,
     dataContext: {
@@ -1968,7 +2005,7 @@ export function analyzeV9(matchData = {}) {
       liveStats: { status: 'unknown', source: 'unknown' },
       directFixtureStats: { status: 'unknown', source: 'unknown' },
     },
-    analysisVersion: 'V9-Calibrated',
+    analysisVersion: 'V10.1-Verified-Core',
     analysisTimestamp: new Date().toISOString(),
   };
 }
