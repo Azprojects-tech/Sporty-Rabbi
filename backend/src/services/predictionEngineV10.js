@@ -245,24 +245,28 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
   const coreValues = [homeGF, homeGA, awayGF, awayGA];
   const corePresent = coreValues.filter((v) => v != null).length;
   const coreCoverage = corePresent / coreValues.length;
-  const sampleAdequate = (homeSample ?? 0) >= 3 && (awaySample ?? 0) >= 3;
+  const minimumSample = Math.min(homeSample ?? 0, awaySample ?? 0);
+  const sampleAvailable = minimumSample >= 1;
+  const sampleAdequate = minimumSample >= 3;
   const exactSeason = season != null;
 
-  let reliability = 20;
-  reliability += Math.round(coreCoverage * 45);
-  reliability += sampleAdequate ? 20 : Math.round(Math.min(homeSample ?? 0, awaySample ?? 0) * 4);
+  // Reliability is intentionally sample-sensitive.
+  // One match can produce a visible prediction, but cannot masquerade as high reliability.
+  let reliability = 15;
+  reliability += Math.round(coreCoverage * 35);
   reliability += exactSeason ? 10 : 0;
-  reliability += homeForm.sample >= 3 && awayForm.sample >= 3 ? 5 : 0;
+  reliability += Math.min(minimumSample, 10) * 3;
+  reliability += sampleAdequate && homeForm.sample >= 3 && awayForm.sample >= 3 ? 5 : 0;
   reliability = clamp(reliability, 0, 95);
 
-  const coreReady = coreCoverage === 1 && sampleAdequate && exactSeason;
+  const coreReady = coreCoverage === 1 && sampleAvailable && exactSeason;
   if (!coreReady) {
     const missing = [];
     if (homeGF == null) missing.push('home goals-for rate');
     if (homeGA == null) missing.push('home goals-against rate');
     if (awayGF == null) missing.push('away goals-for rate');
     if (awayGA == null) missing.push('away goals-against rate');
-    if (!sampleAdequate) missing.push('minimum 3-match sample for both teams');
+    if (!sampleAvailable) missing.push('at least one completed current-season match for both teams');
     if (!exactSeason) missing.push('fixture season');
 
     return {
@@ -284,6 +288,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
         coreRequired: 4,
         optionalXgAvailable: false,
         exactSeason,
+        sampleAvailable,
         sampleAdequate,
         homeSampleSize: homeSample,
         awaySampleSize: awaySample,
@@ -396,6 +401,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
       coreRequired: 4,
       optionalXgAvailable: xgAvailable,
       exactSeason,
+      sampleAvailable,
       sampleAdequate,
       homeSampleSize: homeSample,
       awaySampleSize: awaySample,

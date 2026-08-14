@@ -81,3 +81,28 @@ test('Daily Signal is separate from raw market probability', () => {
   assert.ok(result.signalScore >= 80);
   assert.ok(result.teamEdge.status === 'AVAILABLE' || result.teamEdge.status === 'PARTIAL');
 });
+test('one-match exact-season sample can produce a prediction but cannot qualify for Daily 80+', () => {
+  const result = buildPredictionCore({
+    ...base,
+    homeSampleSize: 1,
+    awaySampleSize: 1,
+    homeForm: 'W',
+    awayForm: 'L',
+  }, 1.35);
+  assert.equal(result.coreReady, true);
+  assert.ok(Number.isFinite(result.primaryPrediction?.probability));
+  assert.ok(result.reliability < 70);
+  assert.equal(result.dailySignal.eligible, false);
+});
+
+test('zero completed matches remains insufficient evidence', () => {
+  const result = buildPredictionCore({
+    ...base,
+    homeSampleSize: 0,
+    awaySampleSize: 0,
+    homeForm: null,
+    awayForm: null,
+  }, 1.35);
+  assert.equal(result.coreReady, false);
+  assert.equal(result.primaryPrediction, null);
+});

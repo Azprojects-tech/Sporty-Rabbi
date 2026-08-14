@@ -1277,7 +1277,7 @@ async function analyzeMatch(match) {
           if (hs.form)  homeFormStr      = hs.form.split('').join('-');
           homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
           if (parseFloat(hs.avgGoalsFor)     >= 0) homeAvgGF        = parseFloat(hs.avgGoalsFor);
-          if (parseFloat(hs.avgGoalsAgainst) > 0) homeAvgGA        = parseFloat(hs.avgGoalsAgainst);
+          if (parseFloat(hs.avgGoalsAgainst) >= 0) homeAvgGA = parseFloat(hs.avgGoalsAgainst);
           if (hs.goalDrought  != null) homeGoalDrought  = hs.goalDrought;
           if (hs.recentLosses != null) homeRecentLosses = hs.recentLosses;
           if (hs.recentOpposition) match.homeRecentOpposition = hs.recentOpposition;
@@ -1287,23 +1287,15 @@ async function analyzeMatch(match) {
           if (as.form)  awayFormStr      = as.form.split('').join('-');
           awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
           if (parseFloat(as.avgGoalsFor)     >= 0) awayAvgGF        = parseFloat(as.avgGoalsFor);
-          if (parseFloat(as.avgGoalsAgainst) > 0) awayAvgGA        = parseFloat(as.avgGoalsAgainst);
+          if (parseFloat(as.avgGoalsAgainst) >= 0) awayAvgGA = parseFloat(as.avgGoalsAgainst);
           if (as.goalDrought  != null) awayGoalDrought  = as.goalDrought;
           if (as.recentLosses != null) awayRecentLosses = as.recentLosses;
           if (as.recentOpposition) match.awayRecentOpposition = as.recentOpposition;
         }
-        // Build h2h history from aggregate stats for scoreH2H()
-        if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
-          const s = h2hRes.value.stats;
-          const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-          // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
-          const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
-          const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
-          const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
-          for (let i = 0; i < (s.teamAWins || 0); i++) h2hHistory.push({ homeGoals: gH + 1, awayGoals: gA, winner: 'home' });
-          for (let i = 0; i < (s.teamBWins || 0); i++) h2hHistory.push({ homeGoals: gA, awayGoals: gH + 1, winner: 'away' });
-          for (let i = 0; i < (s.draws || 0); i++)     h2hHistory.push({ homeGoals: gA, awayGoals: gA, winner: 'draw' });
-        }
+        // V10.1: aggregate H2H counts are not converted into invented scorelines.
+        // H2H remains optional until exact historical fixture rows are oriented safely
+        // relative to the current home/away teams.
+        h2hHistory = [];
         // Real league standings — position, points and gameWeek for P1/P14
         if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
           const tms = standingsRes.value.teams;
@@ -3138,18 +3130,8 @@ app.post('/api/analyze', async (req, res) => {
         if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
         if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
       }
-      if (h2hRes.status === 'fulfilled' && !h2hRes.value?.offline && h2hRes.value?.stats?.teamAWins != null) {
-        const s = h2hRes.value.stats;
-        const n = (s.teamAWins || 0) + (s.teamBWins || 0) + (s.draws || 0);
-        // Only use goal data when the API actually returned it; never fabricate when totalGoals=0
-        const gpg = n > 0 && s.totalGoals > 0 ? s.totalGoals / n : null;
-        const gH = gpg != null ? Math.round(gpg * 0.55) : 1;
-        const gA = gpg != null ? Math.round(gpg * 0.45) : 1;
-        enriched.h2hHistory = [];
-        for (let i = 0; i < (s.teamAWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gH+1, awayGoals: gA,   winner: 'home' });
-        for (let i = 0; i < (s.teamBWins || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gH+1, winner: 'away' });
-        for (let i = 0; i < (s.draws    || 0); i++) enriched.h2hHistory.push({ homeGoals: gA,   awayGoals: gA,   winner: 'draw' });
-      }
+      // V10.1: do not synthesize historical scorelines from aggregate H2H counts.
+      enriched.h2hHistory = [];
       if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
         const tms = standingsRes.value.teams;
         enriched.totalTeams = standingsRes.value.totalTeams || null;
