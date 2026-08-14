@@ -25,6 +25,30 @@ const OPENROUTER_MODEL = 'openrouter/free';
 const OPENAI_COMPAT_AVAILABLE = Boolean(OPENROUTER_API_KEY);
 const AVAILABLE = Boolean(GEMINI_API_KEY || OPENAI_COMPAT_AVAILABLE);
 
+const GEMINI_COOLDOWN_MS = Math.max(
+  60 * 1000,
+  Number(process.env.GEMINI_COOLDOWN_MS || 10 * 60 * 1000),
+);
+let geminiCooldownUntil = 0;
+
+function isGeminiCoolingDown() {
+  return Date.now() < geminiCooldownUntil;
+}
+
+function maybeOpenGeminiCircuit(err) {
+  const status = err?.response?.status;
+  const msg = String(err?.response?.data?.error?.message || err?.message || '').toLowerCase();
+  const quotaOrDemand = status === 429
+    || msg.includes('quota')
+    || msg.includes('high demand')
+    || msg.includes('resource exhausted');
+  if (!quotaOrDemand) return;
+  geminiCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS;
+  console.warn(
+    `[Gemini] cooldown opened for ${Math.round(GEMINI_COOLDOWN_MS / 60000)} minutes; OpenRouter will handle analyst notes meanwhile.`
+  );
+}
+
 if (!AVAILABLE) {
   console.warn('[LLM] No provider configured. Set GEMINI_API_KEY and/or OPENROUTER_API_KEY.');
 } else {
@@ -227,7 +251,7 @@ export async function naturalLanguageToMatchData(userText) {
 const GEMINI_SPORTS_MODELS = [GEMINI_MODEL];
 
 async function geminiJson(systemPrompt, userPrompt, { maxOutputTokens = 1200 } = {}) {
-  if (!GEMINI_API_KEY) return null;
+  if (!GEMINI_API_KEY || isGeminiCoolingDown()) return null;
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const response = await axios.post(
@@ -247,6 +271,7 @@ async function geminiJson(systemPrompt, userPrompt, { maxOutputTokens = 1200 } =
     if (!text) return null;
     return JSON.parse(text);
   } catch (err) {
+    maybeOpenGeminiCircuit(err);
     const msg = err.response?.data?.error?.message || err.message;
     console.warn(`[Gemini] JSON request failed: ${String(msg).slice(0, 120)}`);
     return null;
@@ -621,7 +646,7 @@ export async function fetchUpcomingMatchesViaGemini() {
 const NEWS_FETCH_CACHE = new Map(); // key: YYYY-MM-DD → { data: Map, ts: number }
 
 async function fetchTodayMatchNews(fixtureList) {
-  if (!GEMINI_API_KEY || !fixtureList?.length) return new Map();
+  if (!GEMINI_API_KEY || !fixtureList?.length || isGeminiCoolingDown()) return new Map();
   const today = new Date().toISOString().split('T')[0];
   const cached = NEWS_FETCH_CACHE.get(today);
   if (cached && Date.now() - cached.ts < 2 * 60 * 60 * 1000) return cached.data; // 2h TTL

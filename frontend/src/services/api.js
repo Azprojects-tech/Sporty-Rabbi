@@ -90,7 +90,8 @@ export const apiService = {
   analyzeNatural: (query) => client.post('/analyze/natural', { query }, { timeout: 25000 }),
 
   // Direct V6 analysis from a structured matchData object
-  analyzeMatch: (matchData) => client.post('/analyze', matchData),
+  analyzeMatch: (matchData) => client.post('/analyze', matchData, { timeout: 15000 }),
+  getNarrative: (key) => client.get(`/analyze/narrative/${encodeURIComponent(key)}`, { timeout: 5000 }),
 
   // V6 analysis on a live match already in server memory
   analyzeLive: (matchId, params = {}) => client.get(`/analyze/live/${matchId}`, { params }),

@@ -466,7 +466,7 @@ function getLiveFreshnessMeta() {
 }
 
 const CACHE_TTL = {
-  live: API_KEY ? 2 * 60 * 1000 : 5 * 60 * 1000,      // 2 min (API-Football) or 5 min (no key)
+  live: API_KEY ? Math.max(15, LIVE_POLL_INTERVAL - 2) * 1000 : 5 * 60 * 1000, // keep live scores near poll cadence
   upcoming: API_KEY ? 5 * 60 * 1000 : 15 * 60 * 1000,  // 5 min (API-Football) or 15 min (no key)
 };
 
@@ -1058,7 +1058,7 @@ function parseLightFixture(match) {
     const aGoals = goals.away ?? 0;
 
     return {
-      id:            `${homeId || hName}-${awayId || aName}-${(fixture.date || '').split('T')[0]}`,
+      id:            fixture.id || `${homeId || hName}-${awayId || aName}-${(fixture.date || '').split('T')[0]}`,
       home:          hName,
       away:          aName,
       homeTeamId:    homeId,
@@ -1083,13 +1083,31 @@ function parseLightFixture(match) {
   }
 }
 
+// Rotate deep background enrichment instead of enriching every live fixture at once.
+// Every live fixture is still visible immediately; fixtures outside this window are
+// enriched on later cycles or on-demand when the user opens them.
+let liveEnrichmentCursor = 0;
+const LIVE_BACKGROUND_ENRICH_LIMIT = Math.max(
+  1,
+  Number(process.env.LIVE_BACKGROUND_ENRICH_LIMIT || 12),
+);
+
+function pickLiveBackgroundEnrichment(matches = []) {
+  if (!Array.isArray(matches) || matches.length === 0) return [];
+  const limit = Math.min(LIVE_BACKGROUND_ENRICH_LIMIT, matches.length);
+  const picked = [];
+  for (let i = 0; i < limit; i++) {
+    picked.push(matches[(liveEnrichmentCursor + i) % matches.length]);
+  }
+  liveEnrichmentCursor = (liveEnrichmentCursor + limit) % matches.length;
+  return picked;
+}
+
 /**
- * Process an array of raw API-Football match objects through analyzeMatch()
- * in small batches to avoid 429 bursts. Each batch runs in parallel, but
- * batches are serialised with a small gap between them.
- * BATCH_SIZE=3 means at most 3×8=24 simultaneous API-Football calls.
+ * Process raw API-Football match objects through analyzeMatch() in small batches.
+ * API calls inside analyticsService are additionally deduplicated and paced.
  */
-async function batchAnalyze(matches, batchSize = 3) {
+async function batchAnalyze(matches, batchSize = 2) {
   const results = [];
   for (let i = 0; i < matches.length; i += batchSize) {
     const batch = matches.slice(i, i + batchSize);
@@ -1261,10 +1279,9 @@ async function analyzeMatch(match) {
       const homeTeamId = teams.home?.id;
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
-        const [hRes, aRes, h2hRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
+        const [hRes, aRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
           getTeamForm(homeTeamId, league.id, league.season ?? null),
           getTeamForm(awayTeamId, league.id, league.season ?? null),
-          getH2H(homeTeamId, awayTeamId),
           getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, league.id, league.season ?? null),
           getTeamStatistics(awayTeamId, league.id, league.season ?? null),
@@ -1553,8 +1570,49 @@ async function pollLiveMatches() {
       // Gemini has no real-time score data; fabricated live games mislead users.
       const matches = await fetchLiveMatches();
       livePollMetrics.lastSourceCount = Array.isArray(matches) ? matches.length : 0;
-      processedMatches = matches ? await batchAnalyze(matches, 3) : [];
-      livePollMetrics.lastAnalyzedCount = processedMatches.length;
+
+      // First paint: publish every authoritative live fixture immediately with
+      // score/status/minute. Reuse a prior analysis only when the score is unchanged.
+      const previousById = new Map(
+        (Array.isArray(liveMatches) ? liveMatches : []).map((m) => [String(m.id), m])
+      );
+      const lightweightLive = (matches || [])
+        .map(parseLightFixture)
+        .filter(Boolean)
+        .map((lite) => {
+          const previous = previousById.get(String(lite.id));
+          if (!previous || !previous.analysis || previous.score !== lite.score) return lite;
+          return {
+            ...lite,
+            confidence: previous.confidence ?? lite.confidence,
+            decisionProbability: previous.decisionProbability ?? lite.decisionProbability,
+            opportunities: previous.opportunities || [],
+            possession: previous.possession || lite.possession,
+            shots: previous.shots || lite.shots,
+            xg: previous.xg || lite.xg,
+            analysis: previous.analysis,
+            _lite: false,
+            _staleAnalysis: true,
+          };
+        });
+
+      if (lightweightLive.length > 0) {
+        liveMatches = lightweightLive;
+        broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
+      }
+
+      // Deep enrichment is deliberately rotated across a bounded window.
+      // Clicking any non-enriched match still triggers on-demand analysis.
+      const enrichmentBatch = pickLiveBackgroundEnrichment(matches || []);
+      const enrichedSubset = enrichmentBatch.length > 0
+        ? await batchAnalyze(enrichmentBatch, 2)
+        : [];
+      const enrichedById = new Map(enrichedSubset.map((m) => [String(m.id), m]));
+
+      processedMatches = lightweightLive.map(
+        (lite) => enrichedById.get(String(lite.id)) || lite
+      );
+      livePollMetrics.lastAnalyzedCount = enrichedSubset.length;
     }
     // If API-Football quota is exhausted or unavailable, live tab stays empty.
     // Real-time scores require a real-time source.
@@ -3059,6 +3117,73 @@ app.post('/api/bet-value', (req, res) => {
   }
 });
 
+// ─── V10.2 ANALYST-NARRATIVE CACHE ──────────────────────────────────────────
+// Football analysis must never wait on prose generation.
+// /api/analyze returns the mathematical result immediately, while this cache
+// fills asynchronously. The frontend polls the cheap cache endpoint.
+const narrativeCache = new Map();
+const narrativeInFlight = new Map();
+const NARRATIVE_CACHE_TTL_MS = Math.max(
+  60 * 1000,
+  Number(process.env.NARRATIVE_CACHE_TTL_MS || 20 * 60 * 1000),
+);
+
+function buildNarrativeKey(matchData = {}) {
+  const fixtureIdentity = matchData.fixtureId
+    || matchData.id
+    || `${String(matchData.home || '').toLowerCase()}|${String(matchData.away || '').toLowerCase()}|${matchData.season ?? ''}`;
+  const status = String(matchData.status || 'NS').toUpperCase();
+  const score = String(matchData.score || '0-0');
+  const minute = Number(matchData.matchMinutes || 0);
+  const live = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(status);
+  const minuteBucket = live ? Math.floor(minute / 10) : 0;
+  return Buffer.from(`${fixtureIdentity}|${score}|${minuteBucket}`).toString('base64url');
+}
+
+function readNarrativeCache(key) {
+  const cached = narrativeCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.timestamp > NARRATIVE_CACHE_TTL_MS) {
+    narrativeCache.delete(key);
+    return null;
+  }
+  return cached.narrative;
+}
+
+function startNarrativeGeneration(key, analysis, matchData) {
+  const cached = readNarrativeCache(key);
+  if (cached) return Promise.resolve(cached);
+  if (narrativeInFlight.has(key)) return narrativeInFlight.get(key);
+
+  const task = generateMatchNarrative(analysis, matchData)
+    .then((narrative) => {
+      if (narrative) {
+        narrativeCache.set(key, { narrative, timestamp: Date.now() });
+      }
+      return narrative || null;
+    })
+    .catch((err) => {
+      console.warn('[Narrative] background generation skipped:', err.message);
+      return null;
+    })
+    .finally(() => narrativeInFlight.delete(key));
+
+  narrativeInFlight.set(key, task);
+  return task;
+}
+
+app.get('/api/analyze/narrative/:key', (req, res) => {
+  const key = String(req.params.key || '');
+  const narrative = readNarrativeCache(key);
+  if (narrative) {
+    return res.json({ status: 'available', narrative });
+  }
+  if (narrativeInFlight.has(key)) {
+    return res.status(202).json({ status: 'pending' });
+  }
+  return res.status(404).json({ status: 'missing' });
+});
+
 // ─── AGENT 47 V9 ENDPOINTS ─────────────────────────────────────────────────
 
 /**
@@ -3098,10 +3223,9 @@ app.post('/api/analyze', async (req, res) => {
     // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
     let enriched = { ...body };
     if (homeTeamId && awayTeamId) {
-      const [hRes, aRes, h2hRes, standingsRes] = await Promise.allSettled([
+      const [hRes, aRes, standingsRes] = await Promise.allSettled([
         getTeamForm(homeTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
         getTeamForm(awayTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
-        getH2H(homeTeamId, awayTeamId),
         getStandings({ leagueId, season: body.season ?? body.fixtureContext?.season ?? null, homeTeamId, awayTeamId }),
       ]);
       if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
@@ -3180,36 +3304,39 @@ app.post('/api/analyze', async (req, res) => {
             ? `quota_guard_paused: ${quotaState.pauseReason || 'unknown'}`
             : 'api_calls_temporarily_skipped',
         };
-      }
-      const directStats = await fetchFixtureStatistics(fixtureId);
-      if (directStats) {
-        directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
-        if (directStats.possession?.home != null || directStats.possession?.away != null) {
-          enriched.possession = {
-            home: directStats.possession?.home ?? enriched.possession?.home ?? null,
-            away: directStats.possession?.away ?? enriched.possession?.away ?? null,
-          };
-        }
-        if (directStats.shots?.home != null || directStats.shots?.away != null) {
-          enriched.shots = {
-            home: directStats.shots?.home ?? enriched.shots?.home ?? null,
-            away: directStats.shots?.away ?? enriched.shots?.away ?? null,
-          };
-        }
-        if (directStats.xg?.home != null || directStats.xg?.away != null) {
-          enriched.xg = {
-            home: directStats.xg?.home ?? enriched.xg?.home ?? null,
-            away: directStats.xg?.away ?? enriched.xg?.away ?? null,
-          };
-          enriched.hasLiveXg = true;
-        }
-        if (directStats.cards) {
-          enriched.homeCards = directStats.cards.home;
-          enriched.awayCards = directStats.cards.away;
-        }
       } else {
-        if (!directFixtureStatsStatus.reason) {
-          directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'provider_returned_no_stats_for_fixture' };
+        const directStats = await fetchFixtureStatistics(fixtureId);
+        if (directStats) {
+          directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
+          if (directStats.possession?.home != null || directStats.possession?.away != null) {
+            enriched.possession = {
+              home: directStats.possession?.home ?? enriched.possession?.home ?? null,
+              away: directStats.possession?.away ?? enriched.possession?.away ?? null,
+            };
+          }
+          if (directStats.shots?.home != null || directStats.shots?.away != null) {
+            enriched.shots = {
+              home: directStats.shots?.home ?? enriched.shots?.home ?? null,
+              away: directStats.shots?.away ?? enriched.shots?.away ?? null,
+            };
+          }
+          if (directStats.xg?.home != null || directStats.xg?.away != null) {
+            enriched.xg = {
+              home: directStats.xg?.home ?? enriched.xg?.home ?? null,
+              away: directStats.xg?.away ?? enriched.xg?.away ?? null,
+            };
+            enriched.hasLiveXg = true;
+          }
+          if (directStats.cards) {
+            enriched.homeCards = directStats.cards.home;
+            enriched.awayCards = directStats.cards.away;
+          }
+        } else {
+          directFixtureStatsStatus = {
+            status: 'unavailable',
+            source: 'fixture-statistics',
+            reason: 'provider_returned_no_stats_for_fixture',
+          };
         }
       }
     } else if (isLive && !fixtureId) {
@@ -3297,17 +3424,22 @@ app.post('/api/analyze', async (req, res) => {
     // ── Step 3: Run V9 engine ────────────────────────────────────────────────
     const analysis = analyzeV9(enriched);
 
-    // ── Step 4: Groq narrative — analyst note layered on top of V9 output ───
-    try {
-      const narrative = await generateMatchNarrative(analysis, enriched);
-      if (narrative) analysis.narrative = narrative;
-    } catch (narErr) {
-      console.warn('[Narrative] Groq narrative skipped:', narErr.message);
+    // ── Step 4: analyst note is non-blocking ────────────────────────────────
+    const narrativeKey = buildNarrativeKey(enriched);
+    const cachedNarrative = readNarrativeCache(narrativeKey);
+    analysis.narrativeKey = narrativeKey;
+    if (cachedNarrative) {
+      analysis.narrative = cachedNarrative;
+      analysis.narrativeStatus = 'available';
+    } else {
+      analysis.narrativeStatus = 'pending';
+      startNarrativeGeneration(narrativeKey, analysis, enriched);
     }
 
+    // Critical path ends here: return football analysis without waiting for an LLM.
     res.json(analysis);
   } catch (error) {
-    console.error('V9 analysis error:', error.message);
+    console.error('V10 analysis error:', error.message);
     res.status(500).json({ error: 'Analysis failed', detail: error.message });
   }
 });

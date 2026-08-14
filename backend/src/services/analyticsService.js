@@ -28,6 +28,88 @@ const axiosInstance = axios.create({
   timeout: 8000,
 });
 
+
+// V10.2 request orchestration.
+// - identical simultaneous requests share one Promise
+// - unique API-Football requests are launched with a small global gap
+// - one 429 opens a short local circuit instead of allowing a burst of repeated failures
+const analyticsInFlight = new Map();
+const ANALYTICS_MIN_REQUEST_GAP_MS = Math.max(
+  100,
+  Number(process.env.ANALYTICS_MIN_REQUEST_GAP_MS || 300),
+);
+const ANALYTICS_429_COOLDOWN_MS = Math.max(
+  15000,
+  Number(process.env.ANALYTICS_429_COOLDOWN_MS || 60000),
+);
+let analyticsNextLaunchAt = 0;
+let analyticsRateLimitedUntil = 0;
+
+function stableParamsKey(params = {}) {
+  return Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${JSON.stringify(params[k])}`)
+    .join('&');
+}
+
+async function waitForAnalyticsLaunchSlot() {
+  const now = Date.now();
+  const launchAt = Math.max(now, analyticsNextLaunchAt);
+  analyticsNextLaunchAt = launchAt + ANALYTICS_MIN_REQUEST_GAP_MS;
+  const delay = launchAt - now;
+  if (delay > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+async function singleFlightGet(url, config = {}) {
+  const key = `${url}?${stableParamsKey(config.params || {})}`;
+  if (analyticsInFlight.has(key)) {
+    return analyticsInFlight.get(key);
+  }
+
+  const request = (async () => {
+    if (Date.now() < analyticsRateLimitedUntil) {
+      const waitMs = analyticsRateLimitedUntil - Date.now();
+      const err = new Error(`API_FOOTBALL_RATE_LIMIT_COOLDOWN:${waitMs}`);
+      err.code = 'API_FOOTBALL_RATE_LIMIT_COOLDOWN';
+      throw err;
+    }
+
+    await waitForAnalyticsLaunchSlot();
+
+    // A previous queued request may have opened the 429 circuit while this
+    // request was waiting for its launch slot. Re-check immediately before I/O.
+    if (Date.now() < analyticsRateLimitedUntil) {
+      const waitMs = analyticsRateLimitedUntil - Date.now();
+      const err = new Error(`API_FOOTBALL_RATE_LIMIT_COOLDOWN:${waitMs}`);
+      err.code = 'API_FOOTBALL_RATE_LIMIT_COOLDOWN';
+      throw err;
+    }
+
+    try {
+      return await axiosInstance.request({
+        method: 'get',
+        url,
+        ...config,
+      });
+    } catch (err) {
+      if (err?.response?.status === 429) {
+        analyticsRateLimitedUntil = Date.now() + ANALYTICS_429_COOLDOWN_MS;
+        console.warn(
+          `[Analytics API] 429 received — pausing analytics requests for ${Math.round(ANALYTICS_429_COOLDOWN_MS / 1000)}s`
+        );
+      }
+      throw err;
+    }
+  })().finally(() => {
+    analyticsInFlight.delete(key);
+  });
+
+  analyticsInFlight.set(key, request);
+  return request;
+}
+
 // Offline fallback response shape
 function offlineFallback(type, ...ids) {
   return {
@@ -132,7 +214,7 @@ async function getSquadPositionMap(teamId) {
   const cached = statsCache.get(key);
   if (cached) return cached.data;   // no TTL check — squad is stable
   try {
-    const response = await axiosInstance.get('/players/squads', { params: { team: teamId } });
+    const response = await singleFlightGet('/players/squads', { params: { team: teamId } });
     const players = response.data.response?.[0]?.players || [];
     const map = {};
     for (const p of players) {
@@ -164,7 +246,7 @@ export async function getTeamForm(teamId, league = null, season = null) {
     // Filter to the exact fixture season — prevents cross-season form contamination.
     if (season != null) params.season = season;
 
-    const response = await axiosInstance.get('/fixtures', { params });
+    const response = await singleFlightGet('/fixtures', { params });
     const matches = response.data.response || [];
     // Season is not available in a form-only fetch; do not guess from current date.
     const standings = null;
@@ -283,7 +365,7 @@ export async function getH2H(teamA, teamB) {
     const cached = getCache(key);
     if (cached) return cached;
 
-    const response = await axiosInstance.get('/fixtures/headtohead', {
+    const response = await singleFlightGet('/fixtures/headtohead', {
       params: { h2h: `${teamA}-${teamB}`, last: 10 },
     });
 
@@ -382,7 +464,7 @@ export async function getStandings({ leagueId, season, homeTeamId = null, awayTe
   }
 
   try {
-    const response = await axiosInstance.get('/standings', { params: { league: leagueId, season } });
+    const response = await singleFlightGet('/standings', { params: { league: leagueId, season } });
 
     // API-Football may return multiple groups/tables — never assume groups[0] is relevant.
     const allGroups = response.data.response?.[0]?.league?.standings || [];
@@ -497,7 +579,7 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     const cached = getCache(key);
     if (cached) return cached;
 
-    const response = await axiosInstance.get('/teams/statistics', {
+    const response = await singleFlightGet('/teams/statistics', {
       params: { team: teamId, league: leagueId, season: year },
     });
     const s = response.data.response;
@@ -552,7 +634,7 @@ export async function getTeamInjuries(teamId, leagueId, season = null) {
     const cached = getCache(key);
     if (cached) return cached;
 
-    const response = await axiosInstance.get('/injuries', {
+    const response = await singleFlightGet('/injuries', {
       params: { team: teamId, league: leagueId, season: year },
     });
     const injuries = response.data.response || [];

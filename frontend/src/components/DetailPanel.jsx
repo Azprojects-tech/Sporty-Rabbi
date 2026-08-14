@@ -309,11 +309,58 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   const panelScrollRef = useRef(null);
 
   useEffect(() => {
-    // Always run fresh analysis on click — calibrated or not
-    // If we already have preloaded data it stays visible while the refresh runs in background
-    loadAnalysis();
+    // Reset immediately to the newly selected match. This prevents a fast click
+    // between fixtures from briefly showing the previous match's analysis.
+    const initialAnalysis = preloadedAnalysis || null;
+    setAnalysis(initialAnalysis);
+    setError(null);
+    setLoading(!initialAnalysis);
+
+    // Refresh in the background; the new match's preloaded analysis stays visible.
+    loadAnalysis(initialAnalysis);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id]);
+
+  // Analyst prose is deliberately outside the football-analysis critical path.
+  // /api/analyze starts it in the background and returns narrativeKey immediately.
+  useEffect(() => {
+    const key = analysis?.narrativeKey;
+    if (!key || analysis?.narrative?.text) return;
+
+    let cancelled = false;
+    let timer = null;
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    const pollNarrative = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const res = await apiService.getNarrative(key);
+        if (cancelled) return;
+        if (res?.data?.status === 'available' && res.data.narrative) {
+          setAnalysis((prev) => prev ? {
+            ...prev,
+            narrative: res.data.narrative,
+            narrativeStatus: 'available',
+          } : prev);
+          return;
+        }
+      } catch (err) {
+        // 202/404/temporary network errors are harmless to the prediction panel.
+      }
+
+      if (!cancelled && attempts < maxAttempts) {
+        timer = setTimeout(pollNarrative, 1000);
+      }
+    };
+
+    timer = setTimeout(pollNarrative, 500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [analysis?.narrativeKey, analysis?.narrative?.text]);
 
   useEffect(() => {
     setExpandedParam(null);
@@ -328,9 +375,9 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.id, match?.status, match?.isLive, match?.score, match?.matchMinutes]);
 
-  async function loadAnalysis() {
-    // Show spinner only when there is no existing analysis to display
-    if (!analysis && !preloadedAnalysis) setLoading(true);
+  async function loadAnalysis(existingAnalysis = analysis || preloadedAnalysis) {
+    // Show spinner only when there is no analysis for the selected match to display.
+    if (!existingAnalysis) setLoading(true);
     setError(null);
     try {
       const _lid = match.leagueId || 0;
@@ -376,10 +423,14 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
         awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },
       };
-      const res = await apiService.client.post('/analyze', matchData);
+      const res = await apiService.analyzeMatch(matchData);
       setAnalysis(res.data);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Analysis failed');
+      // Stale-while-revalidate: never replace a usable cached/preloaded analysis
+      // with a red error panel just because a background refresh timed out.
+      if (!existingAnalysis) {
+        setError(err.response?.data?.error || err.message || 'Analysis failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -399,7 +450,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     <div style={panelStyle}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <div style={{ width: 28, height: 28, border: '2px solid #1e2535', borderTopColor: '#00b859', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V9 analysis...</p>
+        <p style={{ fontSize: 12, color: '#4a5568' }}>Running V10 analysis...</p>
       </div>
     </div>
   );
@@ -407,7 +458,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
   if (error) return (
     <div style={panelStyle}>
       <div style={{ padding: '14px 16px', borderBottom: '1px solid #1e2535', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#8b9ab3' }}>V8 Analysis</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#8b9ab3' }}>V10 Analysis</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 20 }}>x</button>
       </div>
       <div style={{ padding: 20 }}>
@@ -597,7 +648,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         </div>
       )}
 
-      {/* Groq narrative — LLM analyst note layered on top of V9 output */}
+      {/* Analyst note — generated asynchronously so it never blocks the prediction */}
       {analysis?.narrative?.text && (
         <div style={{
           padding: '11px 14px',
@@ -617,6 +668,18 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
           <p style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.65, margin: 0 }}>
             {analysis.narrative.text}
           </p>
+        </div>
+      )}
+
+      {!analysis?.narrative?.text && analysis?.narrativeStatus === 'pending' && (
+        <div style={{
+          padding: '9px 14px',
+          borderBottom: '1px solid #1e2535',
+          flexShrink: 0,
+          background: '#05101f',
+        }}>
+          <span style={{ fontSize: 9, fontWeight: 800, color: '#3b82f6', letterSpacing: '1px' }}>ANALYST NOTE</span>
+          <span style={{ marginLeft: 7, fontSize: 10, color: '#64748b' }}>Generating in background…</span>
         </div>
       )}
 
