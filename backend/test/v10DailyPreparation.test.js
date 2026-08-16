@@ -41,8 +41,8 @@ test('morning analysis is bounded by fixture and team-call budgets', () => {
 
 test('full schedule stays lightweight while analyzed candidates are merged on top', () => {
   assert.match(server, /dailySchedule = apiFixtures[\s\S]*?map\(parseLightFixture\)/);
-  assert.match(server, /preparedSchedule = mergeDailySchedule\\(dailySchedule, compactAnalyzed\\)/);
-  assert.match(server, /dailySchedule,\n        preparedDateUK/);
+  assert.match(server, /preparedSchedule = mergeDailySchedule\(dailySchedule, compactAnalyzed\)/);
+  assert.match(server, /persistedSchedule = mergeDailySchedule\(dailySchedule, persistedAnalyzed\)/);
 });
 
 test('authoritative fixture ID and kickoff are retained', () => {
