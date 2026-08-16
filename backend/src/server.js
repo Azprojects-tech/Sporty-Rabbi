@@ -449,12 +449,12 @@ let lastLivePollRunAt = 0;
 const DAILY_PREP_TIMEZONE = 'Europe/London';
 const DAILY_PREP_MAX_ANALYZED_FIXTURES = toNumberWithMin(
   process.env.DAILY_PREP_MAX_ANALYZED_FIXTURES,
-  18,
+  1000,
   1,
 );
 const DAILY_PREP_TEAM_CALL_BUDGET = toNumberWithMin(
   process.env.DAILY_PREP_TEAM_CALL_BUDGET,
-  36,
+  2500,
   2,
 );
 const PORTAL_OPEN_REFRESH_COOLDOWN_MS = toNumberWithMin(
@@ -1829,6 +1829,72 @@ cron.schedule('0 5 * * *', () => {
     .catch((err) => console.error('[DailyPrep] Scheduled preparation failed:', err.message));
 }, { timezone: DAILY_PREP_TIMEZONE });
 
+const LIVE_INTELLIGENCE_INTERVAL_HOURS = toNumberWithMin(
+  process.env.LIVE_INTELLIGENCE_INTERVAL_HOURS,
+  2,
+  1,
+);
+
+async function runLiveIntelligenceScan(trigger = 'scheduled') {
+  if (!API_KEY || shouldSkipApiCalls()) {
+    console.log(`[LiveIntel] ${trigger} skipped — API unavailable or quota guard active.`);
+    return { scanned: 0, alerts: 0 };
+  }
+
+  console.log(`[LiveIntel] ${trigger} scan starting...`);
+  await pollLiveMatches({ forceApi: true, enrich: true });
+
+  let qualifyingAlerts = 0;
+  for (const match of liveMatches || []) {
+    const hasObservedEvidence =
+      match?.shots?.home != null || match?.shots?.away != null ||
+      match?.xg?.home != null || match?.xg?.away != null ||
+      match?.possession?.home != null || match?.possession?.away != null;
+    if (!hasObservedEvidence) continue;
+
+    const nextGoalProb = calculateNextGoalProbability(match);
+    const momentum = calculateMomentum(match);
+    const matchAlerts = generateBettingAlert(match, nextGoalProb, momentum) || [];
+
+    for (const alert of matchAlerts) {
+      const alertConf = Number(
+        alert?.probability ?? alert?.confidence ??
+        match?.decisionProbability ?? match?.confidence ?? 0
+      );
+      const policy = getPhaseConfidencePolicy(match.status, match.matchMinutes || 0);
+      if (!Number.isFinite(alertConf) || alertConf < policy.standardThreshold) continue;
+
+      qualifyingAlerts += 1;
+      await saveAlert({
+        matchId: match.id,
+        home: match.home,
+        away: match.away,
+        league: match.league,
+        leagueId: match.leagueId || 0,
+        matchType: match.matchType || 'League',
+        country: match.leagueCountry || '',
+        type: alert.type || 'LIVE_INTELLIGENCE',
+        message: alert.message || alert.selection || 'Agent47 live opportunity',
+        confidence: alertConf,
+        status: match.status,
+        matchMinutes: match.matchMinutes || 0,
+        sentAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  console.log(`[LiveIntel] ${trigger} complete: ${liveMatches.length} live fixtures, ${qualifyingAlerts} qualifying alerts.`);
+  return { scanned: liveMatches.length, alerts: qualifyingAlerts };
+}
+
+cron.schedule(`0 */${LIVE_INTELLIGENCE_INTERVAL_HOURS} * * *`, () => {
+  runLiveIntelligenceScan('scheduled-2h').catch((err) =>
+    console.error('[LiveIntel] Scheduled scan failed:', err.message)
+  );
+}, { timezone: DAILY_PREP_TIMEZONE });
+
+console.log(`   Periodic live intelligence: every ${LIVE_INTELLIGENCE_INTERVAL_HOURS}h (12 base scans/day at 2h)`);
+
 // ─── ALERT PERSISTENCE ────────────────────────────────────────────────────
 
 // ── Alert dedup: prevent same match+type firing more than once per 30 minutes ──────────────
@@ -3135,7 +3201,7 @@ app.get('/api/live-analysis/:matchId', async (req, res) => {
     // Persist high-confidence alerts
     if (matchAlerts && matchAlerts.length > 0) {
       for (const alert of matchAlerts) {
-        const alertConf = alert.confidence || match.confidence || 0;
+        const alertConf = alert.probability || alert.confidence || match.decisionProbability || match.confidence || 0;
         const policy = getPhaseConfidencePolicy(match.status, match.matchMinutes || 0);
         if (alertConf >= policy.standardThreshold) {
           await saveAlert({
@@ -3289,50 +3355,122 @@ app.post('/api/analyze', async (req, res) => {
     let directFixtureStatsStatus = { status: 'not_attempted', source: 'fixture-statistics', reason: null };
     let standingsStatus = { status: 'unavailable', source: homeTeamId && awayTeamId ? 'api-football-standings' : 'not-requested' };
 
-    // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
+    // ── Step 1: deliberate user-click enrichment ────────────────────────────
+    // A match click means "give me the full Agent47 evidence desk". We spend calls
+    // here intentionally, while retaining the quota guard and analytics-service cache.
     let enriched = { ...body };
-    if (ALLOW_ON_DEMAND_API_ENRICHMENT && homeTeamId && awayTeamId) {
-      const [hRes, aRes, standingsRes] = await Promise.allSettled([
-        getTeamForm(homeTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
-        getTeamForm(awayTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
-        getStandings({ leagueId, season: body.season ?? body.fixtureContext?.season ?? null, homeTeamId, awayTeamId }),
-      ]);
-      if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
-        const hs = hRes.value.stats;
-        if (hs.form) enriched.homeForm = hs.form.split('').join('-');
-        enriched.homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
-        // Goals-per-game stays in goals fields only — never written into xG fields.
-        const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
-        const homeGoalsAgainst = Number.parseFloat(hs.avgGoalsAgainst);
-        if (Number.isFinite(homeGoalsFor))     enriched.homeGoalsAvgFor      = homeGoalsFor;
-        if (Number.isFinite(homeGoalsAgainst)) enriched.homeGoalsAvgAgainst  = homeGoalsAgainst;
-        if (hs.goalDrought  != null) enriched.homeGoalDrought  = hs.goalDrought;
-        if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
-        if (hs.recentOpposition) enriched.homeRecentOpposition = hs.recentOpposition;
-      }
-      if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
-        const as = aRes.value.stats;
-        if (as.form) enriched.awayForm = as.form.split('').join('-');
-        enriched.awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
-        // Goals-per-game stays in goals fields only — never written into xG fields.
-        const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
-        const awayGoalsAgainst = Number.parseFloat(as.avgGoalsAgainst);
-        if (Number.isFinite(awayGoalsFor))     enriched.awayGoalsAvgFor      = awayGoalsFor;
-        if (Number.isFinite(awayGoalsAgainst)) enriched.awayGoalsAvgAgainst  = awayGoalsAgainst;
-        if (as.goalDrought  != null) enriched.awayGoalDrought  = as.goalDrought;
-        if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
-        if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
-      }
-      // V10.1: do not synthesize historical scorelines from aggregate H2H counts.
-      enriched.h2hHistory = [];
-      if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
-        const tms = standingsRes.value.teams;
-        enriched.totalTeams = standingsRes.value.totalTeams || null;
-        if (tms[homeTeamId]) { enriched.homePosition = tms[homeTeamId].position ?? null; enriched.homePoints = tms[homeTeamId].points ?? null; }
-        if (tms[awayTeamId]) { enriched.awayPosition = tms[awayTeamId].position ?? null; enriched.awayPoints = tms[awayTeamId].points ?? null; }
-        const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
-        if (played > 0) enriched.gameWeek = played;
-        standingsStatus = { status: 'available', source: 'api-football-standings' };
+    const clickEnrichmentEnabled = body.enrich !== false;
+    if (clickEnrichmentEnabled && homeTeamId && awayTeamId) {
+      const season = body.season ?? body.fixtureContext?.season ?? null;
+      if (!shouldSkipApiCalls()) {
+        const [hRes, aRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes, h2hRes] = await Promise.allSettled([
+          getTeamForm(homeTeamId, leagueId, season),
+          getTeamForm(awayTeamId, leagueId, season),
+          getStandings({ leagueId, season, homeTeamId, awayTeamId }),
+          getTeamStatistics(homeTeamId, leagueId, season),
+          getTeamStatistics(awayTeamId, leagueId, season),
+          getTeamInjuries(homeTeamId, leagueId, season),
+          getTeamInjuries(awayTeamId, leagueId, season),
+          getH2H(homeTeamId, awayTeamId),
+        ]);
+
+        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
+          const hs = hRes.value.stats;
+          if (hs.form) enriched.homeForm = hs.form.split('').join('-');
+          enriched.homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
+          const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
+          const homeGoalsAgainst = Number.parseFloat(hs.avgGoalsAgainst);
+          if (Number.isFinite(homeGoalsFor)) enriched.homeGoalsAvgFor = homeGoalsFor;
+          if (Number.isFinite(homeGoalsAgainst)) enriched.homeGoalsAvgAgainst = homeGoalsAgainst;
+          if (hs.goalDrought != null) enriched.homeGoalDrought = hs.goalDrought;
+          if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
+          if (hs.recentOpposition) enriched.homeRecentOpposition = hs.recentOpposition;
+        }
+
+        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
+          const as = aRes.value.stats;
+          if (as.form) enriched.awayForm = as.form.split('').join('-');
+          enriched.awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
+          const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
+          const awayGoalsAgainst = Number.parseFloat(as.avgGoalsAgainst);
+          if (Number.isFinite(awayGoalsFor)) enriched.awayGoalsAvgFor = awayGoalsFor;
+          if (Number.isFinite(awayGoalsAgainst)) enriched.awayGoalsAvgAgainst = awayGoalsAgainst;
+          if (as.goalDrought != null) enriched.awayGoalDrought = as.goalDrought;
+          if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
+          if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
+        }
+
+        if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
+          const tms = standingsRes.value.teams;
+          enriched.totalTeams = standingsRes.value.totalTeams || null;
+          if (tms[homeTeamId]) {
+            enriched.homePosition = tms[homeTeamId].position ?? null;
+            enriched.homePoints = tms[homeTeamId].points ?? null;
+          }
+          if (tms[awayTeamId]) {
+            enriched.awayPosition = tms[awayTeamId].position ?? null;
+            enriched.awayPoints = tms[awayTeamId].points ?? null;
+          }
+          const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
+          if (played > 0) enriched.gameWeek = played;
+          standingsStatus = { status: 'available', source: 'api-football-standings' };
+        }
+
+        if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
+          const hs = hStatsRes.value.stats;
+          if (hs.conversionPct != null) enriched.homeConversionPct = hs.conversionPct;
+          if (hs.avgShotsTotal != null) enriched.homeShotsPerGame = hs.avgShotsTotal;
+          if (hs.avgPossession != null) enriched.homePossession = hs.avgPossession;
+          if (hs.lateGoalPct != null) enriched.homeLateGoalPct = hs.lateGoalPct;
+        }
+        if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
+          const as = aStatsRes.value.stats;
+          if (as.conversionPct != null) enriched.awayConversionPct = as.conversionPct;
+          if (as.avgShotsTotal != null) enriched.awayShotsPerGame = as.avgShotsTotal;
+          if (as.lateGoalPct != null) enriched.awayLateGoalPct = as.lateGoalPct;
+        }
+
+        if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline) {
+          if (hInjRes.value?.squadIntegrity != null) enriched.homeSquadIntegrity = hInjRes.value.squadIntegrity;
+          if (Array.isArray(hInjRes.value?.keyAbsences)) enriched.homeKeyAbsences = hInjRes.value.keyAbsences;
+        }
+        if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline) {
+          if (aInjRes.value?.squadIntegrity != null) enriched.awaySquadIntegrity = aInjRes.value.squadIntegrity;
+          if (Array.isArray(aInjRes.value?.keyAbsences)) enriched.awayKeyAbsences = aInjRes.value.keyAbsences;
+        }
+
+        // Exact H2H rows are safe only after re-orienting every historical score
+        // to the CURRENT fixture's home/away teams. Never convert aggregate counts
+        // into invented scorelines.
+        enriched.h2hHistory = [];
+        if (h2hRes.status === 'fulfilled' && Array.isArray(h2hRes.value?.matches)) {
+          const normName = (s) => String(s || '').toLowerCase().trim();
+          const currentHome = normName(enriched.home);
+          const currentAway = normName(enriched.away);
+          enriched.h2hHistory = h2hRes.value.matches.map((m) => {
+            const histHome = normName(m.home);
+            const histAway = normName(m.away);
+            let homeGoals = null;
+            let awayGoals = null;
+            if (histHome === currentHome && histAway === currentAway) {
+              homeGoals = Number(m.homeGoals);
+              awayGoals = Number(m.awayGoals);
+            } else if (histHome === currentAway && histAway === currentHome) {
+              homeGoals = Number(m.awayGoals);
+              awayGoals = Number(m.homeGoals);
+            } else {
+              return null;
+            }
+            if (!Number.isFinite(homeGoals) || !Number.isFinite(awayGoals)) return null;
+            return {
+              homeGoals,
+              awayGoals,
+              winner: homeGoals > awayGoals ? 'home' : homeGoals < awayGoals ? 'away' : 'draw',
+            };
+          }).filter(Boolean);
+        }
+      } else {
+        enriched.h2hHistory = [];
       }
     }
 
@@ -3362,7 +3500,7 @@ app.post('/api/analyze', async (req, res) => {
     // ── Step 1b: optional on-demand fixture stats ───────────────────────────
     // V10.3 defaults this OFF so Prediction Desk clicks do not spend API-Football
     // quota. The portal-open live refresh remains the normal daytime API trigger.
-    if (ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId) {
+    if (clickEnrichmentEnabled && isLive && fixtureId) {
       if (!API_KEY) {
         directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'API_FOOTBALL_KEY_missing' };
       } else if (shouldSkipApiCalls()) {
@@ -3408,11 +3546,11 @@ app.post('/api/analyze', async (req, res) => {
           };
         }
       }
-    } else if (isLive && !ALLOW_ON_DEMAND_API_ENRICHMENT) {
+    } else if (isLive && !clickEnrichmentEnabled) {
       directFixtureStatsStatus = {
         status: 'not_requested',
         source: 'fixture-statistics',
-        reason: 'on_demand_api_enrichment_disabled',
+        reason: 'click_enrichment_disabled',
       };
     } else if (isLive && !fixtureId) {
       directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'missing_fixture_id' };
@@ -3540,7 +3678,7 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     const leagueId   = match.leagueId;
 
     const onDemandDisabled = { status: 'rejected', reason: new Error('ON_DEMAND_API_ENRICHMENT_DISABLED') };
-    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = ALLOW_ON_DEMAND_API_ENRICHMENT
+    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = !shouldSkipApiCalls()
       ? await Promise.allSettled([
           getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, leagueId, match.season ?? null),

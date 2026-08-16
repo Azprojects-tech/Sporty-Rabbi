@@ -62,12 +62,26 @@ test('match rows show date and time in Europe London timezone', () => {
   assert.match(feed, /timeZone: 'Europe\/London'/);
 });
 
-test('Prediction Desk clicks are cache-only by default', () => {
-  assert.match(server, /ALLOW_ON_DEMAND_API_ENRICHMENT/);
-  assert.match(server, /if \(ALLOW_ON_DEMAND_API_ENRICHMENT && homeTeamId && awayTeamId\)/);
-  assert.match(server, /if \(ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId\)/);
+test('Prediction Desk clicks automatically enrich selected fixtures', () => {
+  assert.match(server, /const clickEnrichmentEnabled = body\.enrich !== false/);
+  assert.match(server, /getTeamStatistics\(homeTeamId/);
+  assert.match(server, /getTeamInjuries\(homeTeamId/);
+  assert.match(server, /getH2H\(homeTeamId, awayTeamId\)/);
+  assert.match(server, /if \(clickEnrichmentEnabled && isLive && fixtureId\)/);
 });
 
+
+test('whole-day Pro-plan scan capacity replaces the 18-fixture sample', () => {
+  assert.match(server, /DAILY_PREP_MAX_ANALYZED_FIXTURES,[\s\S]*?1000/);
+  assert.match(server, /DAILY_PREP_TEAM_CALL_BUDGET,[\s\S]*?2500/);
+});
+
+test('periodic live intelligence runs every two hours and feeds the alert pipeline', () => {
+  assert.match(server, /LIVE_INTELLIGENCE_INTERVAL_HOURS/);
+  assert.match(server, /runLiveIntelligenceScan/);
+  assert.match(server, /pollLiveMatches\(\{ forceApi: true, enrich: true \}\)/);
+  assert.match(server, /await saveAlert\(/);
+});
 
 test('manual recalibration is explicitly declared and disabled by default', () => {
   assert.match(server, /const ALLOW_MANUAL_DAILY_PREP = String\(/);
@@ -78,4 +92,12 @@ test('manual recalibration is explicitly declared and disabled by default', () =
 test('zero deep-analysis budget preserves the authoritative API schedule', () => {
   assert.match(server, /if \(dailySchedule\.length === 0\) \{[\s\S]*?TheSportsDB may supply fixture discovery only/);
   assert.match(server, /Authoritative schedule retained; deep analysis skipped by quota budget/);
+});
+
+
+test('Daily 80+ UI requires Agent47 eligibility and score >= 80', () => {
+  assert.match(app, /dailySignal = m\.analysis\?\.dailySignal/);
+  assert.match(app, /dailySignal\?\.eligible !== true/);
+  assert.match(app, /signalScore < 80/);
+  assert.equal(app.includes("filter === 'high' && (m.confidence || 0) < 80"), false);
 });

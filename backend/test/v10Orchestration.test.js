@@ -63,7 +63,7 @@ test('queued analytics requests re-check the 429 circuit after pacing wait', () 
 });
 
 test('direct fixture statistics obey the API quota guard', () => {
-  const liveBlockStart = server.indexOf('if (ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId) {');
+  const liveBlockStart = server.indexOf('if (clickEnrichmentEnabled && isLive && fixtureId) {');
   const fetchIdx = server.indexOf('const directStats = await fetchFixtureStatistics(fixtureId);', liveBlockStart);
   const allowedElseIdx = server.lastIndexOf('} else {', fetchIdx);
   const skipIdx = server.indexOf('else if (shouldSkipApiCalls())', liveBlockStart);
@@ -71,14 +71,14 @@ test('direct fixture statistics obey the API quota guard', () => {
   assert.ok(allowedElseIdx > skipIdx && fetchIdx > allowedElseIdx);
 });
 
-test('unused aggregate H2H is not fetched on automatic analysis hot paths', () => {
+test('exact H2H is fetched only on deliberate match-click enrichment and safely re-oriented', () => {
   const backgroundStart = server.indexOf('async function analyzeMatch(match)');
   const backgroundEnd = server.indexOf('// ─── LIVE POLLER', backgroundStart);
   const clickStart = server.indexOf("app.post('/api/analyze'");
   const clickEnd = server.indexOf("app.get('/api/analyze/live/", clickStart);
   assert.equal(server.slice(backgroundStart, backgroundEnd).includes('getH2H('), false);
-  assert.equal(server.slice(clickStart, clickEnd).includes('getH2H('), false);
-  assert.match(server, /app\.get\('\/api\/h2h\/:homeTeamId\/:awayTeamId'/);
+  assert.equal(server.slice(clickStart, clickEnd).includes('getH2H(homeTeamId, awayTeamId)'), true);
+  assert.match(server, /Exact H2H rows are safe only after re-orienting/);
 });
 
 test('changing selected match resets DetailPanel before background refresh', () => {

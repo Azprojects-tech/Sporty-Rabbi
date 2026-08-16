@@ -648,8 +648,12 @@ const NEWS_FETCH_CACHE = new Map(); // key: YYYY-MM-DD → { data: Map, ts: numb
 async function fetchTodayMatchNews(fixtureList) {
   if (!GEMINI_API_KEY || !fixtureList?.length || isGeminiCoolingDown()) return new Map();
   const today = new Date().toISOString().split('T')[0];
-  const cached = NEWS_FETCH_CACHE.get(today);
-  if (cached && Date.now() - cached.ts < 2 * 60 * 60 * 1000) return cached.data; // 2h TTL
+  const fixtureCacheKey = `${today}:${fixtureList
+    .map((f) => `${String(f.home || '').toLowerCase().trim()}:${String(f.away || '').toLowerCase().trim()}`)
+    .sort()
+    .join('|')}`;
+  const cached = NEWS_FETCH_CACHE.get(fixtureCacheKey);
+  if (cached && Date.now() - cached.ts < 2 * 60 * 60 * 1000) return cached.data; // 2h TTL per fixture set
 
   const shortList = fixtureList.slice(0, 40)
     .map(f => `${f.home} vs ${f.away} (${f.league || 'Unknown'})`)
@@ -691,7 +695,7 @@ async function fetchTodayMatchNews(fixtureList) {
     }
   }
 
-  NEWS_FETCH_CACHE.set(today, { data: newsMap, ts: Date.now() });
+  NEWS_FETCH_CACHE.set(fixtureCacheKey, { data: newsMap, ts: Date.now() });
   return newsMap;
 }
 
@@ -819,6 +823,20 @@ export async function generateMatchNarrative(analysis, matchInfo) {
   const homeXg = toMetric(matchInfo?.xg?.home ?? null);
   const awayXg = toMetric(matchInfo?.xg?.away ?? null);
   const dataSourceStatus = analysis?.dataSourceStatus || matchInfo?.dataSourceStatus || null;
+  const homeAbsences = Array.isArray(matchInfo?.homeKeyAbsences) ? matchInfo.homeKeyAbsences : [];
+  const awayAbsences = Array.isArray(matchInfo?.awayKeyAbsences) ? matchInfo.awayKeyAbsences : [];
+
+  // News is analyst context only: Gemini Search may surface confirmed facts, but
+  // these facts do NOT mutate Agent47 numeric inputs or the Dixon-Coles core.
+  let confirmedNews = null;
+  try {
+    const newsMap = await fetchTodayMatchNews([{ home, away, league }]);
+    confirmedNews = newsMap.get(`${String(home).toLowerCase().trim()}:${String(away).toLowerCase().trim()}`) || null;
+  } catch (_) {}
+
+  const absenceText = (items) => items.length
+    ? items.map((a) => `${a?.name || 'Unknown'}${a?.position ? ` (${a.position})` : ''}`).join(', ')
+    : 'none confirmed by API';
 
   const pairText = (a, b, suffix = '') => {
     if (a != null && b != null) return `${a}-${b}${suffix}`;
@@ -862,6 +880,8 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     `TABLE CONTEXT: ${tableContext}.`,
     `LIVE METRICS: Possession ${home} ${homePoss != null ? `${homePoss}%` : 'unavailable'} vs ${away} ${awayPoss != null ? `${awayPoss}%` : 'unavailable'}, Shots ${homeShots ?? 'unavailable'}-${awayShots ?? 'unavailable'}, xG ${homeXg ?? 'unavailable'}-${awayXg ?? 'unavailable'}, Score ${score}.`,
     `FORM (last 5): ${home} ${formCompact(homeFormRaw) || 'Unavailable'} | ${away} ${formCompact(awayFormRaw) || 'Unavailable'}.`,
+    `ABSENCES / SUSPENSIONS: ${home}: ${absenceText(homeAbsences)} | ${away}: ${absenceText(awayAbsences)}.`,
+    `CONFIRMED NEWS (last 72h, Gemini Search): ${confirmedNews ? JSON.stringify(confirmedNews) : 'No material confirmed news found.'}`,
     `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
     `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,
   ].join('\n');
@@ -906,6 +926,8 @@ ${isLive ? 'FOCUS ON THE LIVE SITUATION: the score, who is winning, who is chasi
 If the model says "Wins (Undecided)", say clearly that this is a tight game and winner is not certain yet.
 Always include at least 3 concrete data points (e.g., possession, shots, xG, form, projected goals, opponent quality).
 Always mention both teams' league ranking/position.
+If confirmed injuries, suspensions, manager changes, lineup news, or red cards are present, explicitly mention the material fact.
+Never invent a missing player, card, statistic, or news item.
 Use this phase rule: ${phaseModel.instruction}
 Use this structure implicitly: 1) baseline expectation, 2) live reality, 3) verdict on whether live data confirms, weakens, or overturns the baseline.
 Be direct. No caveats about gambling. No "I think" or "maybe". Speak as fact.

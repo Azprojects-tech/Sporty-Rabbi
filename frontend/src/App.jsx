@@ -179,7 +179,13 @@ export default function App() {
  const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
- if (filter === 'high' && (m.confidence || 0) < 80) return false;
+ if (filter === 'high') {
+ const dailySignal = m.analysis?.dailySignal || null;
+ const signalScore = Number(dailySignal?.score ?? 0);
+ // Daily 80+ is a pre-match evidence selector, not a generic confidence filter.
+ // Only fully analyzed fixtures that pass Agent47's evidence gate qualify.
+ if (dailySignal?.eligible !== true || !Number.isFinite(signalScore) || signalScore < 80) return false;
+ }
  if (selectedKeyword && !(m.league || '').toLowerCase().includes(selectedKeyword.toLowerCase())) return false;
  if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
  if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
