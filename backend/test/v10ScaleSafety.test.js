@@ -42,3 +42,14 @@ test('startup can restore chunked daily state', () => {
   assert.match(server, /chunkSnap\.docs\.flatMap/);
   assert.match(server, /Restored today's chunked daily preparation/);
 });
+
+
+test('live intelligence fails closed instead of inventing missing metrics', () => {
+  const live = fs.readFileSync(new URL('../src/services/liveAnalyticsService.js', import.meta.url), 'utf8');
+  assert.match(live, /Missing verified live evidence/);
+  assert.equal(live.includes('match.possession?.home || 50'), false);
+  assert.equal(live.includes('match.xg?.home || 0'), false);
+  assert.equal(live.includes('match.shots?.home || 0'), false);
+  assert.equal(live.includes(': 0.08'), false);
+  assert.match(server, /requiredLiveMetrics\.every/);
+});

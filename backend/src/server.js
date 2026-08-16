@@ -1892,10 +1892,14 @@ async function runLiveIntelligenceScan(trigger = 'scheduled') {
 
   let qualifyingAlerts = 0;
   for (const match of liveMatches || []) {
-    const hasObservedEvidence =
-      match?.shots?.home != null || match?.shots?.away != null ||
-      match?.xg?.home != null || match?.xg?.away != null ||
-      match?.possession?.home != null || match?.possession?.away != null;
+    const requiredLiveMetrics = [
+      match?.shots?.home, match?.shots?.away,
+      match?.xg?.home, match?.xg?.away,
+      match?.possession?.home, match?.possession?.away,
+    ];
+    const hasObservedEvidence = requiredLiveMetrics.every((value) =>
+      value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+    );
     if (!hasObservedEvidence) continue;
 
     const nextGoalProb = calculateNextGoalProbability(match);

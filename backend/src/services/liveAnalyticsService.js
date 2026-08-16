@@ -3,6 +3,12 @@
  * Real-time next goal prediction & momentum meter (zero AI cost)
  */
 
+function finiteObserved(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Calculate next goal probability for both teams
  * Based on: xG, shots on target, conversion rate, time elapsed
@@ -13,54 +19,60 @@ export function calculateNextGoalProbability(match) {
       return { error: 'Match not live' };
     }
 
-    const homeShots = match.shots?.home || 0;
-    const awayShots = match.shots?.away || 0;
-    const homeXG = match.xg?.home || 0;
-    const awayXG = match.xg?.away || 0;
+    const homeShots = finiteObserved(match.shots?.home);
+    const awayShots = finiteObserved(match.shots?.away);
+    const homeXG = finiteObserved(match.xg?.home);
+    const awayXG = finiteObserved(match.xg?.away);
+    const homeConvPct = finiteObserved(match.homeConversionPct);
+    const awayConvPct = finiteObserved(match.awayConversionPct);
+    const minsElapsed = finiteObserved(match.matchMinutes);
 
-    const minutesRemaining = Math.max(1, 90 - (match.matchMinutes || 0));
-    const minsElapsed = Math.max(1, match.matchMinutes || 1);
+    const scoreMatch = typeof match.score === 'string'
+      ? match.score.trim().match(/^(\d+)\s*-\s*(\d+)$/)
+      : null;
 
-    // xG-per-minute rate based on xG accumulated so far
+    if (
+      homeShots == null || awayShots == null ||
+      homeXG == null || awayXG == null ||
+      homeConvPct == null || awayConvPct == null ||
+      minsElapsed == null || minsElapsed <= 0 ||
+      !scoreMatch
+    ) {
+      return { error: 'Missing verified live evidence' };
+    }
+
+    const minutesRemaining = Math.max(1, 90 - minsElapsed);
     const homeXgRate = homeXG / minsElapsed;
     const awayXgRate = awayXG / minsElapsed;
 
-    // Shots proxy xG: use team's actual season conversion rate when available,
-    // fall back to 0.08 (8% — cross-league average for shots on target).
-    const homeConvRate = match.homeConversionPct > 0 ? match.homeConversionPct / 100 : 0.08;
-    const awayConvRate = match.awayConversionPct > 0 ? match.awayConversionPct / 100 : 0.08;
+    // No cross-league/default conversion assumptions: use only verified team rates.
+    const homeConvRate = Math.max(0, homeConvPct) / 100;
+    const awayConvRate = Math.max(0, awayConvPct) / 100;
     const homeShotXg = homeShots * homeConvRate;
     const awayShotXg = awayShots * awayConvRate;
 
-    // Blended lambda for remaining minutes: 70% xG rate + 30% shots proxy
-    // Cap at 4.0 (realistic max goals in remaining time) to prevent early-game inflation
     const rawHomeLambda = ((homeXgRate * 0.7) + ((homeShotXg / minsElapsed) * 0.3)) * minutesRemaining;
     const rawAwayLambda = ((awayXgRate * 0.7) + ((awayShotXg / minsElapsed) * 0.3)) * minutesRemaining;
-    const homeLambda = Math.min(rawHomeLambda, 4.0);
-    const awayLambda = Math.min(rawAwayLambda, 4.0);
+    const homeLambda = Math.min(Math.max(rawHomeLambda, 0), 4.0);
+    const awayLambda = Math.min(Math.max(rawAwayLambda, 0), 4.0);
 
-    // P(at least 1 goal in remaining time) via Poisson: 1 - e^(-λ)
     const homeNextGoalProb = Math.min(+((1 - Math.exp(-homeLambda)) * 100).toFixed(1), 95);
     const awayNextGoalProb = Math.min(+((1 - Math.exp(-awayLambda)) * 100).toFixed(1), 95);
 
-    // Goal pace calculation (goals per minute in match so far)
-    const matchMinutes = match.matchMinutes || 1;
-    const scoreParts = (match.score || '0-0').split('-');
-    const totalGoals = (parseInt(scoreParts[0]) || 0) + (parseInt(scoreParts[1]) || 0);
-    const goalsPerMinute = totalGoals / matchMinutes;
-    // Blend actual pace (50%) with combined xG rate (50%) for projected final goals
+    const totalGoals = Number(scoreMatch[1]) + Number(scoreMatch[2]);
+    const goalsPerMinute = totalGoals / minsElapsed;
     const xgBasedFinal = (homeXG + awayXG) * (90 / minsElapsed);
     const projectedFinalGoals = (goalsPerMinute * 90 * 0.5) + (xgBasedFinal * 0.5);
 
     return {
       nextGoal: {
         home: {
-          probability: parseFloat(homeNextGoalProb),
-          reasoning: `${homeShots} shots on target, xG ${homeXG.toFixed(1)}`,
+          probability: homeNextGoalProb,
+          reasoning: `${homeShots} shots, xG ${homeXG.toFixed(1)}`,
         },
         away: {
-          probability: parseFloat(awayNextGoalProb),
-          reasoning: `${awayShots} shots on target, xG ${awayXG.toFixed(1)}`,
+          probability: awayNextGoalProb,
+          reasoning: `${awayShots} shots, xG ${awayXG.toFixed(1)}`,
         },
       },
       goalPace: {
@@ -87,44 +99,53 @@ export function calculateMomentum(match) {
       return { error: 'Match not live' };
     }
 
-    const homeShots = match.shots?.home || 0;
-    const awayShots = match.shots?.away || 0;
-    const homePossession = match.possession?.home || 50;
-    const awayPossession = match.possession?.away || 50;
-    const homeXG = match.xg?.home || 0;
-    const awayXG = match.xg?.away || 0;
+    const homeShots = finiteObserved(match.shots?.home);
+    const awayShots = finiteObserved(match.shots?.away);
+    const homePossession = finiteObserved(match.possession?.home);
+    const awayPossession = finiteObserved(match.possession?.away);
+    const homeXG = finiteObserved(match.xg?.home);
+    const awayXG = finiteObserved(match.xg?.away);
 
-    // Weighted momentum calculation
+    if (
+      homeShots == null || awayShots == null ||
+      homePossession == null || awayPossession == null ||
+      homeXG == null || awayXG == null
+    ) {
+      return { error: 'Missing verified live evidence' };
+    }
+
     const possessionWeight = 0.3;
     const shotsWeight = 0.4;
     const xgWeight = 0.3;
 
-    // Normalize to 0-1 scale
-    const totalShots = homeShots + awayShots || 1;
-    const totalXG = homeXG + awayXG || 1;
+    const totalShots = homeShots + awayShots;
+    const totalXG = homeXG + awayXG;
+
+    // Confirmed 0-0 components contribute zero rather than being replaced by invented denominators.
+    const homeShotShare = totalShots > 0 ? homeShots / totalShots : 0;
+    const awayShotShare = totalShots > 0 ? awayShots / totalShots : 0;
+    const homeXgShare = totalXG > 0 ? homeXG / totalXG : 0;
+    const awayXgShare = totalXG > 0 ? awayXG / totalXG : 0;
 
     const homeMomentum =
       (homePossession / 100) * possessionWeight +
-      (homeShots / totalShots) * shotsWeight +
-      (homeXG / totalXG) * xgWeight;
+      homeShotShare * shotsWeight +
+      homeXgShare * xgWeight;
 
     const awayMomentum =
       (awayPossession / 100) * possessionWeight +
-      (awayShots / totalShots) * shotsWeight +
-      (awayXG / totalXG) * xgWeight;
+      awayShotShare * shotsWeight +
+      awayXgShare * xgWeight;
 
-    // Convert to percentage
     const homePercent = Math.round(homeMomentum * 100);
     const awayPercent = Math.round(awayMomentum * 100);
 
-    // Determine trend
     let trend = 'balanced';
     if (homePercent > 65) trend = 'home-surging';
     else if (awayPercent > 65) trend = 'away-surging';
     else if (homePercent > 55) trend = 'home-dominant';
     else if (awayPercent > 55) trend = 'away-dominant';
 
-    // Calculate danger window (high momentum + high shots = goal likely soon)
     const homeDanger =
       homePercent > 60 && homeShots > 3 ? 'HIGH' : homePercent > 50 ? 'MEDIUM' : 'LOW';
     const awayDanger =
