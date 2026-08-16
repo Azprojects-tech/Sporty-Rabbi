@@ -106,28 +106,10 @@ export default function App() {
 
  fetchInitial();
 
- // Refresh live matches every 30s — preserve object identity to avoid flicker
- const t = setInterval(() => {
- apiService.getLiveMatches().then(r => {
- const live = r?.data?.matches || [];
- if (live.length > 0) {
- setAllMatches(prev => {
- const prevById = new Map(prev.map(m => [m.id, m]));
- const merged = live.map(incoming => {
- const ex = prevById.get(incoming.id);
- if (ex && ex.score === incoming.score && ex.status === incoming.status && ex.matchMinutes === incoming.matchMinutes) return ex;
- return { ...incoming, _source: 'live' };
- });
- const liveIds = new Set(live.map(m => m.id));
- const rest = prev.filter(m => !liveIds.has(m.id));
- return [...merged, ...rest];
- });
- }
- }).catch(() => {});
- }, 30000);
+ // V10.3: no automatic live polling. fetchInitial() is the one portal-open refresh.
+ // WebSocket receives server-pushed state but does not spend API-Football calls.
 
  return () => {
- clearInterval(t);
  off('LIVE_MATCHES', handleLiveMatches);
  off('UPCOMING_MATCHES', handleUpcomingMatches);
  off('BET_LOGGED', handleBetLogged);
@@ -276,24 +258,18 @@ export default function App() {
  <span style={{ fontSize: 9, fontWeight: 700, color: '#4a5568', letterSpacing: 1, background: '#1e2535', borderRadius: 3, padding: '1px 4px' }}>V10</span>
  </div>
 
- {/* Recalibrate */}
- <button
- onClick={handleCalibrate}
- disabled={calibrating}
+ {/* Daily preparation status — intentionally not a manual API trigger */}
+ <div
+ title="SportyRabbi prepares the day automatically at 05:00 UK time"
  style={{
  display: 'flex', alignItems: 'center', gap: 6,
- background: calibrating ? '#0a1f12' : '#001f0e',
- border: '1px solid #006833', borderRadius: 7,
- padding: '7px 13px', cursor: calibrating ? 'not-allowed' : 'pointer',
- color: '#00b859', fontSize: 12, fontWeight: 700, flexShrink: 0,
- opacity: calibrating ? 0.7 : 1,
+ background: '#001f0e', border: '1px solid #006833', borderRadius: 7,
+ padding: '7px 13px', color: '#00b859', fontSize: 12, fontWeight: 700, flexShrink: 0,
  }}
  >
- <span style={{ display: 'inline-block', animation: calibrating ? 'spin 0.8s linear infinite' : 'none', fontSize: 13 }}>
- {calibrating ? '↻' : '↻'}
- </span>
- {calibrating ? 'Calibrating...' : 'Recalibrate Today'}
- </button>
+ <span style={{ fontSize: 13 }}>☀</span>
+ Daily Prep 05:00 UK
+ </div>
 
  {calibratedAt && (
  <span style={{ fontSize: 10, color: '#4a5568', flexShrink: 0 }}>

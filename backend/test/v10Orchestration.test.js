@@ -63,7 +63,7 @@ test('queued analytics requests re-check the 429 circuit after pacing wait', () 
 });
 
 test('direct fixture statistics obey the API quota guard', () => {
-  const liveBlockStart = server.indexOf('if (isLive && fixtureId) {');
+  const liveBlockStart = server.indexOf('if (ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId) {');
   const fetchIdx = server.indexOf('const directStats = await fetchFixtureStatistics(fixtureId);', liveBlockStart);
   const allowedElseIdx = server.lastIndexOf('} else {', fetchIdx);
   const skipIdx = server.indexOf('else if (shouldSkipApiCalls())', liveBlockStart);

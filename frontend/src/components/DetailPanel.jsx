@@ -366,14 +366,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
     setExpandedParam(null);
   }, [section]);
 
-  // Auto-refresh every 30s when the match is live
-  useEffect(() => {
-    const isLive = match?.isLive || ['1H','2H','HT','ET','BT','P'].includes(match?.status);
-    if (!isLive) return;
-    const iv = setInterval(loadAnalysis, 30000);
-    return () => clearInterval(iv);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [match?.id, match?.status, match?.isLive, match?.score, match?.matchMinutes]);
+  // V10.3: no timed re-analysis loop. A match is analyzed on selection only;
+  // morning-prepared evidence remains cached until the user chooses another action.
 
   async function loadAnalysis(existingAnalysis = analysis || preloadedAnalysis) {
     // Show spinner only when there is no analysis for the selected match to display.
