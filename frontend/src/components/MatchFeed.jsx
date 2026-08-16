@@ -38,32 +38,39 @@ function ConfBadge({ score }) {
 
 function StatusCell({ status, minute, kickoffUTC }) {
   const isLive = status === 'LIVE' || status === '1H' || status === '2H' || status === 'HT';
-  if (isLive) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, width: 56, flexShrink: 0 }}>
-        <span className="live-dot" />
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#ef4444' }}>
-          {status === 'HT' ? 'HT' : `${minute || '?'}'`}
-        </span>
-      </div>
-    );
-  }
-  if (status === 'FT') {
-    return <span style={{ fontSize: 11, color: '#4a5568', width: 56, flexShrink: 0 }}>FT</span>;
-  }
-  // NS — show kickoff time
-  let timeStr = 'Unavailable';
+  let dateStr = 'Date unavailable';
+  let timeStr = 'Time unavailable';
   if (kickoffUTC) {
     try {
-      timeStr = new Date(kickoffUTC).toLocaleTimeString('en-GB', {
-        hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+      const dt = new Date(kickoffUTC);
+      dateStr = dt.toLocaleDateString('en-GB', {
+        day: '2-digit', month: 'short', timeZone: 'Europe/London',
+      });
+      timeStr = dt.toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
       });
     } catch {
-      timeStr = 'Unavailable';
+      dateStr = 'Date unavailable';
+      timeStr = 'Time unavailable';
     }
   }
+
+  const stateLabel = isLive
+    ? (status === 'HT' ? 'HT' : `${minute || '?'}'`)
+    : status === 'FT' ? 'FT' : null;
+
   return (
-    <span style={{ fontSize: 11, color: '#4a5568', width: 56, flexShrink: 0 }}>{timeStr}</span>
+    <div style={{ width: 96, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+      {stateLabel && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: isLive ? '#ef4444' : '#4a5568' }}>
+          {stateLabel}
+        </span>
+      )}
+      <span style={{ fontSize: 10, color: '#8b9ab3', whiteSpace: 'nowrap' }}>{dateStr}</span>
+      <span style={{ fontSize: 11, fontWeight: status === 'NS' ? 700 : 500, color: status === 'NS' ? '#cbd5e1' : '#4a5568' }}>
+        {timeStr}
+      </span>
+    </div>
   );
 }
 
@@ -215,7 +222,7 @@ function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
       }}>
         <span style={{ fontSize: 44 }}>📭</span>
         <p style={{ fontSize: 14, fontWeight: 600 }}>No matches found</p>
-        <p style={{ fontSize: 12 }}>Press Recalibrate Today to scan the global schedule</p>
+        <p style={{ fontSize: 12 }}>Daily preparation runs automatically at 05:00 UK time</p>
       </div>
     );
   }

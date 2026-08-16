@@ -89,6 +89,8 @@ let bets = [];
 let calibrationStore = {
   matches: [],
   highConfidence: [],
+  dailySchedule: [],
+  preparedDateUK: null,
   calibratedAt: null,
   totalScanned: 0,
   lastTrigger: null,
@@ -441,6 +443,99 @@ const POLL_TICK_SECONDS = ENABLE_ADAPTIVE_LIVE_POLL
   : LIVE_POLL_INTERVAL;
 let lastLivePollRunAt = 0;
 
+// V10.3 daily-preparation policy.
+// No continuous API-Football polling. Expensive work happens once at 05:00 UK;
+// opening the portal is allowed one current live-state refresh.
+const DAILY_PREP_TIMEZONE = 'Europe/London';
+const DAILY_PREP_MAX_ANALYZED_FIXTURES = toNumberWithMin(
+  process.env.DAILY_PREP_MAX_ANALYZED_FIXTURES,
+  18,
+  1,
+);
+const DAILY_PREP_TEAM_CALL_BUDGET = toNumberWithMin(
+  process.env.DAILY_PREP_TEAM_CALL_BUDGET,
+  36,
+  2,
+);
+const PORTAL_OPEN_REFRESH_COOLDOWN_MS = toNumberWithMin(
+  process.env.PORTAL_OPEN_REFRESH_COOLDOWN_MS,
+  15000,
+  5000,
+);
+// Normal Prediction Desk clicks are local/cache-only. Set true only if we later
+// deliberately decide that clicking a match may spend API-Football quota.
+const ALLOW_ON_DEMAND_API_ENRICHMENT = String(
+  process.env.ALLOW_ON_DEMAND_API_ENRICHMENT || 'false'
+).toLowerCase() === 'true';
+const ALLOW_MANUAL_DAILY_PREP = String(
+  process.env.ALLOW_MANUAL_DAILY_PREP || 'false'
+).toLowerCase() === 'true';
+
+function getUkDateStamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: DAILY_PREP_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getUkHour(date = new Date()) {
+  const hour = new Intl.DateTimeFormat('en-GB', {
+    timeZone: DAILY_PREP_TIMEZONE,
+    hour: '2-digit', hour12: false,
+  }).format(date);
+  return Number.parseInt(hour, 10) || 0;
+}
+
+function getEffectiveDailyPrepTeamBudget() {
+  if (quotaState.dailyRemaining == null) return DAILY_PREP_TEAM_CALL_BUDGET;
+  const spendable = Math.max(0, quotaState.dailyRemaining - API_DAILY_SOFT_STOP);
+  return Math.min(DAILY_PREP_TEAM_CALL_BUDGET, spendable);
+}
+
+function selectDailyPrepCandidates(fixtures = [], maxFixtures = DAILY_PREP_MAX_ANALYZED_FIXTURES, teamBudget = DAILY_PREP_TEAM_CALL_BUDGET) {
+  const valid = fixtures
+    .filter((f) => f?.homeTeamId && f?.awayTeamId && f?.season != null && f?.kickoffUTC)
+    .filter((f) => ['NS', 'TBD'].includes(String(f.status || 'NS').toUpperCase()))
+    .sort((a, b) => Date.parse(a.kickoffUTC) - Date.parse(b.kickoffUTC));
+
+  const target = Math.min(valid.length, maxFixtures, Math.floor(Math.max(0, teamBudget) / 2));
+  if (target <= 0) return [];
+  if (target >= valid.length) return valid;
+  if (target === 1) return [valid[Math.floor(valid.length / 2)]];
+
+  // Spread the bounded deep-analysis budget across the whole football day.
+  const picked = [];
+  const used = new Set();
+  for (let i = 0; i < target; i++) {
+    const idx = Math.round(i * (valid.length - 1) / (target - 1));
+    if (!used.has(idx)) {
+      used.add(idx);
+      picked.push(valid[idx]);
+    }
+  }
+  return picked;
+}
+
+function mergeDailySchedule(schedule = [], analyzed = []) {
+  const byId = new Map(analyzed.map((m) => [String(m.id), m]));
+  const byTeams = new Map(analyzed.map((m) => [`${String(m.home).toLowerCase()}|${String(m.away).toLowerCase()}`, m]));
+  return (schedule || []).map((lite) => {
+    const deep = byId.get(String(lite.id))
+      || byTeams.get(`${String(lite.home).toLowerCase()}|${String(lite.away).toLowerCase()}`);
+    if (!deep) return lite;
+    return {
+      ...lite,
+      ...deep,
+      id: lite.id,
+      kickoffUTC: lite.kickoffUTC || deep.kickoffUTC || null,
+      _calibrated: true,
+      _lite: false,
+    };
+  });
+}
+
 function getCurrentLivePollIntervalSeconds() {
   if (!ENABLE_ADAPTIVE_LIVE_POLL) return LIVE_POLL_INTERVAL;
   const hasLiveMatches = Array.isArray(liveMatches) && liveMatches.length > 0;
@@ -508,7 +603,7 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   📌 API Key:    ${API_KEY ? '✅ API-Football configured' : '⚠️  API_FOOTBALL_KEY not set — live data unavailable'}
   🌐 API Base:   ${API_BASE}
-  ⏱️  Poll Mode:  ${API_KEY ? `API-Football every ${LIVE_POLL_INTERVAL}s` : 'No API key — set API_FOOTBALL_KEY in .env'}
+  ⏱️  API Mode:   ${API_KEY ? '05:00 UK daily preparation + one portal-open live refresh' : 'No API key — set API_FOOTBALL_KEY in .env'}
   🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
@@ -1533,7 +1628,7 @@ async function withGeminiLock(fn) {
   }
 }
 
-async function pollLiveMatches() {
+async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
   if (isPolling) {
     console.log('⏳ Polling already in progress, skipping...');
     return;
@@ -1547,7 +1642,7 @@ async function pollLiveMatches() {
   livePollMetrics.lastUsedCache = false;
   
   // Check cache first
-  const cached = getCached('liveMatches');
+  const cached = forceApi ? null : getCached('liveMatches');
   if (cached !== null) {
     livePollMetrics.lastUsedCache = true;
     livePollMetrics.lastAnalyzedCount = cached.length;
@@ -1603,7 +1698,7 @@ async function pollLiveMatches() {
 
       // Deep enrichment is deliberately rotated across a bounded window.
       // Clicking any non-enriched match still triggers on-demand analysis.
-      const enrichmentBatch = pickLiveBackgroundEnrichment(matches || []);
+      const enrichmentBatch = enrich ? pickLiveBackgroundEnrichment(matches || []) : [];
       const enrichedSubset = enrichmentBatch.length > 0
         ? await batchAnalyze(enrichmentBatch, 2)
         : [];
@@ -1636,6 +1731,25 @@ async function pollLiveMatches() {
     livePollMetrics.lastDurationMs = Date.now() - pollStarted;
     isPolling = false;
   }
+}
+
+let portalLiveRefreshPromise = null;
+let lastPortalLiveRefreshAt = 0;
+
+async function refreshLiveOnPortalOpen() {
+  if (!API_KEY || shouldSkipApiCalls()) return liveMatches;
+
+  const now = Date.now();
+  if (portalLiveRefreshPromise) return portalLiveRefreshPromise;
+  if (lastPortalLiveRefreshAt > 0 && (now - lastPortalLiveRefreshAt) < PORTAL_OPEN_REFRESH_COOLDOWN_MS) {
+    return liveMatches;
+  }
+
+  lastPortalLiveRefreshAt = now;
+  portalLiveRefreshPromise = pollLiveMatches({ forceApi: true, enrich: false })
+    .then(() => liveMatches)
+    .finally(() => { portalLiveRefreshPromise = null; });
+  return portalLiveRefreshPromise;
 }
 
 async function pollUpcomingMatches() {
@@ -1702,69 +1816,18 @@ async function pollUpcomingMatches() {
   }
 }
 
-// Start polling — 30s default keeps well within API-Football's 300 req/min rate limit
-// even when 20+ live matches are being analyzed (1 fixture call + cached analysis).
-cron.schedule(`*/${POLL_TICK_SECONDS} * * * * *`, async () => {
-  try {
-    // Poll live matches
-    try {
-      const now = Date.now();
-      const targetIntervalMs = getCurrentLivePollIntervalSeconds() * 1000;
-      if (now - lastLivePollRunAt >= targetIntervalMs) {
-        lastLivePollRunAt = now;
-        await pollLiveMatches();
-      }
-    } catch (err) {
-      console.error('❌ Live poll failed:', err.message);
-    }
-    
-    // Poll upcoming matches
-    try {
-      await pollUpcomingMatches();
-    } catch (err) {
-      console.error('❌ Upcoming poll failed:', err.message);
-    }
-  } catch (error) {
-    console.error('❌ Critical polling error:', error.message);
-  }
-});
+// V10.3: no permanent live/upcoming polling. The daily schedule and analysis are
+// prepared once at 05:00 UK; live state is refreshed only when the portal opens.
+console.log('⏰ Continuous API-Football polling disabled');
+console.log('   Daily preparation: 05:00 Europe/London');
+console.log('   Live refresh: one request when the portal opens');
 
-console.log(`⏰ Polling started (tick ${POLL_TICK_SECONDS}s, base ${LIVE_POLL_INTERVAL}s${ENABLE_ADAPTIVE_LIVE_POLL ? `, live ${LIVE_POLL_INTERVAL_WHEN_LIVE}s` : ''})`);
-console.log(`   Data source: ${API_KEY ? 'API-Football' : '🤖 Gemini 2.0 Flash + Google Search'}`);
-console.log(`   Live cache TTL:     ${CACHE_TTL.live / 1000}s`);
-console.log(`   Upcoming cache TTL: ${CACHE_TTL.upcoming / 1000}s`);
-
-// ─── AUTO-CALIBRATION ──────────────────────────────────────────────────────
-// Run once 5 seconds after startup so real fixtures are available immediately,
-// then re-run every 6 hours to refresh the day's schedule.
-
-setTimeout(() => {
-  console.log('[AutoCal] Startup calibration — fetching today\'s real fixtures via Gemini Search...');
-  runCalibrationSafely('startup').then(store => {
-    if (!store || store.matches.length === 0) {
-      // Retry once after 3 minutes if startup calibration produced nothing
-      console.warn('[AutoCal] Startup produced 0 matches — scheduling retry in 3 minutes...');
-      setTimeout(() => {
-        console.log('[AutoCal] Retry calibration (first attempt yielded 0 matches)...');
-        runCalibrationSafely('startup-retry').catch(() => {});
-      }, 3 * 60 * 1000);
-    }
-  }).catch(err => {
-    console.error('[AutoCal] Startup failed:', err.message);
-    // Retry once after 3 minutes on error too
-    setTimeout(() => {
-      console.log('[AutoCal] Retry calibration after startup error...');
-      runCalibrationSafely('startup-error-retry').catch(() => {});
-    }, 3 * 60 * 1000);
-  });
-}, 5000);
-
-// Re-calibrate at top of every 6th hour (00:00, 06:00, 12:00, 18:00 UTC)
-cron.schedule('0 0,6,12,18 * * *', () => {
-  console.log('[AutoCal] Scheduled 6-hour recalibration starting...');
-  runCalibrationSafely('scheduled').catch(() => {});
-  purgeOldPredictions().catch(err => console.warn('[AutoCal] Prediction purge failed:', err.message));
-});
+cron.schedule('0 5 * * *', () => {
+  console.log('[DailyPrep] 05:00 UK preparation starting...');
+  runCalibrationSafely('daily-05:00-uk')
+    .then(() => purgeOldPredictions())
+    .catch((err) => console.error('[DailyPrep] Scheduled preparation failed:', err.message));
+}, { timezone: DAILY_PREP_TIMEZONE });
 
 // ─── ALERT PERSISTENCE ────────────────────────────────────────────────────
 
@@ -2457,14 +2520,20 @@ app.get('/api/test-whatsapp', async (req, res) => {
   res.json({ twilioEnabled, ...result });
 });
 
-app.get('/api/live', (req, res) => {
+app.get('/api/live', async (req, res) => {
+  try {
+    await refreshLiveOnPortalOpen();
+  } catch (err) {
+    console.warn('[PortalOpen] Live refresh failed; serving last cached state:', err.message);
+  }
+
   const matchType = req.query.matchType ? String(req.query.matchType) : null;
-  
-  let filtered = matchType ? liveMatches.filter(m => m.matchType === matchType) : liveMatches;
+  const filtered = matchType ? liveMatches.filter(m => m.matchType === matchType) : liveMatches;
   res.json({
     count: filtered.length,
     matches: filtered,
     freshness: getLiveFreshnessMeta(),
+    refreshPolicy: 'portal-open-once',
   });
 });
 
@@ -3222,7 +3291,7 @@ app.post('/api/analyze', async (req, res) => {
 
     // ── Step 1: Fetch real form, H2H, standings (same as polling path) ──────
     let enriched = { ...body };
-    if (homeTeamId && awayTeamId) {
+    if (ALLOW_ON_DEMAND_API_ENRICHMENT && homeTeamId && awayTeamId) {
       const [hRes, aRes, standingsRes] = await Promise.allSettled([
         getTeamForm(homeTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
         getTeamForm(awayTeamId, leagueId, body.season ?? body.fixtureContext?.season ?? null),
@@ -3290,10 +3359,10 @@ app.post('/api/analyze', async (req, res) => {
       }
     }
 
-    // ── Step 1b: Actively pull fixture live stats when available ───────────
-    // API-Football /fixtures live feed often omits granular statistics for some fixtures.
-    // On analysis click, we attempt a direct fixture-stat pull to avoid false "Unavailable".
-    if (isLive && fixtureId) {
+    // ── Step 1b: optional on-demand fixture stats ───────────────────────────
+    // V10.3 defaults this OFF so Prediction Desk clicks do not spend API-Football
+    // quota. The portal-open live refresh remains the normal daytime API trigger.
+    if (ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId) {
       if (!API_KEY) {
         directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'API_FOOTBALL_KEY_missing' };
       } else if (shouldSkipApiCalls()) {
@@ -3339,6 +3408,12 @@ app.post('/api/analyze', async (req, res) => {
           };
         }
       }
+    } else if (isLive && !ALLOW_ON_DEMAND_API_ENRICHMENT) {
+      directFixtureStatsStatus = {
+        status: 'not_requested',
+        source: 'fixture-statistics',
+        reason: 'on_demand_api_enrichment_disabled',
+      };
     } else if (isLive && !fixtureId) {
       directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'missing_fixture_id' };
     }
@@ -3464,13 +3539,16 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
     const awayTeamId = match.awayTeamId;
     const leagueId   = match.leagueId;
 
-    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
-      getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
-      getTeamStatistics(homeTeamId, leagueId, match.season ?? null),
-      getTeamStatistics(awayTeamId, leagueId, match.season ?? null),
-      getTeamInjuries(homeTeamId, leagueId, match.season ?? null),
-      getTeamInjuries(awayTeamId, leagueId, match.season ?? null),
-    ]);
+    const onDemandDisabled = { status: 'rejected', reason: new Error('ON_DEMAND_API_ENRICHMENT_DISABLED') };
+    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = ALLOW_ON_DEMAND_API_ENRICHMENT
+      ? await Promise.allSettled([
+          getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
+          getTeamStatistics(homeTeamId, leagueId, match.season ?? null),
+          getTeamStatistics(awayTeamId, leagueId, match.season ?? null),
+          getTeamInjuries(homeTeamId, leagueId, match.season ?? null),
+          getTeamInjuries(awayTeamId, leagueId, match.season ?? null),
+        ])
+      : [onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled];
 
     let homePosition = null, awayPosition = null, homePoints = null, awayPoints = null, totalTeams = null, gameWeek = null;
     if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
@@ -3654,31 +3732,38 @@ async function purgeOldPredictions() {
 
 /**
  * runCalibration()
- * Uses Gemini Search grounding to fetch today's real global fixtures,
- * runs V9 analysis on each, populates calibrationStore + upcomingMatches.
- * Called on startup, every 6 hours, and via POST /api/calibrate.
+ * Fetches today's authoritative fixture schedule, performs a bounded current-season
+ * analysis pass, then populates calibrationStore + upcomingMatches.
+ * Normally called at 05:00 Europe/London, with one restart catch-up if that run was missed.
  */
 async function runCalibration() {
   console.log('[Calibrate] Starting day calibration (API-Football → TheSportsDB → Gemini Search)...');
 
-  // ── Flush stale data before fetching fresh ────────────────────────────────
-  calibrationStore = { matches: [], highConfidence: [], calibratedAt: null, totalScanned: 0 };
-  upcomingMatches = [];
-  cache.upcomingMatches = { data: [], timestamp: 0 };
-  console.log('[Calibrate] Flushed stale state. Running fresh calibration...');
+  // Build the new day off-screen. Keep the current feed visible until the
+  // replacement daily schedule has been prepared successfully.
+  console.log('[Calibrate] Building fresh daily state without wiping the current feed...');
 
   let raw = [];
+  let dailySchedule = [];
   let dataSource = 'unknown';
 
   // Team stats maps: populated when API-Football team IDs are available
   const calTeamIdMap = new Map(); // normalizedName → { id, leagueId }
   const calTeamStats = new Map(); // teamId → { conversionPct, avgShotsTotal, avgPossession, squadIntegrity }
 
-  // ── Step 1: Real fixture list from API-Football ────────────────────────────
+  // ── Step 1: one authoritative fixture-list call for the whole day ──────────
   const apiFixtures = await fetchTodayFixturesFromApi();
   if (apiFixtures.length > 0) {
+    // Keep ALL fixtures lightweight for display. Heavy analysis is bounded below.
+    dailySchedule = apiFixtures
+      .map(parseLightFixture)
+      .filter(Boolean)
+      .filter((m) => m.kickoffUTC)
+      .sort((a, b) => Date.parse(a.kickoffUTC) - Date.parse(b.kickoffUTC));
+
     const fixtureList = apiFixtures
       .map(f => ({
+        fixtureId: f.fixture?.id ?? null,
         home: f.teams?.home?.name,
         away: f.teams?.away?.name,
         homeTeamId: f.teams?.home?.id,
@@ -3688,20 +3773,28 @@ async function runCalibration() {
         season: f.league?.season ?? null,
         country: f.league?.country,
         kickoffUTC: f.fixture?.date,
+        status: f.fixture?.status?.short || 'NS',
       }))
-      .filter(f => f.home && f.away);
+      .filter(f => f.home && f.away && f.kickoffUTC);
 
-    // Build name→ID map and pre-fetch team stats/injuries in parallel (all cached 2–6 h)
-    for (const f of fixtureList) {
+    const teamBudget = getEffectiveDailyPrepTeamBudget();
+    const candidateFixtures = selectDailyPrepCandidates(
+      fixtureList,
+      DAILY_PREP_MAX_ANALYZED_FIXTURES,
+      teamBudget,
+    );
+
+    for (const f of candidateFixtures) {
       if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId, season: f.season });
       if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId, season: f.season });
     }
+
     if (calTeamIdMap.size > 0) {
       const uniqueTeams = [
         ...new Map(
           [...calTeamIdMap.values()].map((v) => [`${v.id}:${v.leagueId}:${v.season}`, v])
         ).values(),
-      ];
+      ].slice(0, teamBudget);
 
       await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId, season }) => {
         if (season == null) return;
@@ -3719,12 +3812,13 @@ async function runCalibration() {
           });
         } catch (_) {}
       }));
-      console.log(`[Calibrate] Pre-fetched verified current-season form/goals for ${calTeamStats.size} team contexts`);
+      console.log(`[DailyPrep] Verified form loaded for ${calTeamStats.size} team contexts (budget ${teamBudget})`);
     }
 
-    console.log(`[Calibrate] ${fixtureList.length} authoritative API-Football fixtures — using verified core evidence only`);
-    raw = fixtureList.map((f) => ({
+    console.log(`[DailyPrep] ${dailySchedule.length} fixtures listed; ${candidateFixtures.length} selected for deep morning analysis`);
+    raw = candidateFixtures.map((f) => ({
       match: {
+        fixtureId: f.fixtureId,
         home: f.home,
         away: f.away,
         homeTeamId: f.homeTeamId,
@@ -3738,34 +3832,46 @@ async function runCalibration() {
         minute: 0,
       },
     }));
-    dataSource = 'API-Football verified core';
+    dataSource = 'API-Football verified bounded daily core';
   }
 
   // ── Step 2: TheSportsDB (free, no API key) ─────────────────────────────────
-  if (raw.length === 0) {
+  // Only fall back for fixture discovery when API-Football produced NO schedule.
+  // A zero deep-analysis budget must not discard a valid authoritative schedule.
+  if (dailySchedule.length === 0) {
     console.log('[Calibrate] API-Football unavailable — TheSportsDB may supply fixture discovery only.');
     const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
-    raw = sportsDbFixtures.map((f) => ({
+    dailySchedule = sportsDbFixtures
+      .map(parseLightFixture)
+      .filter(Boolean)
+      .filter((m) => m.kickoffUTC && getUkDateStamp(new Date(m.kickoffUTC)) === getUkDateStamp())
+      .sort((a, b) => Date.parse(a.kickoffUTC) - Date.parse(b.kickoffUTC));
+
+    const fallbackCandidates = dailySchedule.slice(0, DAILY_PREP_MAX_ANALYZED_FIXTURES);
+    raw = fallbackCandidates.map((lite) => ({
       match: {
-        home: f.teams?.home?.name,
-        away: f.teams?.away?.name,
-        homeTeamId: f.teams?.home?.id ?? null,
-        awayTeamId: f.teams?.away?.id ?? null,
-        league: f.league?.name,
-        leagueId: f.league?.id || 0,
-        season: f.league?.season ?? null,
-        country: f.league?.country,
-        kickoffUTC: f.fixture?.date,
+        fixtureId: lite.id,
+        home: lite.home,
+        away: lite.away,
+        homeTeamId: lite.homeTeamId ?? null,
+        awayTeamId: lite.awayTeamId ?? null,
+        league: lite.league,
+        leagueId: lite.leagueId || 0,
+        season: lite.season ?? null,
+        country: lite.leagueCountry || '',
+        kickoffUTC: lite.kickoffUTC,
         status: 'NS',
         minute: 0,
       },
-    })).filter((f) => f.match.home && f.match.away);
+    }));
     dataSource = 'TheSportsDB fixture-only';
   }
 
-  // ── Step 3: Gemini Search grounding (last resort) ──────────────────────────
-  if (raw.length === 0) {
+  // ── Step 3: No synthetic fixture generation ───────────────────────────────
+  if (raw.length === 0 && dailySchedule.length === 0) {
     console.log('[Calibrate] No authoritative fixture source available — no predictive scan generated.');
+  } else if (raw.length === 0) {
+    console.log('[DailyPrep] Authoritative schedule retained; deep analysis skipped by quota budget.');
   }
 
   console.log(`[Calibrate] Processing ${raw.length} fixtures from ${dataSource}`);
@@ -3875,7 +3981,7 @@ async function runCalibration() {
         : (matchData.matchType || 'League');
       const snapshotStats = buildCalibrationSnapshotStats(f);
       const matchObj = sanitizeMatch({
-        id: `cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50),
+        id: matchMeta.fixtureId || (`cal_${matchMeta.home}_${matchMeta.away}`.replace(/\s/g, '_').slice(0, 50)),
         home: matchMeta.home || 'Unknown',
         away: matchMeta.away || 'Unknown',
         score: matchMeta.status === 'LIVE' ? `${matchMeta.homeScore || 0}-${matchMeta.awayScore || 0}` : '0-0',
@@ -3926,6 +4032,7 @@ async function runCalibration() {
     }
   }
 
+  const preparedSchedule = mergeDailySchedule(dailySchedule, analyzed);
   const highConfidence = analyzed.filter((m) =>
     m.analysis?.dailySignal?.eligible === true
   );
@@ -3941,8 +4048,11 @@ async function runCalibration() {
   calibrationStore = {
     matches: analyzed,
     highConfidence,
+    dailySchedule,
+    preparedDateUK: getUkDateStamp(),
     calibratedAt: new Date().toISOString(),
-    totalScanned: raw.length,
+    totalScanned: dailySchedule.length || raw.length,
+    analyzedCount: analyzed.length,
     calibrationHealth,
     lastTrigger: calibrationRunMeta.lastTrigger,
     lastStartedAt: calibrationRunMeta.lastStartedAt,
@@ -3956,8 +4066,12 @@ async function runCalibration() {
       await _calDb.collection('calibration').doc('latest').set({
         matches: analyzed,
         highConfidence,
+        // Persist the full schedule lightweight; heavyweight analysis is only the bounded candidate set.
+        dailySchedule,
+        preparedDateUK: calibrationStore.preparedDateUK,
         calibratedAt: calibrationStore.calibratedAt,
-        totalScanned: raw.length,
+        totalScanned: calibrationStore.totalScanned,
+        analyzedCount: analyzed.length,
         calibrationHealth,
         savedAt: new Date().toISOString(),
       });
@@ -4052,14 +4166,14 @@ async function runCalibration() {
     console.warn(`[Calibrate] Alert loop error: ${alertErr.message}`);
   }
 
-  // ── Immediately populate upcomingMatches so WebSocket / polling serves real data ──
-  if (analyzed.length > 0) {
-    upcomingMatches = analyzed;
-    setCache('upcomingMatches', analyzed);
-    broadcast({ type: 'UPCOMING_MATCHES', payload: analyzed });
-    console.log(`[Calibrate] Done: ${analyzed.length} real fixtures loaded, ${highConfidence.length} premium picks (phase-aware threshold)`);
+  // Publish the complete day; deep analysis is merged only for bounded candidates.
+  if (preparedSchedule.length > 0) {
+    upcomingMatches = preparedSchedule;
+    setCache('upcomingMatches', preparedSchedule);
+    broadcast({ type: 'UPCOMING_MATCHES', payload: preparedSchedule });
+    console.log(`[DailyPrep] Ready: ${preparedSchedule.length} fixtures, ${analyzed.length} analyzed, ${highConfidence.length} 80+ eligible signals`);
   } else {
-    console.warn('[Calibrate] Done but 0 fixtures — upcomingMatches unchanged');
+    console.warn('[DailyPrep] No fixtures prepared — retaining existing upcoming feed');
   }
 
   return calibrationStore;
@@ -4073,6 +4187,14 @@ async function runCalibration() {
  * Poll GET /api/calibrate/results to get the outcome.
  */
 app.post('/api/calibrate', (req, res) => {
+  if (!ALLOW_MANUAL_DAILY_PREP) {
+    return res.status(403).json({
+      status: 'disabled',
+      message: 'Manual daily preparation is disabled. The controlled scan runs at 05:00 UK.',
+      preparedDateUK: calibrationStore.preparedDateUK || null,
+      calibratedAt: calibrationStore.calibratedAt || null,
+    });
+  }
   if (calibrationRunning) {
     return res.json({
       status: 'already_running',
@@ -4228,7 +4350,7 @@ server.listen(PORT, async () => {
   console.log('╠════════════════════════════════════════╣');
   console.log(`║  REST API     → http://localhost:${PORT}/api     ║`);
   console.log(`║  WebSocket    → ws://localhost:${PORT}         ║`);
-  console.log(`║  Polling      → every ${process.env.LIVE_POLL_INTERVAL || 30}s          ║`);
+  console.log('║  API schedule → 05:00 UK + portal-open refresh ║');
   console.log('╚════════════════════════════════════════╝\n');
 
   // Pre-load bets from Firestore into memory cache on startup
@@ -4248,20 +4370,43 @@ server.listen(PORT, async () => {
       const calDoc = await db.collection('calibration').doc('latest').get();
       if (calDoc.exists) {
         const data = calDoc.data();
-        const ageMs = Date.now() - new Date(data.calibratedAt || data.savedAt).getTime();
-        if (ageMs < 12 * 60 * 60 * 1000) {
+        const storedAt = data.calibratedAt || data.savedAt || null;
+        const preparedDateUK = data.preparedDateUK
+          || (storedAt ? getUkDateStamp(new Date(storedAt)) : null);
+        if (preparedDateUK === getUkDateStamp()) {
+          const restoredSchedule = data.dailySchedule || data.matches || [];
           calibrationStore = {
             matches:        data.matches        || [],
             highConfidence: data.highConfidence || [],
+            dailySchedule:  restoredSchedule,
+            preparedDateUK,
             calibratedAt:   data.calibratedAt   || null,
-            totalScanned:   data.totalScanned   || 0,
+            totalScanned:   data.totalScanned   || restoredSchedule.length,
+            analyzedCount:  data.analyzedCount  || (data.matches || []).length,
           };
-          console.log(`🔥 Restored calibration: ${calibrationStore.matches.length} matches (${Math.round(ageMs / 60000)}m old)`);
+          upcomingMatches = mergeDailySchedule(restoredSchedule, calibrationStore.matches);
+          if (upcomingMatches.length > 0) setCache('upcomingMatches', upcomingMatches);
+          console.log(`🔥 Restored today's daily preparation: ${upcomingMatches.length} fixtures, ${calibrationStore.matches.length} analyzed`);
         }
       }
     } catch (err) {
       console.warn('⚠️  Could not restore calibration from Firestore:', err.message);
     }
+  }
+
+  // If Railway was offline at 05:00, catch up ONCE after it starts later that day.
+  // A normal restart after today's preparation reuses Firestore and spends zero prep calls.
+  const todayUK = getUkDateStamp();
+  const hourUK = getUkHour();
+  if (hourUK >= 5 && calibrationStore.preparedDateUK !== todayUK) {
+    console.log(`[DailyPrep] Today's ${todayUK} preparation is missing; scheduling one startup catch-up.`);
+    setTimeout(() => {
+      runCalibrationSafely('startup-catchup-after-05:00')
+        .then(() => purgeOldPredictions())
+        .catch((err) => console.error('[DailyPrep] Startup catch-up failed:', err.message));
+    }, 2500);
+  } else if (calibrationStore.preparedDateUK === todayUK) {
+    console.log(`[DailyPrep] ${todayUK} already prepared — restart uses persisted data with zero preparation calls.`);
   }
 });
 
