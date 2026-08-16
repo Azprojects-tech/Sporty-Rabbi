@@ -467,6 +467,9 @@ const PORTAL_OPEN_REFRESH_COOLDOWN_MS = toNumberWithMin(
 const ALLOW_ON_DEMAND_API_ENRICHMENT = String(
   process.env.ALLOW_ON_DEMAND_API_ENRICHMENT || 'false'
 ).toLowerCase() === 'true';
+const ALLOW_MANUAL_DAILY_PREP = String(
+  process.env.ALLOW_MANUAL_DAILY_PREP || 'false'
+).toLowerCase() === 'true';
 
 function getUkDateStamp(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -3729,9 +3732,9 @@ async function purgeOldPredictions() {
 
 /**
  * runCalibration()
- * Uses Gemini Search grounding to fetch today's real global fixtures,
- * runs V9 analysis on each, populates calibrationStore + upcomingMatches.
- * Called on startup, every 6 hours, and via POST /api/calibrate.
+ * Fetches today's authoritative fixture schedule, performs a bounded current-season
+ * analysis pass, then populates calibrationStore + upcomingMatches.
+ * Normally called at 05:00 Europe/London, with one restart catch-up if that run was missed.
  */
 async function runCalibration() {
   console.log('[Calibrate] Starting day calibration (API-Football → TheSportsDB → Gemini Search)...');
@@ -3833,7 +3836,9 @@ async function runCalibration() {
   }
 
   // ── Step 2: TheSportsDB (free, no API key) ─────────────────────────────────
-  if (raw.length === 0) {
+  // Only fall back for fixture discovery when API-Football produced NO schedule.
+  // A zero deep-analysis budget must not discard a valid authoritative schedule.
+  if (dailySchedule.length === 0) {
     console.log('[Calibrate] API-Football unavailable — TheSportsDB may supply fixture discovery only.');
     const sportsDbFixtures = await fetchTodayFixturesFromSportsDB();
     dailySchedule = sportsDbFixtures
@@ -3862,9 +3867,11 @@ async function runCalibration() {
     dataSource = 'TheSportsDB fixture-only';
   }
 
-  // ── Step 3: Gemini Search grounding (last resort) ──────────────────────────
-  if (raw.length === 0) {
+  // ── Step 3: No synthetic fixture generation ───────────────────────────────
+  if (raw.length === 0 && dailySchedule.length === 0) {
     console.log('[Calibrate] No authoritative fixture source available — no predictive scan generated.');
+  } else if (raw.length === 0) {
+    console.log('[DailyPrep] Authoritative schedule retained; deep analysis skipped by quota budget.');
   }
 
   console.log(`[Calibrate] Processing ${raw.length} fixtures from ${dataSource}`);

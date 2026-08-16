@@ -6,6 +6,7 @@ const server = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'ut
 const app = fs.readFileSync(new URL('../../frontend/src/App.jsx', import.meta.url), 'utf8');
 const panel = fs.readFileSync(new URL('../../frontend/src/components/DetailPanel.jsx', import.meta.url), 'utf8');
 const feed = fs.readFileSync(new URL('../../frontend/src/components/MatchFeed.jsx', import.meta.url), 'utf8');
+const envExample = fs.readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
 
 test('continuous football API poller is removed', () => {
   assert.equal(server.includes('Scheduled 6-hour recalibration'), false);
@@ -65,4 +66,16 @@ test('Prediction Desk clicks are cache-only by default', () => {
   assert.match(server, /ALLOW_ON_DEMAND_API_ENRICHMENT/);
   assert.match(server, /if \(ALLOW_ON_DEMAND_API_ENRICHMENT && homeTeamId && awayTeamId\)/);
   assert.match(server, /if \(ALLOW_ON_DEMAND_API_ENRICHMENT && isLive && fixtureId\)/);
+});
+
+
+test('manual recalibration is explicitly declared and disabled by default', () => {
+  assert.match(server, /const ALLOW_MANUAL_DAILY_PREP = String\(/);
+  assert.match(server, /if \(!ALLOW_MANUAL_DAILY_PREP\)/);
+  assert.match(envExample, /ALLOW_MANUAL_DAILY_PREP=false/);
+});
+
+test('zero deep-analysis budget preserves the authoritative API schedule', () => {
+  assert.match(server, /if \(dailySchedule\.length === 0\) \{[\s\S]*?TheSportsDB may supply fixture discovery only/);
+  assert.match(server, /Authoritative schedule retained; deep analysis skipped by quota budget/);
 });
