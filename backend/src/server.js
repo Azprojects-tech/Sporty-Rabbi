@@ -449,7 +449,7 @@ let lastLivePollRunAt = 0;
 const DAILY_PREP_TIMEZONE = 'Europe/London';
 const DAILY_PREP_MAX_ANALYZED_FIXTURES = toNumberWithMin(
   process.env.DAILY_PREP_MAX_ANALYZED_FIXTURES,
-  1000,
+  1250,
   1,
 );
 const DAILY_PREP_TEAM_CALL_BUDGET = toNumberWithMin(
@@ -534,6 +534,47 @@ function mergeDailySchedule(schedule = [], analyzed = []) {
       _lite: false,
     };
   });
+}
+
+function compactDailyAnalysis(analysis) {
+  if (!analysis) return null;
+  const recommendations = Array.isArray(analysis.recommendations)
+    ? analysis.recommendations.slice(0, 3).map((r) => ({
+        type: r?.type ?? null,
+        selection: r?.selection ?? null,
+        confidence: r?.confidence ?? null,
+        tier: r?.tier ?? null,
+      }))
+    : [];
+  return {
+    dailySignal: analysis.dailySignal ?? null,
+    recommendations,
+    odds: analysis.odds ?? null,
+  };
+}
+
+function compactAnalyzedMatch(match, includeCompactAnalysis = false) {
+  if (!match) return null;
+  const { analysis, contextAdjustments, ...rest } = match;
+  const compact = {
+    ...rest,
+    dailySignal: analysis?.dailySignal ?? match.dailySignal ?? null,
+    _calibrated: true,
+    _lite: false,
+  };
+  if (includeCompactAnalysis) {
+    compact.analysis = compactDailyAnalysis(analysis) || match.analysis || null;
+  }
+  return compact;
+}
+
+function chunkArray(items = [], size = 50) {
+  const safeSize = Math.max(1, Number(size) || 50);
+  const chunks = [];
+  for (let i = 0; i < items.length; i += safeSize) {
+    chunks.push(items.slice(i, i + safeSize));
+  }
+  return chunks;
 }
 
 function getCurrentLivePollIntervalSeconds() {
@@ -1833,6 +1874,11 @@ const LIVE_INTELLIGENCE_INTERVAL_HOURS = toNumberWithMin(
   process.env.LIVE_INTELLIGENCE_INTERVAL_HOURS,
   2,
   1,
+);
+const DAILY_PREP_WHATSAPP_ALERT_LIMIT = toNumberWithMin(
+  process.env.DAILY_PREP_WHATSAPP_ALERT_LIMIT,
+  8,
+  0,
 );
 
 async function runLiveIntelligenceScan(trigger = 'scheduled') {
@@ -4170,7 +4216,13 @@ async function runCalibration() {
     }
   }
 
-  const preparedSchedule = mergeDailySchedule(dailySchedule, analyzed);
+  // Full Agent47 analyses remain in-process for current-run model logic.
+  // Portal/WebSocket payloads stay compact so a 1,000+ fixture day cannot recreate
+  // the V10.2 oversized-feed/OOM failure.
+  const compactAnalyzed = analyzed.map((m) => compactAnalyzedMatch(m, false));
+  const persistedAnalyzed = analyzed.map((m) => compactAnalyzedMatch(m, true));
+  const preparedSchedule = mergeDailySchedule(dailySchedule, compactAnalyzed);
+  const persistedSchedule = mergeDailySchedule(dailySchedule, persistedAnalyzed);
   const highConfidence = analyzed.filter((m) =>
     m.analysis?.dailySignal?.eligible === true
   );
@@ -4201,19 +4253,36 @@ async function runCalibration() {
   const _calDb = getDb();
   if (_calDb) {
     try {
-      await _calDb.collection('calibration').doc('latest').set({
-        matches: analyzed,
-        highConfidence,
-        // Persist the full schedule lightweight; heavyweight analysis is only the bounded candidate set.
-        dailySchedule,
+      const calRef = _calDb.collection('calibration').doc('latest');
+      const chunkCol = calRef.collection('scheduleChunks');
+      const scheduleChunks = chunkArray(persistedSchedule, 50);
+
+      // Replace previous chunk set transactionally enough for our small chunk count.
+      // Chunk docs keep each Firestore document comfortably below the 1 MiB ceiling.
+      const existingChunks = await chunkCol.get();
+      const chunkBatch = _calDb.batch();
+      existingChunks.docs.forEach((d) => chunkBatch.delete(d.ref));
+      scheduleChunks.forEach((matches, index) => {
+        chunkBatch.set(chunkCol.doc(String(index).padStart(4, '0')), {
+          index,
+          matches,
+        });
+      });
+      await chunkBatch.commit();
+
+      // Parent document contains metadata only; no giant matches arrays.
+      await calRef.set({
+        schemaVersion: 2,
+        scheduleChunkCount: scheduleChunks.length,
         preparedDateUK: calibrationStore.preparedDateUK,
         calibratedAt: calibrationStore.calibratedAt,
         totalScanned: calibrationStore.totalScanned,
         analyzedCount: analyzed.length,
+        highConfidenceCount: highConfidence.length,
         calibrationHealth,
         savedAt: new Date().toISOString(),
       });
-      console.log(`🔥 Calibration persisted to Firestore (${analyzed.length} matches)`);
+      console.log(`🔥 Calibration persisted to Firestore in ${scheduleChunks.length} schedule chunks (${analyzed.length} analyzed)`);
     } catch (err) {
       console.warn('⚠️  Calibration Firestore save failed:', err.message);
     }
@@ -4221,31 +4290,34 @@ async function runCalibration() {
     // ── Track forward predictions for long-term calibration measurement ──────
     if (analyzed.length > 0) {
       try {
-        const predBatch = _calDb.batch();
         const today = new Date().toISOString().split('T')[0];
         const deleteAfter = new Date();
         deleteAfter.setDate(deleteAfter.getDate() + 90);
-        for (const m of analyzed) {
-          const docRef = _calDb.collection('predictions').doc(
-            `${m.id}_${today}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
-          );
-          predBatch.set(docRef, {
-            matchId: m.id,
-            home: m.home, away: m.away,
-            league: m.league, leagueId: m.leagueId || 0,
-            kickoffUTC: m.kickoffUTC || null,
-            confidence: m.confidence || 0,
-            recommendations: (m.analysis?.recommendations || []).slice(0, 3).map(r => ({
-              type: r.type, selection: r.selection, confidence: r.confidence,
-            })),
-            predictedAt: calibrationStore.calibratedAt,
-            deleteAfter: deleteAfter.toISOString(),
-            outcome: null,
-            settledAt: null,
-          }, { merge: false });
+
+        for (const predictionChunk of chunkArray(analyzed, 400)) {
+          const predBatch = _calDb.batch();
+          for (const m of predictionChunk) {
+            const docRef = _calDb.collection('predictions').doc(
+              `${m.id}_${today}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+            );
+            predBatch.set(docRef, {
+              matchId: m.id,
+              home: m.home, away: m.away,
+              league: m.league, leagueId: m.leagueId || 0,
+              kickoffUTC: m.kickoffUTC || null,
+              confidence: m.confidence || 0,
+              recommendations: (m.analysis?.recommendations || []).slice(0, 3).map(r => ({
+                type: r.type, selection: r.selection, confidence: r.confidence,
+              })),
+              predictedAt: calibrationStore.calibratedAt,
+              deleteAfter: deleteAfter.toISOString(),
+              outcome: null,
+              settledAt: null,
+            }, { merge: false });
+          }
+          await predBatch.commit();
         }
-        await predBatch.commit();
-        console.log(`[Calibrate] ${analyzed.length} predictions stored in Firestore (TTL: 90 days)`);
+        console.log(`[Calibrate] ${analyzed.length} predictions stored in Firestore in <=400-write batches (TTL: 90 days)`);
       } catch (predErr) {
         console.warn('[Calibrate] Prediction tracking save failed:', predErr.message);
       }
@@ -4262,7 +4334,12 @@ async function runCalibration() {
       alerts.filter(a => a.type?.startsWith('calibration') && new Date(a.sentAt).toDateString() === today)
             .map(a => `${a.home}|${a.away}`)
     );
-    for (const m of analyzed) {
+    const dailyAlertMatches = highConfidence
+      .slice()
+      .sort((a, b) => (b.analysis?.dailySignal?.score ?? 0) - (a.analysis?.dailySignal?.score ?? 0))
+      .slice(0, DAILY_PREP_WHATSAPP_ALERT_LIMIT);
+
+    for (const m of dailyAlertMatches) {
       const topExecutable = getTopExecutableRecommendation(m);
       if (!topExecutable) continue;
       const conf = m.analysis?.dailySignal?.score ?? m.confidence ?? 0;
@@ -4355,8 +4432,22 @@ app.post('/api/calibrate', (req, res) => {
  * Returns the last stored calibration results without re-running.
  */
 app.get('/api/calibrate/results', (req, res) => {
+  const compactMatches = mergeDailySchedule(
+    calibrationStore.dailySchedule || [],
+    (calibrationStore.matches || []).map((m) => compactAnalyzedMatch(m, true)).filter(Boolean),
+  );
+  const compactHighConfidence = compactMatches.filter((m) =>
+    (m.dailySignal || m.analysis?.dailySignal)?.eligible === true
+  );
+
   res.json({
-    ...calibrationStore,
+    matches: compactMatches,
+    highConfidence: compactHighConfidence,
+    preparedDateUK: calibrationStore.preparedDateUK || null,
+    calibratedAt: calibrationStore.calibratedAt || null,
+    totalScanned: calibrationStore.totalScanned || compactMatches.length,
+    analyzedCount: calibrationStore.analyzedCount || 0,
+    calibrationHealth: calibrationStore.calibrationHealth || null,
     running: calibrationRunning,
     runningTrigger: calibrationRunMeta.runningTrigger,
     runningSince: calibrationRunMeta.runningSince,
@@ -4512,19 +4603,41 @@ server.listen(PORT, async () => {
         const preparedDateUK = data.preparedDateUK
           || (storedAt ? getUkDateStamp(new Date(storedAt)) : null);
         if (preparedDateUK === getUkDateStamp()) {
-          const restoredSchedule = data.dailySchedule || data.matches || [];
-          calibrationStore = {
-            matches:        data.matches        || [],
-            highConfidence: data.highConfidence || [],
-            dailySchedule:  restoredSchedule,
-            preparedDateUK,
-            calibratedAt:   data.calibratedAt   || null,
-            totalScanned:   data.totalScanned   || restoredSchedule.length,
-            analyzedCount:  data.analyzedCount  || (data.matches || []).length,
-          };
-          upcomingMatches = mergeDailySchedule(restoredSchedule, calibrationStore.matches);
-          if (upcomingMatches.length > 0) setCache('upcomingMatches', upcomingMatches);
-          console.log(`🔥 Restored today's daily preparation: ${upcomingMatches.length} fixtures, ${calibrationStore.matches.length} analyzed`);
+          let restoredSchedule = data.dailySchedule || data.matches || [];
+
+          if (Number(data.scheduleChunkCount || 0) > 0) {
+            const chunkSnap = await calDoc.ref.collection('scheduleChunks').orderBy('index').get();
+            const chunkSchedule = chunkSnap.docs.flatMap((d) => {
+              const chunkData = d.data();
+              return Array.isArray(chunkData.matches) ? chunkData.matches : [];
+            });
+            if (chunkSchedule.length > 0) restoredSchedule = chunkSchedule;
+          }
+
+          if (restoredSchedule.length > 0) {
+            const restoredAnalyzed = restoredSchedule.filter((m) =>
+              m?._calibrated === true || m?.dailySignal != null || m?.analysis?.dailySignal != null
+            );
+            const restoredHighConfidence = restoredAnalyzed.filter((m) =>
+              (m.dailySignal || m.analysis?.dailySignal)?.eligible === true
+            );
+
+            calibrationStore = {
+              matches: restoredAnalyzed,
+              highConfidence: restoredHighConfidence,
+              dailySchedule: restoredSchedule,
+              preparedDateUK,
+              calibratedAt: data.calibratedAt || null,
+              totalScanned: data.totalScanned || restoredSchedule.length,
+              analyzedCount: data.analyzedCount || restoredAnalyzed.length,
+              calibrationHealth: data.calibrationHealth || null,
+            };
+            upcomingMatches = restoredSchedule;
+            setCache('upcomingMatches', upcomingMatches);
+            console.log(`🔥 Restored today's chunked daily preparation: ${upcomingMatches.length} fixtures, ${restoredAnalyzed.length} analyzed summaries`);
+          } else {
+            console.warn('[DailyPrep] Stored metadata found but schedule chunks were empty; startup catch-up will rebuild the day.');
+          }
         }
       }
     } catch (err) {

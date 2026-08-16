@@ -41,7 +41,7 @@ test('morning analysis is bounded by fixture and team-call budgets', () => {
 
 test('full schedule stays lightweight while analyzed candidates are merged on top', () => {
   assert.match(server, /dailySchedule = apiFixtures[\s\S]*?map\(parseLightFixture\)/);
-  assert.match(server, /preparedSchedule = mergeDailySchedule\(dailySchedule, analyzed\)/);
+  assert.match(server, /preparedSchedule = mergeDailySchedule\\(dailySchedule, compactAnalyzed\\)/);
   assert.match(server, /dailySchedule,\n        preparedDateUK/);
 });
 
@@ -71,8 +71,8 @@ test('Prediction Desk clicks automatically enrich selected fixtures', () => {
 });
 
 
-test('whole-day Pro-plan scan capacity replaces the 18-fixture sample', () => {
-  assert.match(server, /DAILY_PREP_MAX_ANALYZED_FIXTURES,[\s\S]*?1000/);
+test('whole-day Pro-plan scan capacity covers the previously observed 1215-fixture day', () => {
+  assert.match(server, /DAILY_PREP_MAX_ANALYZED_FIXTURES,[\s\S]*?1250/);
   assert.match(server, /DAILY_PREP_TEAM_CALL_BUDGET,[\s\S]*?2500/);
 });
 
@@ -96,7 +96,7 @@ test('zero deep-analysis budget preserves the authoritative API schedule', () =>
 
 
 test('Daily 80+ UI requires Agent47 eligibility and score >= 80', () => {
-  assert.match(app, /dailySignal = m\.analysis\?\.dailySignal/);
+  assert.match(app, /dailySignal = m\.dailySignal \|\| m\.analysis\?\.dailySignal/);
   assert.match(app, /dailySignal\?\.eligible !== true/);
   assert.match(app, /signalScore < 80/);
   assert.equal(app.includes("filter === 'high' && (m.confidence || 0) < 80"), false);

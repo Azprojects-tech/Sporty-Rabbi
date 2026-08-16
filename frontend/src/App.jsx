@@ -180,7 +180,7 @@ export default function App() {
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
  if (filter === 'high') {
- const dailySignal = m.analysis?.dailySignal || null;
+ const dailySignal = m.dailySignal || m.analysis?.dailySignal || null;
  const signalScore = Number(dailySignal?.score ?? 0);
  // Daily 80+ is a pre-match evidence selector, not a generic confidence filter.
  // Only fully analyzed fixtures that pass Agent47's evidence gate qualify.
