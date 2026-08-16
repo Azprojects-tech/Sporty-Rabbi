@@ -148,34 +148,39 @@ export default function App() {
  setSearching(true);
  try {
  const res = await apiService.client.get(`/search?q=${encodeURIComponent(searchQuery.trim())}`);
- const analysis = res.data;
- const pseudo = {
- id: `search_${Date.now()}`,
- home: analysis.home || '?',
- away: analysis.away || '?',
- league: analysis.league || 'Search Result',
- leagueId: 0,
- score: '0-0',
- status: analysis.status || 'NS',
- matchMinutes: 0,
- confidence: analysis.overallScore || 50,
- possession: { home: 50, away: 50 },
- shots: { home: 0, away: 0 },
- xg: { home: 0, away: 0 },
- opportunities:[],
- leagueCountry:'',
- _source: 'search',
- };
- setSelectedMatch(pseudo);
- setSelectedAnalysis(analysis);
+ const payload = res?.data || {};
+ const matches = Array.isArray(payload.matches) ? payload.matches : [];
+
+ if (matches.length === 0) {
+   throw new Error(payload.message || 'No authoritative fixture found');
+ }
+
+ // Search results must be real cached/live/upcoming fixtures from the backend.
+ // Never create pseudo statistics or placeholder confidence values.
+ const authoritative = matches.map(m => ({
+   ...m,
+   _source: m._source || 'search',
+ }));
+
+ setAllMatches(prev => {
+   const byId = new Map(prev.map(m => [String(m.id), m]));
+   for (const m of authoritative) {
+     byId.set(String(m.id), { ...byId.get(String(m.id)), ...m });
+   }
+   return Array.from(byId.values());
+ });
+
+ const first = authoritative[0];
+ setSelectedMatch(first);
+ setSelectedAnalysis(first.analysis || null);
  } catch (err) {
- console.error('Search failed:', err.response?.data?.error || err.message);
+ console.error('Search failed:', err.response?.data?.message || err.response?.data?.error || err.message);
  } finally {
  setSearching(false);
  }
  }
 
- // â”€â”€ Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Derived state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;

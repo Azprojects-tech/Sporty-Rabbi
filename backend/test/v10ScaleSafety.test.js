@@ -53,3 +53,14 @@ test('live intelligence fails closed instead of inventing missing metrics', () =
   assert.equal(live.includes(': 0.08'), false);
   assert.match(server, /requiredLiveMetrics\.every/);
 });
+
+
+test('search UI fails closed instead of fabricating match statistics', () => {
+  assert.match(app, /Array\.isArray\(payload\.matches\)/);
+  assert.match(app, /No authoritative fixture found/);
+  assert.match(app, /setSelectedMatch\(first\)/);
+  assert.equal(app.includes('confidence: analysis.overallScore || 50'), false);
+  assert.equal(app.includes('possession: { home: 50, away: 50 }'), false);
+  assert.equal(app.includes('shots: { home: 0, away: 0 }'), false);
+  assert.equal(app.includes('xg: { home: 0, away: 0 }'), false);
+});
