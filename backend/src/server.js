@@ -443,9 +443,10 @@ const POLL_TICK_SECONDS = ENABLE_ADAPTIVE_LIVE_POLL
   : LIVE_POLL_INTERVAL;
 let lastLivePollRunAt = 0;
 
-// V10.3 daily-preparation policy.
-// No continuous API-Football polling. Expensive work happens once at 05:00 UK;
-// opening the portal is allowed one current live-state refresh.
+// V10.5A live-refresh policy.
+// Daily preparation remains at 05:00 UK. While at least one portal client is connected,
+// the backend makes one shared lightweight live-fixture request per refresh interval.
+// Deep enrichment remains on the separate live-intelligence cadence / deliberate clicks.
 const DAILY_PREP_TIMEZONE = 'Europe/London';
 const DAILY_PREP_MAX_ANALYZED_FIXTURES = toNumberWithMin(
   process.env.DAILY_PREP_MAX_ANALYZED_FIXTURES,
@@ -461,6 +462,11 @@ const PORTAL_OPEN_REFRESH_COOLDOWN_MS = toNumberWithMin(
   process.env.PORTAL_OPEN_REFRESH_COOLDOWN_MS,
   15000,
   5000,
+);
+const PORTAL_ACTIVE_LIVE_REFRESH_SECONDS = toNumberWithMin(
+  process.env.PORTAL_ACTIVE_LIVE_REFRESH_SECONDS,
+  60,
+  30,
 );
 // Normal Prediction Desk clicks are local/cache-only. Set true only if we later
 // deliberately decide that clicking a match may spend API-Football quota.
@@ -644,7 +650,7 @@ console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   📌 API Key:    ${API_KEY ? '✅ API-Football configured' : '⚠️  API_FOOTBALL_KEY not set — live data unavailable'}
   🌐 API Base:   ${API_BASE}
-  ⏱️  API Mode:   ${API_KEY ? '05:00 UK daily preparation + one portal-open live refresh' : 'No API key — set API_FOOTBALL_KEY in .env'}
+  ⏱️  API Mode:   ${API_KEY ? '05:00 UK daily preparation + shared portal-active live refresh' : 'No API key — set API_FOOTBALL_KEY in .env'}
   🏆 Leagues:    All regulated leagues (no whitelist)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
@@ -1793,6 +1799,44 @@ async function refreshLiveOnPortalOpen() {
   return portalLiveRefreshPromise;
 }
 
+// V10.5A: one shared lightweight refresh for all connected portal users.
+// This spends ONE global live-fixture request per interval, not one request per match
+// and not one request per browser. Deep enrichment is deliberately disabled here.
+let portalActiveLiveRefreshInFlight = false;
+
+async function refreshLiveForConnectedPortals() {
+  if (clients.size === 0 || !API_KEY || shouldSkipApiCalls() || portalActiveLiveRefreshInFlight) {
+    return;
+  }
+
+  // Portal-open/manual refresh may already have fetched fresh data. Avoid a near-duplicate call.
+  const cacheAgeMs = cache.liveMatches.timestamp > 0
+    ? Date.now() - cache.liveMatches.timestamp
+    : Number.POSITIVE_INFINITY;
+  if (cacheAgeMs < PORTAL_ACTIVE_LIVE_REFRESH_SECONDS * 1000) {
+    return;
+  }
+
+  portalActiveLiveRefreshInFlight = true;
+  try {
+    await pollLiveMatches({ forceApi: true, enrich: false });
+  } catch (err) {
+    console.warn('[LiveRefresh] Shared portal refresh failed:', err.message);
+  } finally {
+    portalActiveLiveRefreshInFlight = false;
+  }
+}
+
+setInterval(() => {
+  refreshLiveForConnectedPortals().catch((err) =>
+    console.warn('[LiveRefresh] Timer error:', err.message)
+  );
+}, PORTAL_ACTIVE_LIVE_REFRESH_SECONDS * 1000);
+
+console.log(
+  `   Portal live refresh: every ${PORTAL_ACTIVE_LIVE_REFRESH_SECONDS}s while at least one portal is connected (lightweight)`
+);
+
 async function pollUpcomingMatches() {
   // ── If calibration ran recently, use it instead of Gemini knowledge-only ──
   if (calibrationStore.matches.length > 0 && calibrationStore.calibratedAt) {
@@ -2649,7 +2693,7 @@ app.get('/api/live', async (req, res) => {
     count: filtered.length,
     matches: filtered,
     freshness: getLiveFreshnessMeta(),
-    refreshPolicy: 'portal-open-once',
+    refreshPolicy: 'portal-active-shared+manual',
   });
 });
 

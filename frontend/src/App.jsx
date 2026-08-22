@@ -7,6 +7,27 @@ import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
 import AlertHistory from './components/AlertHistory';
 
+const LIVE_STATUS_CODES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
+
+function mergeLiveIntoMatches(prev, incoming = []) {
+  const live = Array.isArray(incoming) ? incoming : [];
+  const liveIds = new Set(live.map((m) => String(m.id)));
+
+  // Remove the previous live snapshot before inserting the new one.
+  // This prevents finished/disappeared fixtures from lingering with stale scores.
+  const rest = prev.filter((m) => {
+    if (liveIds.has(String(m.id))) return false;
+    if (m._source === 'live') return false;
+    if (LIVE_STATUS_CODES.has(m.status)) return false;
+    return true;
+  });
+
+  return [
+    ...live.map((m) => ({ ...m, _source: 'live' })),
+    ...rest,
+  ];
+}
+
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
  const [filter, setFilter] = useState('all');
@@ -27,6 +48,8 @@ export default function App() {
  const [sidebarOpen, setSidebarOpen] = useState(false);
  const [selectedCountry, setSelectedCountry] = useState(null);
  const [selectedKeyword, setSelectedKeyword] = useState(null);
+ const [refreshingLive, setRefreshingLive] = useState(false);
+ const [lastLiveUpdatedAt, setLastLiveUpdatedAt] = useState(null);
 
  useEffect(() => {
    const check = () => setIsMobile(window.innerWidth < 768);
@@ -51,11 +74,8 @@ export default function App() {
  }).catch(() => setLoading(false));
 
  const handleLiveMatches = (p) => {
- setAllMatches(prev => {
- const liveIds = new Set((p || []).map(m => m.id));
- const rest = prev.filter(m => !liveIds.has(m.id));
- return [...(p || []).map(m => ({ ...m, _source: 'live' })), ...rest];
- });
+ setAllMatches(prev => mergeLiveIntoMatches(prev, p || []));
+ setLastLiveUpdatedAt(Date.now());
  };
 
  const handleUpcomingMatches = (p) => {
@@ -85,7 +105,11 @@ export default function App() {
  const live = liveRes?.data?.matches || [];
  const upcoming = upRes?.data?.matches || [];
  const liveIds = new Set(live.map(m => m.id));
- setAllMatches([...live, ...upcoming.filter(m => !liveIds.has(m.id))]);
+ setAllMatches([
+   ...live.map(m => ({ ...m, _source: 'live' })),
+   ...upcoming.filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' })),
+ ]);
+ setLastLiveUpdatedAt(Date.now());
  setBets(betsRes?.data?.bets || []);
 
  // Restore last calibration results if available
@@ -106,8 +130,8 @@ export default function App() {
 
  fetchInitial();
 
- // V10.3: no automatic live polling. fetchInitial() is the one portal-open refresh.
- // WebSocket receives server-pushed state but does not spend API-Football calls.
+ // V10.5A: the backend performs one shared lightweight live refresh while portal users are connected.
+ // WebSocket pushes score/status changes. Pull-to-refresh and the Live button use the same backend route.
 
  return () => {
  off('LIVE_MATCHES', handleLiveMatches);
@@ -142,6 +166,21 @@ export default function App() {
  }
 
  // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ async function handleManualLiveRefresh() {
+ if (refreshingLive) return;
+ setRefreshingLive(true);
+ try {
+ const res = await apiService.getLiveMatches();
+ const live = res?.data?.matches || [];
+ setAllMatches(prev => mergeLiveIntoMatches(prev, live));
+ setLastLiveUpdatedAt(Date.now());
+ } catch (err) {
+ console.error('Live refresh failed:', err.response?.data?.error || err.message);
+ } finally {
+ setRefreshingLive(false);
+ }
+ }
+
  async function handleSearch(e) {
  e?.preventDefault();
  if (!searchQuery.trim()) return;
@@ -281,6 +320,30 @@ export default function App() {
  <span style={{ fontSize: 13 }}>☀</span>
  Daily Prep 05:00 UK
  </div>
+
+ <button
+ title="Refresh live scores now"
+ onClick={handleManualLiveRefresh}
+ disabled={refreshingLive}
+ style={{
+ background: '#131826', border: '1px solid #2d3748', borderRadius: 7,
+ padding: isMobile ? '7px 9px' : '7px 11px',
+ color: refreshingLive ? '#4a5568' : '#8b9ab3',
+ fontSize: 12, fontWeight: 700, cursor: refreshingLive ? 'not-allowed' : 'pointer',
+ flexShrink: 0,
+ }}
+ >
+ {refreshingLive ? 'â†»' : (isMobile ? 'â†»' : 'â†» Live')}
+ </button>
+
+ {lastLiveUpdatedAt && !isMobile && (
+ <span
+ title="Most recent live-state update received by this browser"
+ style={{ fontSize: 10, color: '#4a5568', flexShrink: 0 }}
+ >
+ Live {new Date(lastLiveUpdatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+ </span>
+ )}
 
  {calibratedAt && (
  <span style={{ fontSize: 10, color: '#4a5568', flexShrink: 0 }}>
@@ -434,6 +497,7 @@ export default function App() {
  matches={displayedMatches}
  selectedMatch={selectedMatch}
  onSelectMatch={handleSelectMatch}
+ onRefresh={handleManualLiveRefresh}
  />
  </div>
  )}

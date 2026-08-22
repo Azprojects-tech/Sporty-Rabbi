@@ -7,6 +7,7 @@ const analytics = fs.readFileSync(new URL('../src/services/analyticsService.js',
 const gemini = fs.readFileSync(new URL('../src/services/geminiService.js', import.meta.url), 'utf8');
 const api = fs.readFileSync(new URL('../../frontend/src/services/api.js', import.meta.url), 'utf8');
 const panel = fs.readFileSync(new URL('../../frontend/src/components/DetailPanel.jsx', import.meta.url), 'utf8');
+const appUi = fs.readFileSync(new URL('../../frontend/src/App.jsx', import.meta.url), 'utf8');
 
 test('analytics requests use single-flight pacing instead of direct axios GET bursts', () => {
   assert.match(analytics, /async function singleFlightGet/);
@@ -85,4 +86,19 @@ test('changing selected match resets DetailPanel before background refresh', () 
   assert.match(panel, /const initialAnalysis = preloadedAnalysis \|\| null/);
   assert.match(panel, /setAnalysis\(initialAnalysis\)/);
   assert.match(panel, /loadAnalysis\(initialAnalysis\)/);
+});
+
+
+test('portal-active live refresh is shared and lightweight', () => {
+  assert.equal(server.includes('PORTAL_ACTIVE_LIVE_REFRESH_SECONDS'), true);
+  assert.equal(server.includes('clients.size === 0'), true);
+  assert.equal(server.includes("pollLiveMatches({ forceApi: true, enrich: false })"), true);
+  assert.equal(server.includes("refreshPolicy: 'portal-active-shared+manual'"), true);
+});
+
+test('frontend wires existing pull-to-refresh to the authoritative live endpoint', () => {
+  assert.equal(appUi.includes('async function handleManualLiveRefresh()'), true);
+  assert.equal(appUi.includes('apiService.getLiveMatches()'), true);
+  assert.equal(appUi.includes('onRefresh={handleManualLiveRefresh}'), true);
+  assert.equal(appUi.includes('function mergeLiveIntoMatches(prev, incoming = [])'), true);
 });
