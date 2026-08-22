@@ -42,6 +42,46 @@ test('ledger freezes every genuine score-settleable Agent47 market independently
   assert.equal(doc.settlementStatus, 'PENDING');
 });
 
+test('same structured market is recorded once even if wording differs', () => {
+  const doc = buildPredictionLedgerDocument({
+    id: 456,
+    home: 'A',
+    away: 'B',
+    analysis: {
+      recommendations: [
+        { marketKey: MARKET.HOME_WIN, selection: 'A Win', confidence: 76 },
+        { marketKey: MARKET.HOME_WIN, selection: 'Home win', confidence: 72 },
+      ],
+    },
+  }, { predictedAt: '2026-08-22T05:00:00Z', preparedDateUK: '2026-08-22' });
+
+  assert.equal(doc.markets.length, 1);
+  assert.equal(doc.markets[0].marketKey, MARKET.HOME_WIN);
+});
+
+test('decisive win call is recorded beside a goals prediction', () => {
+  const doc = buildPredictionLedgerDocument({
+    id: 789,
+    home: 'Home FC',
+    away: 'Away FC',
+    analysis: {
+      winCall: {
+        outcome: 'HOME',
+        selection: 'Home FC Win',
+        confidence: 74,
+      },
+      recommendations: [
+        { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: 86 },
+      ],
+    },
+  }, { predictedAt: '2026-08-22T05:00:00Z', preparedDateUK: '2026-08-22' });
+
+  assert.deepEqual(
+    doc.markets.map((m) => m.marketKey).sort(),
+    [MARKET.HOME_WIN, MARKET.OVER_15].sort()
+  );
+});
+
 test('1X2 markets settle correctly from final score', () => {
   assert.equal(settleMarketPrediction(MARKET.HOME_WIN, 2, 1), 'won');
   assert.equal(settleMarketPrediction(MARKET.DRAW, 2, 2), 'won');
@@ -104,6 +144,7 @@ test('server exposes separate Sporty ledger and exact My Bets endpoint', () => {
   assert.match(server, /settlePredictionLedger/);
   assert.match(server, /permanent ledger/);
   assert.equal(server.includes('deleteAfter: deleteAfter.toISOString()'), false);
+  assert.equal(server.includes('.then(() => purgeOldPredictions())'), false);
 });
 
 test('GUI exposes Track Record and I PLAYED THIS', () => {
@@ -115,4 +156,5 @@ test('GUI exposes Track Record and I PLAYED THIS', () => {
   assert.match(detail, /I PLAYED THIS/);
   assert.match(hub, /SportyRabbi Record/);
   assert.match(hub, /My Bets/);
+  assert.match(hub, /latest 250 prediction records/);
 });

@@ -145,7 +145,7 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 18, color: '#e2e8f0', fontWeight: 800 }}>Track Record</div>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
-            SportyRabbi's predictions and your actual selections are kept separate.
+            SportyRabbi's predictions and your actual selections are kept separate. This screen shows the latest 250 prediction records; the permanent ledger remains stored.
           </div>
         </div>
 

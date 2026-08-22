@@ -71,7 +71,7 @@ export function buildPredictionMarkets(match = {}) {
     if (probability == null) continue;
 
     const selection = String(rec?.selection || rec?.label || marketKey);
-    const dedupeKey = `${marketKey}|${selection.toLowerCase()}`;
+    const dedupeKey = marketKey;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
@@ -86,6 +86,37 @@ export function buildPredictionMarkets(match = {}) {
       result: 'pending',
     });
   }
+
+  // A decisive Agent47 win call is a genuine prediction even when the
+  // recommendation list only contains a goals market.
+  const winCall = match.analysis?.winCall || match.winCall || null;
+  const winMarketKey = winCall?.outcome === 'HOME'
+    ? MARKET.HOME_WIN
+    : winCall?.outcome === 'AWAY'
+      ? MARKET.AWAY_WIN
+      : null;
+  const winProbability = finiteNumberOrNull(winCall?.confidence);
+
+  if (winMarketKey && winProbability != null && !seen.has(winMarketKey)) {
+    seen.add(winMarketKey);
+    markets.push({
+      marketKey: winMarketKey,
+      selection: String(
+        winCall?.selection
+        || (winMarketKey === MARKET.HOME_WIN
+          ? String(match.home || 'Home') + ' Win'
+          : String(match.away || 'Away') + ' Win')
+      ),
+      modelProbability: winProbability,
+      confidence: winProbability,
+      tier: null,
+      decisionState: null,
+      evidence: null,
+      source: 'WIN_CALL',
+      result: 'pending',
+    });
+  }
+
   return markets;
 }
 
