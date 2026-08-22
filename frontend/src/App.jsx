@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { connectWebSocket, disconnectWebSocket, on, off, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
@@ -333,7 +333,7 @@ export default function App() {
  flexShrink: 0,
  }}
  >
- {refreshingLive ? 'â†»' : (isMobile ? 'â†»' : 'â†» Live')}
+ {refreshingLive ? 'Refreshing...' : (isMobile ? 'Refresh' : 'Refresh Live')}
  </button>
 
  {lastLiveUpdatedAt && !isMobile && (
