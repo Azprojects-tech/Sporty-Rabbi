@@ -21,6 +21,8 @@ test('calibration persistence uses Firestore schedule chunks', () => {
 test('prediction history writes are split below Firestore 500-write batch limit', () => {
   assert.match(server, /chunkArray\(analyzed, 400\)/);
   assert.match(server, /predictions stored in Firestore in <=400-write batches/);
+  assert.match(server, /permanent ledger/);
+  assert.equal(server.includes('deleteAfter: deleteAfter.toISOString()'), false);
 });
 
 test('morning WhatsApp alerts are reserved for top Daily-80+ signals', () => {

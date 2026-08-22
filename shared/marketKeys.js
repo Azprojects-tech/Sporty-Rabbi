@@ -2,10 +2,15 @@ export const MARKET = Object.freeze({
   HOME_WIN: 'home_win',
   DRAW: 'draw',
   AWAY_WIN: 'away_win',
+  OVER_05: 'over05',
   OVER_15: 'over15',
   OVER_25: 'over25',
   OVER_35: 'over35',
+  OVER_45: 'over45',
+  UNDER_15: 'under15',
   UNDER_25: 'under25',
+  UNDER_35: 'under35',
+  UNDER_45: 'under45',
   BTTS: 'btts',
   NEXT_GOAL_HOME: 'next_goal_home',
   NEXT_GOAL_AWAY: 'next_goal_away',
@@ -28,10 +33,15 @@ export function offeredOddsForMarket(odds = {}, marketKey = '') {
     case MARKET.HOME_WIN: return oddsValue(odds.homeWin ?? odds.home);
     case MARKET.AWAY_WIN: return oddsValue(odds.awayWin ?? odds.away);
     case MARKET.DRAW: return oddsValue(odds.draw);
+    case MARKET.OVER_05: return oddsValue(odds.over05);
     case MARKET.OVER_15: return oddsValue(odds.over15);
     case MARKET.OVER_25: return oddsValue(odds.over25);
     case MARKET.OVER_35: return oddsValue(odds.over35);
+    case MARKET.OVER_45: return oddsValue(odds.over45);
+    case MARKET.UNDER_15: return oddsValue(odds.under15);
     case MARKET.UNDER_25: return oddsValue(odds.under25);
+    case MARKET.UNDER_35: return oddsValue(odds.under35);
+    case MARKET.UNDER_45: return oddsValue(odds.under45);
     case MARKET.BTTS: return oddsValue(odds.btts);
     default: return null;
   }
@@ -60,10 +70,15 @@ export function recommendationToMarketKey(recommendation, context = {}) {
   }
 
   if (upperType === 'GOALS_ONLY') {
+    if (selection.includes('over 4.5')) return MARKET.OVER_45;
     if (selection.includes('over 3.5')) return MARKET.OVER_35;
     if (selection.includes('over 2.5')) return MARKET.OVER_25;
     if (selection.includes('over 1.5')) return MARKET.OVER_15;
+    if (selection.includes('over 0.5')) return MARKET.OVER_05;
+    if (selection.includes('under 4.5')) return MARKET.UNDER_45;
+    if (selection.includes('under 3.5')) return MARKET.UNDER_35;
     if (selection.includes('under 2.5')) return MARKET.UNDER_25;
+    if (selection.includes('under 1.5')) return MARKET.UNDER_15;
     if (selection.includes('both teams to score') || selection.includes('btts')) return MARKET.BTTS;
     return null;
   }

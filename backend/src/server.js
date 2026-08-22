@@ -38,6 +38,15 @@ import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
 import { detectCompetitionContext } from '../../shared/competitionModelProfile.js';
 import { getCompetitionRiskPolicy } from '../../shared/competitionRiskPolicy.js';
 import { MARKET, finiteNumberOrNull, offeredOddsForMarket, getTopExecutableRecommendation } from '../../shared/marketKeys.js';
+import {
+  buildPredictionLedgerDocument,
+  buildPredictionLedgerId,
+  isSettleableMarket,
+  normalizePredictionLedgerDocument,
+  settleMarketPrediction,
+  settlePredictionDocument,
+  summarizePredictionDocuments,
+} from '../../shared/predictionLedger.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -545,11 +554,14 @@ function mergeDailySchedule(schedule = [], analyzed = []) {
 function compactDailyAnalysis(analysis) {
   if (!analysis) return null;
   const recommendations = Array.isArray(analysis.recommendations)
-    ? analysis.recommendations.slice(0, 3).map((r) => ({
+    ? analysis.recommendations.map((r) => ({
         type: r?.type ?? null,
+        marketKey: r?.marketKey ?? null,
         selection: r?.selection ?? null,
         confidence: r?.confidence ?? null,
+        modelProbability: r?.modelProbability ?? r?.confidence ?? null,
         tier: r?.tier ?? null,
+        decisionState: r?.decisionState ?? null,
       }))
     : [];
   return {
@@ -1910,7 +1922,7 @@ console.log('   Live refresh: one request when the portal opens');
 cron.schedule('0 5 * * *', () => {
   console.log('[DailyPrep] 05:00 UK preparation starting...');
   runCalibrationSafely('daily-05:00-uk')
-    .then(() => purgeOldPredictions())
+    .then(() => settlePredictionLedger('post-daily-prep'))
     .catch((err) => console.error('[DailyPrep] Scheduled preparation failed:', err.message));
 }, { timezone: DAILY_PREP_TIMEZONE });
 
@@ -1981,10 +1993,17 @@ async function runLiveIntelligenceScan(trigger = 'scheduled') {
   return { scanned: liveMatches.length, alerts: qualifyingAlerts };
 }
 
-cron.schedule(`0 */${LIVE_INTELLIGENCE_INTERVAL_HOURS} * * *`, () => {
-  runLiveIntelligenceScan('scheduled-2h').catch((err) =>
-    console.error('[LiveIntel] Scheduled scan failed:', err.message)
-  );
+cron.schedule(`0 */${LIVE_INTELLIGENCE_INTERVAL_HOURS} * * *`, async () => {
+  try {
+    await runLiveIntelligenceScan('scheduled-2h');
+  } catch (err) {
+    console.error('[LiveIntel] Scheduled scan failed:', err.message);
+  }
+  try {
+    await settlePredictionLedger('scheduled-2h');
+  } catch (err) {
+    console.error('[PredictionLedger] Scheduled settlement failed:', err.message);
+  }
 }, { timezone: DAILY_PREP_TIMEZONE });
 
 console.log(`   Periodic live intelligence: every ${LIVE_INTELLIGENCE_INTERVAL_HOURS}h (12 base scans/day at 2h)`);
@@ -2637,6 +2656,310 @@ app.get('/api/debug/upcoming-sources', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message, quotaState });
   }
+});
+
+// ─── V10.5B PREDICTION LEDGER ──────────────────────────────────────────────
+
+function finalScoreFromProviderFixture(raw = {}) {
+  const status = String(raw?.fixture?.status?.short || '').toUpperCase();
+  if (!['FT', 'AET', 'PEN'].includes(status)) return null;
+
+  const h = raw?.score?.fulltime?.home;
+  const a = raw?.score?.fulltime?.away;
+  if (Number.isFinite(Number(h)) && Number.isFinite(Number(a))) {
+    return { home: Number(h), away: Number(a), status };
+  }
+
+  if (status === 'FT' && Number.isFinite(Number(raw?.goals?.home)) && Number.isFinite(Number(raw?.goals?.away))) {
+    return { home: Number(raw.goals.home), away: Number(raw.goals.away), status };
+  }
+  return null;
+}
+
+async function fetchFinishedFixturesForUtcDate(dateStamp) {
+  if (!API_KEY || shouldSkipApiCalls()) return [];
+  const response = await axios.get(`${API_BASE}/fixtures`, {
+    params: { date: dateStamp, timezone: 'UTC' },
+    headers: { 'x-apisports-key': API_KEY },
+    timeout: 10000,
+  });
+  updateQuotaFromHeaders(response.headers);
+  return Array.isArray(response.data?.response) ? response.data.response : [];
+}
+
+async function settleRecentUserPlayedBets(matchId, homeGoals, awayGoals, settledAt) {
+  const db = getDb();
+  let settled = 0;
+
+  for (const bet of bets) {
+    if (bet?.source !== 'USER_PLAYED') continue;
+    if (String(bet.matchId) !== String(matchId)) continue;
+    if (bet.result === 'won' || bet.result === 'lost') continue;
+    const result = settleMarketPrediction(bet.marketKey, homeGoals, awayGoals);
+    if (!result) continue;
+
+    bet.result = result;
+    bet.finalScore = `${homeGoals}-${awayGoals}`;
+    bet.settledAt = settledAt;
+    bet.updatedAt = settledAt;
+    settled += 1;
+
+    if (db && bet.firestoreId) {
+      try {
+        await db.collection('bets').doc(bet.firestoreId).update({
+          result,
+          finalScore: bet.finalScore,
+          settledAt,
+          updatedAt: settledAt,
+        });
+      } catch (err) {
+        console.warn('[PredictionLedger] My Bets settlement save failed:', err.message);
+      }
+    }
+    broadcast({ type: 'BET_UPDATED', payload: bet });
+  }
+
+  if (settled > 0) recomputePostMatchCalibrationFromBets(bets);
+  return settled;
+}
+
+async function settlePredictionLedger(trigger = 'manual') {
+  const db = getDb();
+  if (!db || !API_KEY || shouldSkipApiCalls()) {
+    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: 0 };
+  }
+
+  // Only recent records need routine settlement. Older unresolved/postponed fixtures remain
+  // permanently stored as pending rather than being guessed or deleted.
+  const recentCutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const snapshot = await db.collection('predictions')
+    .where('predictedAt', '>=', recentCutoff)
+    .get();
+
+  const pending = snapshot.docs
+    .map((d) => normalizePredictionLedgerDocument({ predictionId: d.id, ...d.data() }))
+    .filter((p) => !p.settledAt && p.settlementStatus !== 'SETTLED')
+    .filter((p) => {
+      const kickoff = Date.parse(p.kickoffUTC || '');
+      return Number.isFinite(kickoff) && kickoff <= Date.now() - (2 * 60 * 60 * 1000);
+    });
+
+  if (pending.length === 0) {
+    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: 0 };
+  }
+
+  const byDate = new Map();
+  for (const p of pending) {
+    const kickoff = new Date(p.kickoffUTC);
+    const dateStamp = kickoff.toISOString().slice(0, 10);
+    if (!byDate.has(dateStamp)) byDate.set(dateStamp, []);
+    byDate.get(dateStamp).push(p);
+  }
+
+  let settledMatches = 0;
+  let settledCalls = 0;
+  let settledUserBets = 0;
+  const settledAt = new Date().toISOString();
+
+  for (const [dateStamp, datePredictions] of byDate) {
+    let rawFixtures = [];
+    try {
+      rawFixtures = await fetchFinishedFixturesForUtcDate(dateStamp);
+    } catch (err) {
+      console.warn(`[PredictionLedger] Result fetch failed for ${dateStamp}: ${err.message}`);
+      continue;
+    }
+    const rawById = new Map(rawFixtures.map((f) => [String(f?.fixture?.id), f]));
+
+    const writes = [];
+    for (const prediction of datePredictions) {
+      const raw = rawById.get(String(prediction.matchId));
+      const final = finalScoreFromProviderFixture(raw);
+      if (!final) continue;
+
+      const settledDoc = settlePredictionDocument(
+        prediction,
+        final.home,
+        final.away,
+        settledAt,
+        final.status,
+      );
+      const marketSettledCount = (settledDoc.markets || []).filter((m) =>
+        m.result === 'won' || m.result === 'lost'
+      ).length;
+      if (marketSettledCount === 0) continue;
+
+      writes.push({
+        predictionId: prediction.predictionId,
+        markets: settledDoc.markets,
+        settlementStatus: 'SETTLED',
+        finalScore: settledDoc.finalScore,
+        finalStatus: settledDoc.finalStatus,
+        settledAt,
+      });
+      settledMatches += 1;
+      settledCalls += marketSettledCount;
+      settledUserBets += await settleRecentUserPlayedBets(
+        prediction.matchId,
+        final.home,
+        final.away,
+        settledAt,
+      );
+    }
+
+    for (const writeChunk of chunkArray(writes, 400)) {
+      const batch = db.batch();
+      for (const update of writeChunk) {
+        const ref = db.collection('predictions').doc(update.predictionId);
+        batch.update(ref, {
+          markets: update.markets,
+          settlementStatus: update.settlementStatus,
+          finalScore: update.finalScore,
+          finalStatus: update.finalStatus,
+          settledAt: update.settledAt,
+        });
+      }
+      if (writeChunk.length > 0) await batch.commit();
+    }
+  }
+
+  console.log(`[PredictionLedger] ${trigger}: settled ${settledMatches} matches / ${settledCalls} market calls / ${settledUserBets} My Bets`);
+  return { trigger, checked: pending.length, settledMatches, settledCalls, settledUserBets };
+}
+
+app.get('/api/predictions', async (req, res) => {
+  const db = getDb();
+  if (!db) {
+    return res.json({
+      predictions: [],
+      summary: summarizePredictionDocuments([]),
+      message: 'Prediction ledger storage is unavailable.',
+    });
+  }
+
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 250, 1), 500);
+    const snapshot = await db.collection('predictions')
+      .orderBy('predictedAt', 'desc')
+      .limit(limit)
+      .get();
+    const predictions = snapshot.docs.map((d) =>
+      normalizePredictionLedgerDocument({ predictionId: d.id, ...d.data() })
+    );
+    res.json({
+      predictions,
+      summary: summarizePredictionDocuments(predictions),
+    });
+  } catch (err) {
+    console.error('[PredictionLedger] Read failed:', err.message);
+    res.status(500).json({ error: 'Prediction ledger read failed' });
+  }
+});
+
+app.post('/api/predictions/settle', async (req, res) => {
+  try {
+    const result = await settlePredictionLedger('manual-api');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Exact user selection. This is deliberately separate from SportyRabbi's own ledger.
+app.post('/api/bets/played', async (req, res) => {
+  const marketKey = String(req.body?.marketKey || '');
+  if (!isSettleableMarket(marketKey)) {
+    return res.status(400).json({ error: 'This market is not score-settleable yet.' });
+  }
+  if (!req.body?.matchId || !req.body?.selection) {
+    return res.status(400).json({ error: 'matchId and exact selection are required.' });
+  }
+
+  const sourceKey = [
+    String(req.body.matchId),
+    marketKey,
+    String(req.body.selection).trim().toLowerCase(),
+  ].join('|');
+
+  const duplicate = bets.find((b) =>
+    b.source === 'USER_PLAYED' && b.sourceKey === sourceKey
+  );
+  if (duplicate) return res.json({ success: true, duplicate: true, bet: duplicate });
+
+  const competitionContext = detectCompetitionContext({
+    leagueId: req.body.leagueId || 0,
+    league: req.body.league || '',
+    country: req.body.leagueCountry || '',
+    matchType: req.body.matchType || '',
+  });
+
+  const now = new Date().toISOString();
+  const bet = {
+    id: Date.now(),
+    source: 'USER_PLAYED',
+    sourceKey,
+    predictionId: req.body.predictionId || null,
+    matchId: req.body.matchId,
+    home: req.body.home || '',
+    away: req.body.away || '',
+    matchName: req.body.matchName || `${req.body.home || ''} vs ${req.body.away || ''}`.trim(),
+    league: req.body.league || 'Unknown',
+    leagueName: req.body.league || 'Unknown',
+    leagueId: req.body.leagueId || 0,
+    leagueCountry: req.body.leagueCountry || '',
+    matchType: req.body.matchType || 'League',
+    competitionFamily: req.body.competitionFamily || competitionContext.family,
+    kickoffUTC: req.body.kickoffUTC || null,
+    marketKey,
+    betType: marketKey,
+    selection: String(req.body.selection),
+    confidence: finiteNumberOrNull(req.body.confidence),
+    modelProbability: finiteNumberOrNull(req.body.modelProbability ?? req.body.confidence),
+    dailySignalScore: finiteNumberOrNull(req.body.dailySignalScore),
+    analysisVersion: req.body.analysisVersion || null,
+    analysisTimestamp: req.body.analysisTimestamp || null,
+    odds: finiteNumberOrNull(req.body.odds),
+    stake: finiteNumberOrNull(req.body.stake),
+    result: 'pending',
+    finalScore: null,
+    settledAt: null,
+    createdAt: now,
+  };
+
+  const db = getDb();
+  if (db) {
+    try {
+      // If the linked prediction is already settled, settle this user selection immediately.
+      if (bet.predictionId) {
+        const predSnap = await db.collection('predictions').doc(bet.predictionId).get();
+        if (predSnap.exists) {
+          const pred = normalizePredictionLedgerDocument({
+            predictionId: predSnap.id,
+            ...predSnap.data(),
+          });
+          if (pred.finalScore && pred.settledAt) {
+            const [h, a] = String(pred.finalScore).split('-').map(Number);
+            const result = settleMarketPrediction(marketKey, h, a);
+            if (result) {
+              bet.result = result;
+              bet.finalScore = pred.finalScore;
+              bet.settledAt = pred.settledAt;
+            }
+          }
+        }
+      }
+      const ref = await db.collection('bets').add(bet);
+      bet.firestoreId = ref.id;
+    } catch (err) {
+      console.warn('[MyBets] Firestore save failed:', err.message);
+    }
+  }
+
+  bets.unshift(bet);
+  if (bets.length > 500) bets.pop();
+  recomputePostMatchCalibrationFromBets(bets);
+  broadcast({ type: 'BET_LOGGED', payload: bet });
+  res.status(201).json({ success: true, bet });
 });
 
 app.get('/api/health', (req, res) => {
@@ -4264,6 +4587,14 @@ async function runCalibration() {
     }
   }
 
+  // V10.5B: freeze one immutable PRE-MATCH snapshot identity for this preparation run.
+  // Later live analysis may change, but this original prediction ID never changes.
+  const ledgerPredictedAt = new Date().toISOString();
+  const ledgerPreparedDateUK = getUkDateStamp();
+  for (const m of analyzed) {
+    m.predictionId = buildPredictionLedgerId(m.id, ledgerPreparedDateUK, ledgerPredictedAt);
+  }
+
   // Full Agent47 analyses remain in-process for current-run model logic.
   // Portal/WebSocket payloads stay compact so a 1,000+ fixture day cannot recreate
   // the V10.2 oversized-feed/OOM failure.
@@ -4287,8 +4618,8 @@ async function runCalibration() {
     matches: analyzed,
     highConfidence,
     dailySchedule,
-    preparedDateUK: getUkDateStamp(),
-    calibratedAt: new Date().toISOString(),
+    preparedDateUK: ledgerPreparedDateUK,
+    calibratedAt: ledgerPredictedAt,
     totalScanned: dailySchedule.length || raw.length,
     analyzedCount: analyzed.length,
     calibrationHealth,
@@ -4335,39 +4666,30 @@ async function runCalibration() {
       console.warn('⚠️  Calibration Firestore save failed:', err.message);
     }
 
-    // ── Track forward predictions for long-term calibration measurement ──────
+    // ── Immutable Prediction Ledger ───────────────────────────────────────────
+    // Every genuine score-settleable Agent47 market is frozen here.
+    // The document ID includes the preparation timestamp, so a later analysis cannot overwrite it.
     if (analyzed.length > 0) {
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const deleteAfter = new Date();
-        deleteAfter.setDate(deleteAfter.getDate() + 90);
-
+        let savedPredictionCount = 0;
         for (const predictionChunk of chunkArray(analyzed, 400)) {
           const predBatch = _calDb.batch();
           for (const m of predictionChunk) {
-            const docRef = _calDb.collection('predictions').doc(
-              `${m.id}_${today}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
-            );
-            predBatch.set(docRef, {
-              matchId: m.id,
-              home: m.home, away: m.away,
-              league: m.league, leagueId: m.leagueId || 0,
-              kickoffUTC: m.kickoffUTC || null,
-              confidence: m.confidence || 0,
-              recommendations: (m.analysis?.recommendations || []).slice(0, 3).map(r => ({
-                type: r.type, selection: r.selection, confidence: r.confidence,
-              })),
-              predictedAt: calibrationStore.calibratedAt,
-              deleteAfter: deleteAfter.toISOString(),
-              outcome: null,
-              settledAt: null,
-            }, { merge: false });
+            const ledgerDoc = buildPredictionLedgerDocument(m, {
+              predictionId: m.predictionId,
+              predictedAt: ledgerPredictedAt,
+              preparedDateUK: ledgerPreparedDateUK,
+            });
+            if (!ledgerDoc) continue;
+            const docRef = _calDb.collection('predictions').doc(ledgerDoc.predictionId);
+            predBatch.set(docRef, ledgerDoc, { merge: false });
+            savedPredictionCount += 1;
           }
           await predBatch.commit();
         }
-        console.log(`[Calibrate] ${analyzed.length} predictions stored in Firestore in <=400-write batches (TTL: 90 days)`);
+        console.log(`[Calibrate] ${savedPredictionCount} predictions stored in Firestore in <=400-write batches (permanent ledger)`);
       } catch (predErr) {
-        console.warn('[Calibrate] Prediction tracking save failed:', predErr.message);
+        console.warn('[Calibrate] Prediction ledger save failed:', predErr.message);
       }
     }
   }
@@ -4693,6 +5015,12 @@ server.listen(PORT, async () => {
     }
   }
 
+  // Settle any recently finished prediction ledger entries once after startup.
+  setTimeout(() => {
+    settlePredictionLedger('startup')
+      .catch((err) => console.warn('[PredictionLedger] Startup settlement failed:', err.message));
+  }, 8000);
+
   // If Railway was offline at 05:00, catch up ONCE after it starts later that day.
   // A normal restart after today's preparation reuses Firestore and spends zero prep calls.
   const todayUK = getUkDateStamp();
@@ -4701,7 +5029,7 @@ server.listen(PORT, async () => {
     console.log(`[DailyPrep] Today's ${todayUK} preparation is missing; scheduling one startup catch-up.`);
     setTimeout(() => {
       runCalibrationSafely('startup-catchup-after-05:00')
-        .then(() => purgeOldPredictions())
+        .then(() => settlePredictionLedger('post-daily-prep'))
         .catch((err) => console.error('[DailyPrep] Startup catch-up failed:', err.message));
     }, 2500);
   } else if (calibrationStore.preparedDateUK === todayUK) {

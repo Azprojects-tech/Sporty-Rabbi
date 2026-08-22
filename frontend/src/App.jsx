@@ -6,6 +6,7 @@ import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
 import AlertHistory from './components/AlertHistory';
+import PerformanceHub from './components/PerformanceHub';
 
 const LIVE_STATUS_CODES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
 
@@ -42,6 +43,7 @@ export default function App() {
  const [searching, setSearching] = useState(false);
  const [showBets, setShowBets] = useState(false);
  const [showAlerts, setShowAlerts] = useState(false);
+ const [showRecord, setShowRecord] = useState(false);
  const [betTab, setBetTab] = useState('slips'); // 'slips' | 'logger'
  const [bets, setBets] = useState([]);
  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
@@ -270,6 +272,7 @@ export default function App() {
  setSelectedMatch(m);
  setSelectedAnalysis(m.analysis || null);
  setShowBets(false);
+ setShowRecord(false);
  }
 
  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -300,7 +303,7 @@ export default function App() {
 
  {/* Logo */}
  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, cursor: 'pointer' }}
- onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); }}>
+ onClick={() => { setSelectedMatch(null); setSelectedAnalysis(null); setShowBets(false); setShowAlerts(false); setShowRecord(false); }}>
  <span style={{ fontSize: 20 }}>&#9889;</span>
  <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-0.5px' }}>
  <span style={{ color: '#e2e8f0' }}>Sporty</span><span style={{ color: '#00b859' }}>Rabbi</span>
@@ -381,7 +384,19 @@ export default function App() {
  {/* Right side */}
  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
  <button
- onClick={() => { setShowBets(v => !v); setShowAlerts(false); setSelectedMatch(null); }}
+ onClick={() => { setShowRecord(v => !v); setShowBets(false); setShowAlerts(false); setSelectedMatch(null); }}
+ style={{
+ background: showRecord ? '#001f0e' : 'transparent',
+ border: '1px solid ' + (showRecord ? '#006833' : '#1e2535'),
+ borderRadius: 7, padding: '7px 13px', cursor: 'pointer',
+ color: showRecord ? '#00b859' : '#8b9ab3', fontSize: 12, fontWeight: 700,
+ }}
+ >
+ Record
+ </button>
+
+ <button
+ onClick={() => { setShowBets(v => !v); setShowAlerts(false); setShowRecord(false); setSelectedMatch(null); }}
  style={{
  background: showBets ? '#2d1b69' : 'transparent',
  border: '1px solid ' + (showBets ? '#7c3aed' : '#1e2535'),
@@ -389,11 +404,11 @@ export default function App() {
  color: showBets ? '#a78bfa' : '#8b9ab3', fontSize: 12, fontWeight: 700,
  }}
  >
- Bets
+ Bet Tools
  </button>
 
  <button
- onClick={() => { setShowAlerts(v => !v); setShowBets(false); setSelectedMatch(null); }}
+ onClick={() => { setShowAlerts(v => !v); setShowBets(false); setShowRecord(false); setSelectedMatch(null); }}
  style={{
  background: showAlerts ? '#1a1200' : 'transparent',
  border: '1px solid ' + (showAlerts ? '#f59e0b' : '#1e2535'),
@@ -423,7 +438,7 @@ export default function App() {
  <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
  {/* LEFT SIDEBAR — always mounted, mobile turns it into a drawer overlay */}
- {!showBets && !showAlerts && (
+ {!showBets && !showAlerts && !showRecord && (
  <Sidebar
  filter={filter}
  setFilter={setFilter}
@@ -440,8 +455,10 @@ export default function App() {
  />
  )}
 
- {/* ALERTS PANEL */}
- {showAlerts ? (
+ {/* TRACK RECORD / ALERTS / BET TOOLS */}
+ {showRecord ? (
+ <PerformanceHub bets={bets} />
+ ) : showAlerts ? (
  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
  <AlertHistory />
  </div>
@@ -503,10 +520,11 @@ export default function App() {
  )}
 
  {/* RIGHT DETAIL PANEL */}
- {selectedMatch && !showBets && !showAlerts && (
+ {selectedMatch && !showBets && !showAlerts && !showRecord && (
  <DetailPanel
  match={selectedMatch}
  analysis={selectedAnalysis}
+ bets={bets}
  onClose={() => { setSelectedMatch(null); setSelectedAnalysis(null); }}
  />
  )}

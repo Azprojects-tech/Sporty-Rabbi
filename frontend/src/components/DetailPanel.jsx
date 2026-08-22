@@ -299,13 +299,15 @@ function ParamDetail({ paramKey, p, match }) {
   ) : null;
 }
 
-export default function DetailPanel({ match, analysis: preloadedAnalysis, onClose }) {
+export default function DetailPanel({ match, analysis: preloadedAnalysis, bets = [], onClose }) {
   const [analysis, setAnalysis]     = useState(preloadedAnalysis || null);
   // Only show full-screen spinner if there is nothing to display yet
   const [loading, setLoading]       = useState(!preloadedAnalysis);
   const [error, setError]           = useState(null);
   const [section, setSection]       = useState('params');
   const [expandedParam, setExpandedParam] = useState(null);
+  const [playedBusyKey, setPlayedBusyKey] = useState(null);
+  const [playedMessage, setPlayedMessage] = useState('');
   const panelScrollRef = useRef(null);
 
   useEffect(() => {
@@ -495,6 +497,46 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
         : String(r.selection || ''),
     }));
 
+  const isAlreadyPlayed = (r) => bets.some((b) =>
+    b?.source === 'USER_PLAYED'
+    && String(b?.matchId) === String(match?.id)
+    && b?.marketKey === r?.marketKey
+    && String(b?.selection || '').toLowerCase() === String(r?.selection || '').toLowerCase()
+  );
+
+  async function handlePlayedRecommendation(r) {
+    if (!r?.marketKey || isAlreadyPlayed(r)) return;
+    const key = `${match?.id}|${r.marketKey}|${r.selection}`;
+    setPlayedBusyKey(key);
+    setPlayedMessage('');
+    try {
+      await apiService.logPlayedRecommendation({
+        predictionId: match?.predictionId || null,
+        matchId: match?.id,
+        home: match?.home,
+        away: match?.away,
+        league: match?.league,
+        leagueId: match?.leagueId || 0,
+        leagueCountry: match?.leagueCountry || '',
+        matchType: match?.matchType || 'League',
+        kickoffUTC: match?.kickoffUTC || null,
+        marketKey: r.marketKey,
+        selection: r.selection,
+        confidence: r.confidence,
+        modelProbability: r.modelProbability ?? r.confidence,
+        dailySignalScore: analysis?.dailySignal?.score ?? match?.dailySignal?.score ?? null,
+        competitionFamily: r?.evidence?.competitionFamily || null,
+        analysisVersion: analysis?.analysisVersion || null,
+        analysisTimestamp: analysis?.analysisTimestamp || null,
+      });
+      setPlayedMessage(`Recorded: ${r.selection}`);
+    } catch (err) {
+      setPlayedMessage(err.response?.data?.error || 'Could not record this selection.');
+    } finally {
+      setPlayedBusyKey(null);
+    }
+  }
+
   return (
     <div style={panelStyle}>
       <div ref={panelScrollRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
@@ -582,6 +624,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
               <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Away {outcomeProbabilities.awayWin}%</span>
             </div>
           )}
+          {playedMessage && (
+            <div style={{ fontSize: 10, color: playedMessage.startsWith('Recorded:') ? '#00b859' : '#fbbf24', marginBottom: 7 }}>
+              {playedMessage}
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {topPicks.map((r, i) => (
               <div key={i} style={{
@@ -611,6 +658,29 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, onClos
                   <div style={{ fontSize: 11, color: '#6b7d96', lineHeight: 1.5 }}>
                     {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
                   </div>
+                )}
+                {r.marketKey && !String(r.marketKey).startsWith('next_goal_') && r.marketKey !== 'no_more_goal' && (
+                  <button
+                    onClick={() => handlePlayedRecommendation(r)}
+                    disabled={isAlreadyPlayed(r) || playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`}
+                    style={{
+                      marginTop: 8,
+                      border: '1px solid ' + (isAlreadyPlayed(r) ? '#006833' : '#2d3748'),
+                      background: isAlreadyPlayed(r) ? '#001f0e' : '#131826',
+                      color: isAlreadyPlayed(r) ? '#00b859' : '#cbd5e1',
+                      borderRadius: 6,
+                      padding: '6px 9px',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      cursor: isAlreadyPlayed(r) ? 'default' : 'pointer',
+                    }}
+                  >
+                    {isAlreadyPlayed(r)
+                      ? 'PLAYED'
+                      : playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`
+                        ? 'RECORDING...'
+                        : 'I PLAYED THIS'}
+                  </button>
                 )}
                 {r.evidence && (
                   <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #1e253555' }}>
