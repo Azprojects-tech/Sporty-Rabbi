@@ -597,6 +597,28 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         </div>
       </div>
 
+
+      {match?.goalFest?.active && (
+        <div style={{padding:'11px 14px',borderBottom:'1px solid #7c2d12',background:'#1a0c00',flexShrink:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+            <span style={{fontSize:10,fontWeight:900,color:'#fb923c',border:'1px solid #f97316',borderRadius:4,padding:'2px 7px'}}>
+              GOAL FEST {match.goalFest.score}
+            </span>
+            <span style={{fontSize:10,fontWeight:700,color:'#fdba74'}}>{match.goalFest.level}</span>
+            <span style={{marginLeft:'auto',fontSize:9,color:'#7c8aa1'}}>
+              {match.goalFest.minute != null ? `${match.goalFest.minute}'` : 'LIVE'}
+            </span>
+          </div>
+          <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.5}}>{match.goalFest.summary}</div>
+          <div style={{fontSize:10,color:'#8b9ab3',marginTop:5}}>
+            Projected final goals: {match.goalFest.projectedFinalGoals ?? 'Unavailable'}
+            {Array.isArray(match.goalFest.reasons) && match.goalFest.reasons.length
+              ? ` | ${match.goalFest.reasons.join(' | ')}` : ''}
+          </div>
+          <div style={{fontSize:9,color:'#4a5568',marginTop:5}}>Live signal only - not a probability or guaranteed outcome.</div>
+        </div>
+      )}
+
       {/* Agent Recommendation */}
       {topPicks.length > 0 && (
         <div style={{

@@ -32,6 +32,7 @@ import {
   calculateMomentum,
   calculateBetValue,
   generateBettingAlert,
+  calculateGoalFestSignal,
 } from './services/liveAnalyticsService.js';
 import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
 import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
@@ -477,6 +478,9 @@ const PORTAL_ACTIVE_LIVE_REFRESH_SECONDS = toNumberWithMin(
   60,
   30,
 );
+const GOAL_FEST_SCAN_SECONDS = toNumberWithMin(process.env.GOAL_FEST_SCAN_SECONDS,300,120);
+const GOAL_FEST_SCAN_LIMIT = toNumberWithMin(process.env.GOAL_FEST_SCAN_LIMIT,16,1);
+const GOAL_FEST_ALERT_THRESHOLD = toNumberWithMin(process.env.GOAL_FEST_ALERT_THRESHOLD,70,60);
 // Normal Prediction Desk clicks are local/cache-only. Set true only if we later
 // deliberately decide that clicking a match may spend API-Football quota.
 const ALLOW_ON_DEMAND_API_ENRICHMENT = String(
@@ -1735,7 +1739,15 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
         .filter(Boolean)
         .map((lite) => {
           const previous = previousById.get(String(lite.id));
-          if (!previous || !previous.analysis || previous.score !== lite.score) return lite;
+          const gfAge = previous?.goalFest?.evaluatedAt
+            ? Date.now() - Date.parse(previous.goalFest.evaluatedAt)
+            : Number.POSITIVE_INFINITY;
+          const recentGoalFest = previous?.goalFest && gfAge < GOAL_FEST_SCAN_SECONDS * 1500
+            ? previous.goalFest
+            : null;
+          if (!previous || !previous.analysis || previous.score !== lite.score) {
+            return recentGoalFest ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
+          }
           return {
             ...lite,
             confidence: previous.confidence ?? lite.confidence,
@@ -1744,6 +1756,7 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
             possession: previous.possession || lite.possession,
             shots: previous.shots || lite.shots,
             xg: previous.xg || lite.xg,
+            goalFest: recentGoalFest || null,
             analysis: previous.analysis,
             _lite: false,
             _staleAnalysis: true,
@@ -1832,6 +1845,7 @@ async function refreshLiveForConnectedPortals() {
   portalActiveLiveRefreshInFlight = true;
   try {
     await pollLiveMatches({ forceApi: true, enrich: false });
+    await runGoalFestSignalScan('portal-active');
   } catch (err) {
     console.warn('[LiveRefresh] Shared portal refresh failed:', err.message);
   } finally {
@@ -1848,6 +1862,85 @@ setInterval(() => {
 console.log(
   `   Portal live refresh: every ${PORTAL_ACTIVE_LIVE_REFRESH_SECONDS}s while at least one portal is connected (lightweight)`
 );
+
+
+// V10.5D: cheap, bounded Goal Fest scan while the portal is in use.
+let goalFestScanInFlight=false;
+let goalFestScanCursor=0;
+let lastGoalFestScanAt=0;
+
+function pickGoalFestScanMatches(matches=[]) {
+  const liveStatuses=new Set(['LIVE','1H','2H','HT','ET','BT','P','INT']);
+  const eligible=(Array.isArray(matches)?matches:[])
+    .filter(m=>m?.id && liveStatuses.has(String(m.status||'').toUpperCase()));
+  if(!eligible.length) return [];
+  const limit=Math.min(GOAL_FEST_SCAN_LIMIT, eligible.length);
+  const out=[];
+  for(let i=0;i<limit;i++) out.push(eligible[(goalFestScanCursor+i)%eligible.length]);
+  goalFestScanCursor=(goalFestScanCursor+limit)%eligible.length;
+  return out;
+}
+
+async function runGoalFestSignalScan(trigger='portal-active') {
+  if(clients.size===0 || !API_KEY || shouldSkipApiCalls() || goalFestScanInFlight)
+    return {scanned:0,active:0};
+
+  const now=Date.now();
+  if(lastGoalFestScanAt && now-lastGoalFestScanAt < GOAL_FEST_SCAN_SECONDS*1000)
+    return {scanned:0,active:0,cooldown:true};
+
+  const batch=pickGoalFestScanMatches(liveMatches);
+  if(!batch.length) return {scanned:0,active:0};
+
+  goalFestScanInFlight=true;
+  lastGoalFestScanAt=now;
+  let scanned=0, active=0;
+
+  try {
+    for(const match of batch) {
+      if(shouldSkipApiCalls()) break;
+      const stats=await fetchFixtureStatistics(match.id);
+      if(!stats) continue;
+
+      const observed={...match, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards};
+      const goalFest=calculateGoalFestSignal(observed);
+      scanned++;
+
+      liveMatches=liveMatches.map(m=>String(m.id)===String(match.id)
+        ? {...m, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards,
+           goalFest, _staleGoalFest:false}
+        : m);
+
+      if(goalFest.active && Number(goalFest.score)>=GOAL_FEST_ALERT_THRESHOLD) {
+        active++;
+        await saveAlert({
+          matchId:match.id, home:match.home, away:match.away,
+          league:match.league, leagueId:match.leagueId||0,
+          matchType:match.matchType||'League', country:match.leagueCountry||'',
+          type:'GOAL_FEST',
+          message:`GOAL FEST ${goalFest.level}: ${goalFest.summary}`,
+          confidence:goalFest.score, goalFest,
+          status:match.status, matchMinutes:match.matchMinutes||0,
+          sentAt:new Date().toISOString(),
+        });
+      }
+
+      await new Promise(r=>setTimeout(r,120));
+    }
+
+    setCache('liveMatches', liveMatches);
+    broadcast({type:'LIVE_MATCHES', payload:liveMatches});
+    console.log(`[GoalFest] ${trigger}: scanned ${scanned}, active ${active}`);
+    return {scanned,active};
+  } catch(err) {
+    console.warn('[GoalFest] scan failed:',err.message);
+    return {scanned,active,error:err.message};
+  } finally {
+    goalFestScanInFlight=false;
+  }
+}
+
+console.log(`   Goal Fest scan: every ${GOAL_FEST_SCAN_SECONDS}s, max ${GOAL_FEST_SCAN_LIMIT} live matches/pass`);
 
 async function pollUpcomingMatches() {
   // ── If calibration ran recently, use it instead of Gemini knowledge-only ──
@@ -3006,6 +3099,7 @@ app.get('/api/test-whatsapp', async (req, res) => {
 app.get('/api/live', async (req, res) => {
   try {
     await refreshLiveOnPortalOpen();
+    await runGoalFestSignalScan('manual-live');
   } catch (err) {
     console.warn('[PortalOpen] Live refresh failed; serving last cached state:', err.message);
   }

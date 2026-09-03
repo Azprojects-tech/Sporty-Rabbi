@@ -187,6 +187,73 @@ function getTrendInsight(trend, homePercent, awayPercent) {
   return insights[trend] || 'Match in progress';
 }
 
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+export function calculateGoalFestSignal(match) {
+  const liveStatuses = new Set(['LIVE','1H','2H','HT','ET','BT','P','INT']);
+  const status = String(match?.status || '').toUpperCase();
+  const evaluatedAt = new Date().toISOString();
+
+  if (!liveStatuses.has(status)) {
+    return { active:false, level:'NONE', score:null, status:'NOT_LIVE', evaluatedAt };
+  }
+
+  const minute = finiteObserved(match?.matchMinutes);
+  const scoreMatch = typeof match?.score === 'string'
+    ? match.score.trim().match(/^(\d+)\s*-\s*(\d+)$/)
+    : null;
+  const hs = finiteObserved(match?.shots?.home);
+  const as = finiteObserved(match?.shots?.away);
+  const hx = finiteObserved(match?.xg?.home);
+  const ax = finiteObserved(match?.xg?.away);
+
+  if (minute == null || minute <= 0 || !scoreMatch || hs == null || as == null || hx == null || ax == null) {
+    return { active:false, level:'NONE', score:null, status:'INSUFFICIENT_DATA', minute:minute ?? null, evaluatedAt };
+  }
+
+  if (minute < 12) {
+    return { active:false, level:'NONE', score:0, status:'TOO_EARLY', minute, evaluatedAt };
+  }
+
+  const goals = Number(scoreMatch[1]) + Number(scoreMatch[2]);
+  const totalXG = hx + ax;
+  const sot = hs + as;
+
+  const goalPace = clamp((goals * 90) / minute, 0, 7);
+  const xgPace = clamp((totalXG * 90) / minute, 0, 7);
+  const shotPace = clamp((sot * 90) / minute, 0, 22);
+
+  const xgScore = clamp(((xgPace - 2.4) / 2.6) * 45, 0, 45);
+  const shotScore = clamp(((shotPace - 5.5) / 8.5) * 30, 0, 30);
+  const goalScore = clamp(((goalPace - 2.5) / 3.0) * 20, 0, 20);
+  const bothThreat = hx >= 0.45 && ax >= 0.45 ? 5 : 0;
+
+  const score = Math.round(clamp(xgScore + shotScore + goalScore + bothThreat, 0, 100));
+  const active = score >= 70;
+  const level = score >= 85 ? 'HOT' : active ? 'WATCH' : 'NONE';
+  const projectedFinalGoals = +clamp((goalPace * 0.4) + (xgPace * 0.6), 0, 6.5).toFixed(1);
+
+  const reasons=[];
+  if(xgPace>=3.2) reasons.push('xG pace is high');
+  if(shotPace>=9) reasons.push('shots-on-target pace is high');
+  if(goalPace>=3.2) reasons.push('current scoring pace is high');
+  if(bothThreat) reasons.push('both teams are creating chances');
+
+  return {
+    active, level, score,
+    status: active ? 'ACTIVE' : 'BELOW_THRESHOLD',
+    minute, currentGoals:goals, totalXG:+totalXG.toFixed(2),
+    shotsOnTarget:sot, projectedFinalGoals, reasons,
+    summary: active
+      ? `High-goal trajectory: ${totalXG.toFixed(2)} xG and ${sot} shots on target by ${minute}'`
+      : `Goal-fest threshold not reached at ${minute}'`,
+    evaluatedAt,
+  };
+}
+
 /**
  * Calculate value of a bet given odds and probability
  * Returns true if odds offer value (positive expected value)
