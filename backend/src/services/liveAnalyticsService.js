@@ -254,6 +254,38 @@ export function calculateGoalFestSignal(match) {
   };
 }
 
+export function classifyAlertLifecycle(alert, liveMatch = null, now = new Date()) {
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  const sentAtMs = Date.parse(alert?.sentAt || alert?.goalFest?.evaluatedAt || '');
+  const ageMs = Number.isFinite(sentAtMs) ? Math.max(0, nowMs - sentAtMs) : Number.POSITIVE_INFINITY;
+  const liveStatuses = new Set(['LIVE','1H','2H','HT','ET','BT','P','SUSP','INT']);
+  const isMatchAlert = Boolean(alert?.matchId && alert?.home && alert?.away);
+  const isCurrentlyLive = Boolean(liveMatch && liveStatuses.has(String(liveMatch.status || '').toUpperCase()));
+  const actionableWindowMs = String(alert?.type || '').toUpperCase() === 'GOAL_FEST'
+    ? 15 * 60 * 1000
+    : 30 * 60 * 1000;
+  const ukDay = (value) => {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone:'Europe/London', year:'numeric', month:'2-digit', day:'2-digit',
+    }).formatToParts(value);
+    const mapped = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${mapped.year}-${mapped.month}-${mapped.day}`;
+  };
+  const sameUkDay = Number.isFinite(sentAtMs)
+    && ukDay(new Date(sentAtMs)) === ukDay(new Date(nowMs));
+  const lifecycle = isMatchAlert && isCurrentlyLive && ageMs <= actionableWindowMs
+    ? 'ACTIONABLE'
+    : sameUkDay ? 'TODAY' : 'HISTORY';
+
+  return {
+    lifecycle,
+    actionable: lifecycle === 'ACTIONABLE',
+    expired: lifecycle !== 'ACTIONABLE',
+    currentMinute: liveMatch?.matchMinutes ?? alert?.matchMinutes ?? null,
+    alertAgeSeconds: Number.isFinite(ageMs) ? Math.floor(ageMs / 1000) : null,
+  };
+}
+
 /**
  * Calculate value of a bet given odds and probability
  * Returns true if odds offer value (positive expected value)

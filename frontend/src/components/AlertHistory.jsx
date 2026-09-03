@@ -1,12 +1,8 @@
 import React,{useState,useEffect,useCallback} from 'react';
 import {apiService,on,off} from '../services/api';
 
-const LIVE_STATUSES=new Set(['LIVE','1H','2H','HT','ET','BT','P','INT']);
-const LIVE_TYPES=new Set(['GOAL_FEST','NEXT_GOAL','MOMENTUM','GOAL_PACE','LIVE_INTELLIGENCE']);
-const MAX_AGE=30*60*1000;
 const age=iso=>{const t=Date.parse(iso||'');return Number.isFinite(t)?Math.max(0,Date.now()-t):Infinity;};
-const actionable=a=>!!a?.sentAt && age(a.sentAt)<=MAX_AGE &&
-  (LIVE_TYPES.has(String(a.type||'').toUpperCase()) || LIVE_STATUSES.has(String(a.status||'').toUpperCase()));
+const actionable=a=>a?.actionable===true && a?.lifecycle==='ACTIONABLE';
 function ukDay(v=new Date()){
   const d=v instanceof Date?v:new Date(v); if(Number.isNaN(d.getTime())) return '';
   const p=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/London',year:'numeric',month:'2-digit',day:'2-digit'})
@@ -31,9 +27,9 @@ export default function AlertHistory(){
   const shown=alerts.filter(a=>{
     const d=ukDay(a.sentAt), t=String(a.type||'').toUpperCase();
     if(scope==='actionable')return actionable(a);
-    if(scope==='today')return d===today;
+    if(scope==='today')return a.lifecycle==='ACTIONABLE'||a.lifecycle==='TODAY';
     if(scope==='goalFest')return t==='GOAL_FEST'&&d===today;
-    return d!==today;
+    return a.lifecycle==='HISTORY';
   });
 
   return <div style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden'}}>
@@ -71,7 +67,7 @@ export default function AlertHistory(){
               <span style={{fontSize:11,fontWeight:700,color:confColor(a.confidence||0)}}>{a.confidence||0}</span>
             </div>
           </div>
-          <div style={{fontSize:10,color:'#4a5568',marginBottom:6}}>{a.league||'Match'}{a.matchMinutes?` | ${a.matchMinutes}'`:''}{a.status?` | ${a.status}`:''}</div>
+          <div style={{fontSize:10,color:'#4a5568',marginBottom:6}}>{a.league||'Match'}{a.currentMinute!=null?` | current minute ${a.currentMinute}'`:''}{a.status?` | ${a.status}`:''}</div>
           <div style={{fontSize:12,color:'#cbd5e0',background:'#0a0d15',borderRadius:6,padding:'8px 10px',lineHeight:1.5}}>
             {typeof a.message==='object'?JSON.stringify(a.message):(a.message||`${a.type||'Alert'} opportunity detected`)}
           </div>

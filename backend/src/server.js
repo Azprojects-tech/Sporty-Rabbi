@@ -33,6 +33,7 @@ import {
   calculateBetValue,
   generateBettingAlert,
   calculateGoalFestSignal,
+  classifyAlertLifecycle,
 } from './services/liveAnalyticsService.js';
 import { getPhaseConfidencePolicy } from '../../shared/confidencePolicy.js';
 import { getLeagueStatDefaults } from '../../shared/leagueDefaults.js';
@@ -1745,7 +1746,8 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
           const recentGoalFest = previous?.goalFest && gfAge < GOAL_FEST_SCAN_SECONDS * 1500
             ? previous.goalFest
             : null;
-          if (!previous || !previous.analysis || previous.score !== lite.score) {
+          if (!previous || previous.score !== lite.score) return lite;
+          if (!previous.analysis) {
             return recentGoalFest ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
           }
           return {
@@ -2133,7 +2135,8 @@ async function saveAlert(alertData) {
   // Dedup: skip if same match+type was sent within the last 30 minutes
   const key = `${alertPayload.home}|${alertPayload.away}|${alertPayload.type || 'alert'}`;
   const lastSent = recentAlertKeys.get(key);
-  if (lastSent && Date.now() - lastSent < ALERT_DEDUP_MS) return;
+  const alertDedupMs = alertPayload.type === 'GOAL_FEST' ? 10 * 60 * 1000 : ALERT_DEDUP_MS;
+  if (lastSent && Date.now() - lastSent < alertDedupMs) return;
   recentAlertKeys.set(key, Date.now());
   // Purge stale entries
   for (const [k, ts] of recentAlertKeys) {
@@ -2157,7 +2160,7 @@ async function saveAlert(alertData) {
   recomputePostMatchCalibrationFromBets(bets);
 
   // Broadcast to portal
-  broadcast({ type: 'NEW_ALERT', payload: alertPayload });
+  broadcast({ type: 'NEW_ALERT', payload: decorateAlertFreshness(alertPayload) });
 
   // Send WhatsApp alert for high-confidence opportunities
   if ((alertPayload.confidence || 0) >= alertPayload.standardThreshold) {
@@ -2174,6 +2177,14 @@ async function saveAlert(alertData) {
     ].join('\n');
     sendWhatsApp(msg).catch(() => {});
   }
+}
+
+function decorateAlertFreshness(alert, now = Date.now()) {
+  const live = (liveMatches || []).find((match) => String(match.id) === String(alert?.matchId));
+  return {
+    ...alert,
+    ...classifyAlertLifecycle(alert, live, new Date(now)),
+  };
 }
 
 // ─── BET SLIP TIER ENGINE ─────────────────────────────────────────────────────
@@ -3177,14 +3188,15 @@ app.get('/api/alerts', async (req, res) => {
         .orderBy('sentAt', 'desc')
         .limit(limit)
         .get();
-      const firestoreAlerts = snapshot.docs.map(d => ({ firestoreId: d.id, ...d.data() }));
+      const firestoreAlerts = snapshot.docs.map(d => decorateAlertFreshness({ firestoreId: d.id, ...d.data() }));
       return res.json({ count: firestoreAlerts.length, alerts: firestoreAlerts });
     } catch (err) {
       console.error('Firestore alerts read error:', err.message);
       // Fall through to in-memory
     }
   }
-  res.json({ count: alerts.length, alerts: alerts.slice(0, 50) });
+  const decoratedAlerts = alerts.slice(0, 50).map((alert) => decorateAlertFreshness(alert));
+  res.json({ count: decoratedAlerts.length, alerts: decoratedAlerts });
 });
 
 app.get('/api/bets', async (req, res) => {
@@ -5130,4 +5142,3 @@ server.listen(PORT, async () => {
     console.log(`[DailyPrep] ${todayUK} already prepared — restart uses persisted data with zero preparation calls.`);
   }
 });
-

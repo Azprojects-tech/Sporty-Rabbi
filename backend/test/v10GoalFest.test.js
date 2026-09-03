@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {calculateGoalFestSignal} from '../src/services/liveAnalyticsService.js';
+import {calculateGoalFestSignal,classifyAlertLifecycle} from '../src/services/liveAnalyticsService.js';
 
 const server=fs.readFileSync(new URL('../src/server.js',import.meta.url),'utf8');
 const feed=fs.readFileSync(new URL('../../frontend/src/components/MatchFeed.jsx',import.meta.url),'utf8');
@@ -34,6 +34,22 @@ test('Goal Fest is visible in feed and detail',()=>{
   assert.match(panel,/GOAL FEST/);assert.match(panel,/match\?\.goalFest\?\.active/);
 });
 test('alerts default to actionable and preserve audit views',()=>{
-  assert.match(alerts,/useState\('actionable'\)/);assert.match(alerts,/30\*60\*1000/);
+  assert.match(alerts,/useState\('actionable'\)/);assert.match(alerts,/lifecycle==='ACTIONABLE'/);
   assert.match(alerts,/Today/);assert.match(alerts,/History/);assert.match(alerts,/Goal Fest/);assert.match(alerts,/EXPIRED/);
+});
+test('fresh live Goal Fest alert is actionable and exposes current minute',()=>{
+  const state=classifyAlertLifecycle(
+    {matchId:1,home:'A',away:'B',type:'GOAL_FEST',sentAt:'2026-09-03T09:50:00Z'},
+    {id:1,status:'2H',matchMinutes:54},new Date('2026-09-03T10:00:00Z'));
+  assert.equal(state.lifecycle,'ACTIONABLE');assert.equal(state.currentMinute,54);
+});
+test('finished match and stale Goal Fest are not actionable',()=>{
+  const alert={matchId:1,home:'A',away:'B',type:'GOAL_FEST',sentAt:'2026-09-03T09:55:00Z'};
+  const finished=classifyAlertLifecycle(alert,{id:1,status:'FT',matchMinutes:90},new Date('2026-09-03T10:00:00Z'));
+  const stale=classifyAlertLifecycle({...alert,sentAt:'2026-09-03T09:40:00Z'},{id:1,status:'LIVE',matchMinutes:65},new Date('2026-09-03T10:00:00Z'));
+  assert.equal(finished.actionable,false);assert.equal(stale.actionable,false);
+});
+test('score changes drop stale Goal Fest evidence and Goal Fest dedup refreshes within its actionable window',()=>{
+  assert.match(server,/if \(!previous \|\| previous\.score !== lite\.score\) return lite/);
+  assert.match(server,/alertPayload\.type === 'GOAL_FEST' \? 10 \* 60 \* 1000/);
 });
