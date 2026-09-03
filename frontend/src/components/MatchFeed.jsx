@@ -96,6 +96,7 @@ function displayLeagueName(name = '', home = '', away = '') {
 function MatchRow({ match, isSelected, onSelect }) {
   const [hScore, aScore] = (match.score || '0-0').split('-');
   const isLive = LIVE_STATUSES.has(match.status);
+  const goalFest = match?.goalFest?.active ? match.goalFest : null;
 
   return (
     <div
@@ -153,6 +154,16 @@ function MatchRow({ match, isSelected, onSelect }) {
         <div style={{ marginLeft: 12 }}>
           <ConfBadge score={match.confidence || 0} />
         </div>
+      )}
+
+      {goalFest && (
+        <span title={goalFest.summary || 'High-goal live trajectory'} style={{
+          marginLeft:8, background:'#2a1200', border:'1px solid #f97316',
+          borderRadius:4, padding:'2px 7px', fontSize:9, fontWeight:800,
+          color:'#fb923c', flexShrink:0, whiteSpace:'nowrap'
+        }}>
+          GOAL FEST {goalFest.score}
+        </span>
       )}
 
       {/* Arrow */}

@@ -248,7 +248,9 @@ export default function App() {
  prev.score === fresh.score &&
  prev.status === fresh.status &&
  prev.matchMinutes === fresh.matchMinutes &&
- prev.confidence === fresh.confidence
+ prev.confidence === fresh.confidence &&
+ prev.goalFest?.score === fresh.goalFest?.score &&
+ prev.goalFest?.active === fresh.goalFest?.active
  ) {
  return prev;
  }
