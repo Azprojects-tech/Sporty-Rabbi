@@ -193,12 +193,18 @@ function clamp(value, min, max) {
 }
 
 export function calculateGoalFestSignal(match) {
-  const liveStatuses = new Set(['LIVE','1H','2H','HT','ET','BT','P','INT']);
+  const liveStatuses = new Set(['LIVE','1H','2H','HT','ET','BT','P','SUSP','INT']);
   const status = String(match?.status || '').toUpperCase();
   const evaluatedAt = new Date().toISOString();
+  const observedScore = match?.score ?? null;
 
   if (!liveStatuses.has(status)) {
-    return { active:false, level:'NONE', score:null, status:'NOT_LIVE', evaluatedAt };
+    return { active:false, level:'NONE', score:null, status:'NOT_LIVE', evaluatedAt, observedScore };
+  }
+
+  if (['HT','BT','P','INT','SUSP'].includes(status)) {
+    return { active:false, level:'NONE', score:null, status:'PAUSED', evaluatedAt, observedScore,
+      summary:'Goal Fest is paused while play is stopped.' };
   }
 
   const minute = finiteObserved(match?.matchMinutes);
@@ -211,11 +217,15 @@ export function calculateGoalFestSignal(match) {
   const ax = finiteObserved(match?.xg?.away);
 
   if (minute == null || minute <= 0 || !scoreMatch || hs == null || as == null || hx == null || ax == null) {
-    return { active:false, level:'NONE', score:null, status:'INSUFFICIENT_DATA', minute:minute ?? null, evaluatedAt };
+    const missing = [minute == null || minute <= 0 ? 'match minute' : null, !scoreMatch ? 'score' : null,
+      hs == null || as == null ? 'shots on target' : null, hx == null || ax == null ? 'xG' : null].filter(Boolean);
+    return { active:false, level:'NONE', score:null, status:'INSUFFICIENT_DATA', minute:minute ?? null, evaluatedAt, observedScore,
+      summary:`Goal Fest unavailable: verified ${missing.join(', ')} missing. No signal is inferred.` };
   }
 
   if (minute < 12) {
-    return { active:false, level:'NONE', score:0, status:'TOO_EARLY', minute, evaluatedAt };
+    return { active:false, level:'NONE', score:0, status:'TOO_EARLY', minute, evaluatedAt, observedScore,
+      summary:'Goal Fest waits until minute 12 before assessing a match.' };
   }
 
   const goals = Number(scoreMatch[1]) + Number(scoreMatch[2]);
@@ -250,7 +260,7 @@ export function calculateGoalFestSignal(match) {
     summary: active
       ? `High-goal trajectory: ${totalXG.toFixed(2)} xG and ${sot} shots on target by ${minute}'`
       : `Goal-fest threshold not reached at ${minute}'`,
-    evaluatedAt,
+    evaluatedAt, observedScore,
   };
 }
 

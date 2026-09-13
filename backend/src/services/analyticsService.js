@@ -8,6 +8,7 @@
  */
 
 import axios from 'axios';
+import { summarizeLateGoals } from './groundedAnalystService.js';
 
 const API_BASE = 'https://v3.football.api-sports.io';
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -62,7 +63,7 @@ async function waitForAnalyticsLaunchSlot() {
   }
 }
 
-async function singleFlightGet(url, config = {}) {
+async function singleFlightGet(url, config = {}, canLaunch = () => true) {
   const key = `${url}?${stableParamsKey(config.params || {})}`;
   if (analyticsInFlight.has(key)) {
     return analyticsInFlight.get(key);
@@ -77,6 +78,7 @@ async function singleFlightGet(url, config = {}) {
     }
 
     await waitForAnalyticsLaunchSlot();
+    if (!canLaunch()) throw new Error('API_QUOTA_GUARD_PAUSED');
 
     // A previous queued request may have opened the 429 circuit while this
     // request was waiting for its launch slot. Re-check immediately before I/O.
@@ -319,6 +321,11 @@ export async function getTeamForm(teamId, league = null, season = null) {
         ? matches[0].teams.home.name 
         : matches[0].teams.away.name,
       matches: matches.map((m) => ({
+        id: m.fixture.id,
+        homeTeamId: m.teams.home.id,
+        awayTeamId: m.teams.away.id,
+        leagueId: m.league.id,
+        season: m.league.season,
         date: m.fixture.date,
         home: m.teams.home.name,
         away: m.teams.away.name,
@@ -607,7 +614,9 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
 
     const result = {
       teamId, leagueId,
-      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played, lateGoalPct },
+      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played, lateGoalPct,
+        seasonRecord: { played, wins: s.fixtures?.wins?.total ?? null, draws: s.fixtures?.draws?.total ?? null,
+          losses: s.fixtures?.loses?.total ?? null } },
     };
     // 6-hour cache
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 6 * 3600000) });
@@ -616,6 +625,80 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     console.error('❌ Error fetching team statistics:', err.message);
     return offlineFallback('teamStats', teamId, leagueId);
   }
+}
+
+// Deliberate-click narrative enrichment only. No background poller or fabricated news.
+// At most 27 uncached calls per click (10 event histories/team + season + prior
+// records + coaches/transfers), shared cache and a separate daily ceiling.
+const analystEvidenceCache = new Map();
+let analystEvidenceDay = '';
+let analystEvidenceCalls = 0;
+const configuredAnalystLimit = Number(process.env.ANALYST_CONTEXT_DAILY_CALL_LIMIT ?? 160);
+const ANALYST_CONTEXT_DAILY_CALL_LIMIT = Number.isFinite(configuredAnalystLimit)
+  ? Math.min(500, Math.max(0, Math.floor(configuredAnalystLimit))) : 160;
+
+export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => true, updateQuotaFromHeaders = () => {} } = {}) {
+  if (!API_AVAILABLE || match.enrich === false || !match.homeTeamId || !match.awayTeamId || shouldSkipApiCalls()) return { status: 'unavailable' };
+  const keyDate = new Date().toISOString().slice(0, 10);
+  if (analystEvidenceDay !== keyDate) { analystEvidenceDay = keyDate; analystEvidenceCalls = 0; }
+  const request = async (url, params) => {
+    const key = `${url}?${stableParamsKey(params)}`;
+    const cached = analystEvidenceCache.get(key);
+    if (cached && Date.now() - cached.at < 12 * 3600000) return cached.data;
+    if (shouldSkipApiCalls() || analystEvidenceCalls >= ANALYST_CONTEXT_DAILY_CALL_LIMIT) return null;
+    analystEvidenceCalls++;
+    try {
+      const res = await singleFlightGet(url, { params }, () => !shouldSkipApiCalls());
+      updateQuotaFromHeaders(res.headers);
+      if (res.data?.errors && Object.keys(res.data.errors).length) return null;
+      const data = res.data?.response ?? null;
+      if (data != null) {
+        if (analystEvidenceCache.size >= 1500) analystEvidenceCache.delete(analystEvidenceCache.keys().next().value);
+        analystEvidenceCache.set(key, { at: Date.now(), data });
+      }
+      return data;
+    } catch (err) { if (err.response?.headers) updateQuotaFromHeaders(err.response.headers); return null; }
+  };
+  const leagueId = match.leagueId, season = Number(match.season);
+  if (!leagueId || match.season == null || !Number.isInteger(season)) return { status: 'unavailable' };
+  const leagues = await request('/leagues', { id: leagueId });
+  const league = Array.isArray(leagues) ? leagues.find((l) => String(l.league?.id) === String(leagueId)) : null;
+  const seasonDates = league?.seasons?.find((s) => s.year === season) || null;
+  const out = { status: 'partial', season: seasonDates,
+    competitionType: league?.league?.type ?? null,
+    previousSeason: league?.seasons?.find((s) => s.year === season - 1) || null, home: {}, away: {} };
+  // Never classify cup records as league form or compare mixed competitions.
+  if (league?.league?.type !== 'League') return out;
+  const cutoff = Date.parse(match.kickoffUTC) || Date.now();
+  const eventResults = new Map();
+  const fixtureLists = {};
+  for (const side of ['home', 'away']) {
+    const id = match[`${side}TeamId`];
+    if (!id) continue;
+    const fixtures = (match[`${side}RecentFixtures`] || []).filter((f) => f.id
+      && f.status?.short === 'FT' && String(f.leagueId) === String(leagueId) && f.season === season
+      && [f.homeTeamId, f.awayTeamId].some((tid) => String(tid) === String(id))
+      && Date.parse(f.date) < cutoff).sort((a, b) => Date.parse(b.date) - Date.parse(a.date)).slice(0, 10);
+    fixtureLists[side] = fixtures;
+  }
+  // Interleave teams, so a quota boundary does not favour the home side.
+  for (let i = 0; i < 10; i++) for (const side of ['home', 'away']) {
+    const fixture = fixtureLists[side]?.[i];
+    if (!fixture || eventResults.has(String(fixture.id))) continue;
+    const events = await request('/fixtures/events', { fixture: fixture.id });
+    if (Array.isArray(events)) eventResults.set(String(fixture.id), { events });
+  }
+  for (const side of ['home', 'away']) {
+    const id = match[`${side}TeamId`];
+    if (!id) continue;
+    out[side].lateGoals = summarizeLateGoals(id, fixtureLists[side] || [], eventResults);
+    const previous = await request('/teams/statistics', { team: id, league: leagueId, season: season - 1 });
+    out[side].previousRecord = previous?.fixtures ? { played: previous.fixtures.played?.total ?? null,
+      wins: previous.fixtures.wins?.total ?? null, draws: previous.fixtures.draws?.total ?? null } : null;
+    out[side].coaches = await request('/coachs', { team: id });
+    out[side].transfers = await request('/transfers', { team: id });
+  }
+  return out;
 }
 
 /**
