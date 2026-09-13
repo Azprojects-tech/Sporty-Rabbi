@@ -279,10 +279,10 @@ export default function App() {
 
  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  return (
- <div style={{ background: '#0f1117', height: '100vh', color: '#e2e8f0', fontFamily: "'Inter', system-ui, sans-serif", display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+ <div className="sporty-app" style={{ background: '#0f1117', height: '100dvh', color: '#e2e8f0', fontFamily: "'Inter', system-ui, sans-serif", display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
  {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• HEADER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
- <header style={{
+ <header className="sporty-header" style={{
  background: '#0a0d15', borderBottom: '1px solid #1e2535',
  padding: '0 18px', height: 56,
  display: 'flex', alignItems: 'center', gap: 14,
@@ -314,7 +314,7 @@ export default function App() {
  </div>
 
  {/* Daily preparation status — intentionally not a manual API trigger */}
- <div
+ <div className="daily-prep-status"
  title="SportyRabbi prepares the day automatically at 05:00 UK time"
  style={{
  display: 'flex', alignItems: 'center', gap: 6,
@@ -357,7 +357,7 @@ export default function App() {
  )}
 
  {/* Search bar */}
- <form onSubmit={handleSearch} style={{ flex: 1, maxWidth: 400, display: 'flex', gap: 0 }}>
+ <form className="sporty-search" onSubmit={handleSearch} style={{ flex: 1, maxWidth: 400, display: 'flex', gap: 0 }}>
  <input
  value={searchQuery}
  onChange={e => setSearchQuery(e.target.value)}
@@ -384,7 +384,7 @@ export default function App() {
  </form>
 
  {/* Right side */}
- <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+ <div className="sporty-navigation" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
  <button
  onClick={() => { setShowRecord(v => !v); setShowBets(false); setShowAlerts(false); setSelectedMatch(null); }}
  style={{
@@ -437,7 +437,7 @@ export default function App() {
  </header>
 
  {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• BODY â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
- <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+ <div className="sporty-body" style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: 'hidden' }}>
 
  {/* LEFT SIDEBAR — always mounted, mobile turns it into a drawer overlay */}
  {!showBets && !showAlerts && !showRecord && (
@@ -536,4 +536,3 @@ export default function App() {
  </div>
  );
 }
-

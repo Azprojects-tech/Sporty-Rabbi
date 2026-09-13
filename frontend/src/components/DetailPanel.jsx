@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { apiService } from '../services/api';
+import { describeMatchClock, describeScorePressure } from '../../../shared/matchClock.js';
+import { goalFestView } from '../../../shared/goalFestView.js';
 
 const TIER_COLORS = { 1: '#f59e0b', 2: '#00b859', 3: '#fbbf24', 4: '#f97316' };
 const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
@@ -327,12 +329,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   // /api/analyze starts it in the background and returns narrativeKey immediately.
   useEffect(() => {
     const key = analysis?.narrativeKey;
-    if (!key || analysis?.narrative?.text) return;
+    if (!key || analysis?.narrativeStatus === 'available') return;
 
     let cancelled = false;
     let timer = null;
     let attempts = 0;
-    const maxAttempts = 20;
+    const maxAttempts = 60;
 
     const pollNarrative = async () => {
       if (cancelled) return;
@@ -353,7 +355,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
       }
 
       if (!cancelled && attempts < maxAttempts) {
-        timer = setTimeout(pollNarrative, 1000);
+        timer = setTimeout(pollNarrative, 1500);
       }
     };
 
@@ -362,7 +364,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [analysis?.narrativeKey, analysis?.narrative?.text]);
+  }, [analysis?.narrativeKey, analysis?.narrativeStatus]);
 
   useEffect(() => {
     setExpandedParam(null);
@@ -385,7 +387,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         homeTeamId:       match.homeTeamId || null,
         awayTeamId:       match.awayTeamId || null,
         fixtureId:        match.id || null,
-        status:           (match.isLive || ['1H','2H','HT','ET','BT','P'].includes(match.status)) ? 'LIVE' : (match.status || 'NS'),
+        kickoffUTC:       match.kickoffUTC || null,
+        status:           match.status || (match.isLive ? 'LIVE' : 'NS'),
         matchMinutes:     match.matchMinutes || 0,
         score:            match.score    || '0-0',
         possession:       {
@@ -443,7 +446,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   };
 
   if (loading) return (
-    <div style={panelStyle}>
+    <div className="sporty-detail-panel" style={panelStyle}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <div style={{ width: 28, height: 28, border: '2px solid #1e2535', borderTopColor: '#00b859', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
         <p style={{ fontSize: 12, color: '#4a5568' }}>Running V10 analysis...</p>
@@ -452,7 +455,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   );
 
   if (error) return (
-    <div style={panelStyle}>
+    <div className="sporty-detail-panel" style={panelStyle}>
       <div style={{ padding: '14px 16px', borderBottom: '1px solid #1e2535', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#8b9ab3' }}>V10 Analysis</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4a5568', fontSize: 20 }}>x</button>
@@ -538,7 +541,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   }
 
   return (
-    <div style={panelStyle}>
+    <div className="sporty-detail-panel" style={panelStyle}>
       <div ref={panelScrollRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
       {/* Header */}
@@ -598,26 +601,28 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
       </div>
 
 
-      {match?.goalFest?.active && (
+      {goalFestView(match, [match?.goalFest, analysis?.goalFest]) && (() => {
+        const signal = goalFestView(match, [match?.goalFest, analysis?.goalFest]);
+        return (
         <div style={{padding:'11px 14px',borderBottom:'1px solid #7c2d12',background:'#1a0c00',flexShrink:0}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
             <span style={{fontSize:10,fontWeight:900,color:'#fb923c',border:'1px solid #f97316',borderRadius:4,padding:'2px 7px'}}>
-              GOAL FEST {match.goalFest.score}
+              GOAL FEST {signal.score ?? ''}
             </span>
-            <span style={{fontSize:10,fontWeight:700,color:'#fdba74'}}>{match.goalFest.level}</span>
+            <span style={{fontSize:10,fontWeight:700,color:'#fdba74'}}>{signal.active ? signal.level : 'NOT ACTIVE'}</span>
             <span style={{marginLeft:'auto',fontSize:9,color:'#7c8aa1'}}>
-              {match.goalFest.minute != null ? `${match.goalFest.minute}'` : 'LIVE'}
+              {signal.minute != null ? `${signal.minute}' checked` : 'LIVE'}
             </span>
           </div>
-          <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.5}}>{match.goalFest.summary}</div>
-          <div style={{fontSize:10,color:'#8b9ab3',marginTop:5}}>
-            Projected final goals: {match.goalFest.projectedFinalGoals ?? 'Unavailable'}
-            {Array.isArray(match.goalFest.reasons) && match.goalFest.reasons.length
-              ? ` | ${match.goalFest.reasons.join(' | ')}` : ''}
-          </div>
+          <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.5}}>{signal.summary}</div>
+          {signal.score != null && <div style={{fontSize:10,color:'#8b9ab3',marginTop:5}}>
+            Projected final goals: {signal.projectedFinalGoals ?? 'Unavailable'}
+            {Array.isArray(signal.reasons) && signal.reasons.length
+              ? ` | ${signal.reasons.join(' | ')}` : ''}
+          </div>}
           <div style={{fontSize:9,color:'#4a5568',marginTop:5}}>Live signal only - not a probability or guaranteed outcome.</div>
         </div>
-      )}
+      ); })()}
 
       {/* Agent Recommendation */}
       {topPicks.length > 0 && (
@@ -744,16 +749,20 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 7 }}>
             <span style={{ fontSize: 9, fontWeight: 800, color: '#3b82f6', letterSpacing: '1px' }}>ANALYST NOTE</span>
-            <span style={{ fontSize: 9, color: '#4a5568' }}>· AI</span>
-            {analysis.narrative.confidence && (
-              <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: scoreColor(analysis.narrative.confidence) }}>
-                LLM narrative confidence {analysis.narrative.confidence}%
-              </span>
-            )}
+            <span style={{ fontSize: 9, color: '#64748b' }}>· Evidence-based</span>
+            {analysis.narrativeStatus === 'pending' && <span style={{fontSize:9,color:'#64748b'}}>Loading history…</span>}
           </div>
-          <p style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.65, margin: 0 }}>
-            {analysis.narrative.text}
-          </p>
+          {analysis.narrative.sections ? analysis.narrative.sections.map((item, index) => (
+            <div key={index} style={{ marginBottom: 9, fontSize: 12, lineHeight: 1.6 }}>
+              <div style={{color:'#cbd5e1',fontWeight:700}}>{item.label}</div>
+              <div style={{color:'#94a3b8'}}>{item.label === 'Match situation'
+                ? `${describeMatchClock(match)} Score: ${match.score || 'unavailable'}.`
+                : item.label === 'Score pressure' ? describeScorePressure(match)
+                : item.label === 'What this means now'
+                  ? (goalFestView(match, [match?.goalFest, analysis?.goalFest])?.summary || 'No current live Goal Fest signal. Historical patterns are not a prediction.')
+                  : item.text}</div>
+            </div>
+          )) : <p style={{fontSize:12,color:'#94a3b8',lineHeight:1.65,margin:0}}>{analysis.narrative.text}</p>}
         </div>
       )}
 

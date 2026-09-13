@@ -30,8 +30,8 @@ test('scanner is portal-active bounded and quota-aware',()=>{
   assert.match(server,/fetchFixtureStatistics\(match\.id\)/);assert.match(server,/type:'GOAL_FEST'/);
 });
 test('Goal Fest is visible in feed and detail',()=>{
-  assert.match(feed,/GOAL FEST/);assert.match(feed,/match\?\.goalFest\?\.active/);
-  assert.match(panel,/GOAL FEST/);assert.match(panel,/match\?\.goalFest\?\.active/);
+  assert.match(feed,/GOAL FEST/);assert.match(feed,/goalFestView/);
+  assert.match(panel,/GOAL FEST/);assert.match(panel,/goalFestView/);
 });
 test('alerts default to actionable and preserve audit views',()=>{
   assert.match(alerts,/useState\('actionable'\)/);assert.match(alerts,/lifecycle==='ACTIONABLE'/);

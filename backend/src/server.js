@@ -15,7 +15,8 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
-import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries } from './services/analyticsService.js';
+import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence } from './services/analyticsService.js';
+import { buildGroundedAnalystNote } from './services/groundedAnalystService.js';
 import { analyzeV9 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
 import {
@@ -1872,9 +1873,9 @@ let goalFestScanCursor=0;
 let lastGoalFestScanAt=0;
 
 function pickGoalFestScanMatches(matches=[]) {
-  const liveStatuses=new Set(['LIVE','1H','2H','HT','ET','BT','P','INT']);
+  const liveStatuses=new Set(['LIVE','1H','2H','ET']);
   const eligible=(Array.isArray(matches)?matches:[])
-    .filter(m=>m?.id && liveStatuses.has(String(m.status||'').toUpperCase()));
+    .filter(m=>m?.id && Number(m.matchMinutes)>=12 && liveStatuses.has(String(m.status||'').toUpperCase()));
   if(!eligible.length) return [];
   const limit=Math.min(GOAL_FEST_SCAN_LIMIT, eligible.length);
   const out=[];
@@ -1902,7 +1903,11 @@ async function runGoalFestSignalScan(trigger='portal-active') {
     for(const match of batch) {
       if(shouldSkipApiCalls()) break;
       const stats=await fetchFixtureStatistics(match.id);
-      if(!stats) continue;
+      if(!stats) {
+        const unavailable = calculateGoalFestSignal({ ...match, shots:null, xg:null });
+        liveMatches=liveMatches.map(m=>String(m.id)===String(match.id) ? { ...m, goalFest:unavailable } : m);
+        continue;
+      }
 
       const observed={...match, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards};
       const goalFest=calculateGoalFestSignal(observed);
@@ -3795,7 +3800,7 @@ function buildNarrativeKey(matchData = {}) {
   const minute = Number(matchData.matchMinutes || 0);
   const live = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(status);
   const minuteBucket = live ? Math.floor(minute / 10) : 0;
-  return Buffer.from(`${fixtureIdentity}|${score}|${minuteBucket}`).toString('base64url');
+  return Buffer.from(`${fixtureIdentity}|grounded-v1|${status}|${score}|${minuteBucket}`).toString('base64url');
 }
 
 function readNarrativeCache(key) {
@@ -3813,7 +3818,8 @@ function startNarrativeGeneration(key, analysis, matchData) {
   if (cached) return Promise.resolve(cached);
   if (narrativeInFlight.has(key)) return narrativeInFlight.get(key);
 
-  const task = generateMatchNarrative(analysis, matchData)
+  const task = getAnalystEvidence(matchData, { shouldSkipApiCalls, updateQuotaFromHeaders })
+    .then((evidence) => buildGroundedAnalystNote(analysis, matchData, evidence))
     .then((narrative) => {
       if (narrative) {
         narrativeCache.set(key, { narrative, timestamp: Date.now() });
@@ -3882,6 +3888,11 @@ app.post('/api/analyze', async (req, res) => {
     // A match click means "give me the full Agent47 evidence desk". We spend calls
     // here intentionally, while retaining the quota guard and analytics-service cache.
     let enriched = { ...body };
+    // Narrative facts are server-derived, not client-supplied or synthetic inputs.
+    enriched.homeRecentFixtures = [];
+    enriched.awayRecentFixtures = [];
+    enriched.homeSeasonRecord = null;
+    enriched.awaySeasonRecord = null;
     const clickEnrichmentEnabled = body.enrich !== false;
     if (clickEnrichmentEnabled && homeTeamId && awayTeamId) {
       const season = body.season ?? body.fixtureContext?.season ?? null;
@@ -3899,6 +3910,7 @@ app.post('/api/analyze', async (req, res) => {
 
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
           const hs = hRes.value.stats;
+          enriched.homeRecentFixtures = hRes.value.matches || [];
           if (hs.form) enriched.homeForm = hs.form.split('').join('-');
           enriched.homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
           const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
@@ -3912,6 +3924,7 @@ app.post('/api/analyze', async (req, res) => {
 
         if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
           const as = aRes.value.stats;
+          enriched.awayRecentFixtures = aRes.value.matches || [];
           if (as.form) enriched.awayForm = as.form.split('').join('-');
           enriched.awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
           const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
@@ -3945,12 +3958,14 @@ app.post('/api/analyze', async (req, res) => {
           if (hs.avgShotsTotal != null) enriched.homeShotsPerGame = hs.avgShotsTotal;
           if (hs.avgPossession != null) enriched.homePossession = hs.avgPossession;
           if (hs.lateGoalPct != null) enriched.homeLateGoalPct = hs.lateGoalPct;
+          enriched.homeSeasonRecord = hs.seasonRecord || null;
         }
         if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
           const as = aStatsRes.value.stats;
           if (as.conversionPct != null) enriched.awayConversionPct = as.conversionPct;
           if (as.avgShotsTotal != null) enriched.awayShotsPerGame = as.avgShotsTotal;
           if (as.lateGoalPct != null) enriched.awayLateGoalPct = as.lateGoalPct;
+          enriched.awaySeasonRecord = as.seasonRecord || null;
         }
 
         if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline) {
@@ -4159,6 +4174,9 @@ app.post('/api/analyze', async (req, res) => {
 
     // ── Step 3: Run V9 engine ────────────────────────────────────────────────
     const analysis = analyzeV9(enriched);
+    // A selected game gets checked immediately, rather than waiting its turn in
+    // the rotating whole-portal scanner. Never weaken verified-xG requirements.
+    analysis.goalFest = calculateGoalFestSignal(enriched);
 
     // ── Step 4: analyst note is non-blocking ────────────────────────────────
     const narrativeKey = buildNarrativeKey(enriched);
@@ -4168,6 +4186,7 @@ app.post('/api/analyze', async (req, res) => {
       analysis.narrative = cachedNarrative;
       analysis.narrativeStatus = 'available';
     } else {
+      analysis.narrative = buildGroundedAnalystNote(analysis, enriched);
       analysis.narrativeStatus = 'pending';
       startNarrativeGeneration(narrativeKey, analysis, enriched);
     }
