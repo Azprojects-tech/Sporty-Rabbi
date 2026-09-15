@@ -11,7 +11,7 @@ function timeStr(kickoffUTC) {
   if (!kickoffUTC) return 'Unavailable';
   try {
     return new Date(kickoffUTC).toLocaleTimeString('en-GB', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+      hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
     });
   } catch { return 'Unavailable'; }
 }
@@ -34,7 +34,7 @@ function OddsBadge({ odds }) {
       background: '#1e2535', borderRadius: 3,
       padding: '1px 6px', fontSize: 11, fontWeight: 800, color: '#e2e8f0',
     }}>
-      {odds}
+      {Number.isFinite(odds) ? odds.toFixed(2) : 'Unavailable'}
     </span>
   );
 }
@@ -56,6 +56,7 @@ function LegRow({ leg, index }) {
         </div>
         <div style={{ fontSize: 10, color: '#4a5568', marginTop: 1 }}>
           {leg.league} · {timeStr(leg.kickoffUTC)}
+          <div>Odds updated {timeStr(leg.providerUpdatedAt)}</div>
         </div>
         <div style={{ fontSize: 11, color: '#a78bfa', marginTop: 2, fontWeight: 600 }}>
           {leg.selection}
@@ -72,9 +73,9 @@ function LegRow({ leg, index }) {
 // ─── Tier card ────────────────────────────────────────────────────────────────
 
 const TIER_META = {
-  1: { label: 'TIER 1', sub: 'Near-certain singles', color: '#00b859', bg: '#001a0e', icon: '🏆' },
-  2: { label: 'TIER 2', sub: '2-3 leg accumulator', color: '#fbbf24', bg: '#1a1200', icon: '⚡' },
-  3: { label: 'TIER 3', sub: 'Value combination',   color: '#f97316', bg: '#1a0a00', icon: '🎯' },
+  1: { label: 'TIER 1', sub: 'High-probability singles', color: '#00b859', bg: '#001a0e', icon: '🏆' },
+  2: { label: 'TIER 2', sub: 'Double', color: '#fbbf24', bg: '#1a1200', icon: '⚡' },
+  3: { label: 'TIER 3', sub: 'Treble',   color: '#f97316', bg: '#1a0a00', icon: '🎯' },
 };
 
 function TierCard({ tier, data, type = 'single' }) {
@@ -92,7 +93,7 @@ function TierCard({ tier, data, type = 'single' }) {
           <span style={{ fontSize: 10, color: '#4a5568' }}>{meta.sub}</span>
         </div>
         <p style={{ fontSize: 11, color: '#4a5568' }}>
-          No fixtures above {tier === 1 ? '85%' : tier === 2 ? '72%' : '65%'} confidence today. Best available picks shown in lower tiers.
+          No {tier === 1 ? 'singles' : tier === 2 ? 'double' : 'treble'} meets the probability and price criteria.
         </p>
       </div>
     );
@@ -107,7 +108,7 @@ function TierCard({ tier, data, type = 'single' }) {
         border: `1px solid ${meta.color}44`, borderRadius: 8,
         background: meta.bg, padding: '14px 16px', marginBottom: 12,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <span style={{ fontSize: 16 }}>{meta.icon}</span>
           <span style={{ fontSize: 12, fontWeight: 800, color: meta.color }}>{meta.label}</span>
           <span style={{ fontSize: 10, color: '#4a5568' }}>{meta.sub}</span>
@@ -122,6 +123,7 @@ function TierCard({ tier, data, type = 'single' }) {
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{d.match}</div>
                 <div style={{ fontSize: 10, color: '#4a5568', marginTop: 1 }}>
                   {d.league} · {timeStr(d.kickoffUTC)}
+                  <div>{d.bookmaker?.name} · Odds updated {timeStr(d.providerUpdatedAt)}</div>
                 </div>
                 <div style={{ fontSize: 12, color: '#a78bfa', marginTop: 3, fontWeight: 600 }}>
                   ✓ {d.selection}
@@ -161,13 +163,19 @@ function TierCard({ tier, data, type = 'single' }) {
       border: `1px solid ${meta.color}44`, borderRadius: 8,
       background: meta.bg, padding: '14px 16px', marginBottom: 12,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 16 }}>{meta.icon}</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: meta.color }}>{meta.label}</span>
         <span style={{ fontSize: 10, color: '#4a5568' }}>{meta.sub}</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: meta.color, fontWeight: 700 }}>
-          Combined: {data.combinedOdds}x
+          Standard odds: {data.combinedOdds.toFixed(2)}x
         </span>
+      </div>
+      <div style={{fontSize:12,color:meta.color,marginBottom:8,fontWeight:700}}>
+        Combined model probability ≥ {(Math.floor(data.combinedProbability * 10) / 10).toFixed(1)}%
+      </div>
+      <div style={{fontSize:10,color:'#8b9ab3',marginBottom:8}}>
+        {data.bookmaker?.name} · Probability floor allows for dependence between games.
       </div>
       <div style={{ background: '#0a0d15', borderRadius: 6, padding: '0 12px' }}>
         {legs.map((leg, i) => <LegRow key={i} leg={leg} index={i} />)}
@@ -228,16 +236,16 @@ export default function BetSlips() {
   }
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+    <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '16px' }}>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>
-            V9 Bet Slips
+            Daily Bet Desk
           </div>
           <div style={{ fontSize: 11, color: '#4a5568', marginTop: 2 }}>
-            AI-generated from today's calibrated fixtures
+            Price-qualified selections · Combinations require at least 51.2%
           </div>
         </div>
         <button
@@ -253,7 +261,7 @@ export default function BetSlips() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 11, color: '#8b9ab3' }}>Risk Mode</span>
         {Object.entries(MODE_META).map(([k, meta]) => (
           <button
@@ -291,7 +299,7 @@ export default function BetSlips() {
           onChange={handleBankrollChange}
           placeholder="e.g. 100000"
           style={{
-            flex: 1, background: 'transparent', border: 'none', outline: 'none',
+            flex: 1, minWidth: 0, width: '100%', background: 'transparent', border: 'none', outline: 'none',
             color: '#e2e8f0', fontSize: 13, fontWeight: 700,
           }}
           onKeyDown={e => e.key === 'Enter' && handleBankrollApply()}
@@ -340,7 +348,7 @@ export default function BetSlips() {
               +₦{fmt(slips.summary.bestCaseProfit)}
             </div>
             <div style={{ fontSize: 9, color: '#4a5568' }}>
-              {slips.summary.bestCaseProfitPercent}% ROI
+              {slips.summary.bestCaseProfitPercent}% of bankroll
             </div>
           </div>
           <div style={{ width: 1, background: '#1e2535' }} />
@@ -374,13 +382,13 @@ export default function BetSlips() {
           borderRadius: 7, padding: '12px 14px', color: '#fca5a5',
           fontSize: 12, marginBottom: 16,
         }}>
-          {error} — recalibrate to get fresh fixtures.
+          {error} — refresh to try again.
         </div>
       )}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px 0', color: '#4a5568', fontSize: 12 }}>
-          Generating V8 bet slips...
+          Checking selections and bookmaker prices...
         </div>
       ) : (
         <>
@@ -390,7 +398,7 @@ export default function BetSlips() {
 
           {slips?.generatedAt && (
             <div style={{ textAlign: 'center', fontSize: 10, color: '#2d3748', marginTop: 8 }}>
-              Generated {new Date(slips.generatedAt).toLocaleTimeString('en-GB')} · Recalibrate for latest fixtures
+              Generated {new Date(slips.generatedAt).toLocaleTimeString('en-GB')} · Prices checked on refresh
             </div>
           )}
         </>

@@ -36,7 +36,7 @@ test('missing events are not counted as no late goals; partial coverage is expli
   const late = summarizeLateGoals(1, fixtures, events);
   assert.equal(late.sampled, 1); assert.equal(late.requested, 3);
   const note = buildGroundedAnalystNote({}, { home: 'A', away: 'B' }, { home: { lateGoals: late } });
-  assert.match(note.text, /partial \(1\/3\)/);
+  assert.match(note.text, /Event coverage: 1\/3 games/);
 });
 test('missed penalties, disallowed goals and first-half stoppage time are not late goals', () => {
   const late = summarizeLateGoals(1, [fixture(1, 1, 0)], new Map([['1', { events:
@@ -57,11 +57,12 @@ test('season stage uses verified dates, not the month or invented calendar', () 
   assert.match(note.text, /Beginning of the recorded 2026 season/);
   assert.match(buildGroundedAnalystNote({}, match).text, /season dates unavailable/);
 });
-test('season comparison uses normalised points/game and calls out small samples', () => {
+test('season comparison states points per game and both sample sizes directly', () => {
   const note = buildGroundedAnalystNote({}, { home: 'A', away: 'B', homeSeasonRecord: { played: 4, wins: 3, draws: 1 } },
     { competitionType: 'League', home: { previousRecord: { played: 38, wins: 19, draws: 8 } } });
   assert.match(note.text, /2.50 points\/game/); assert.match(note.text, /Better than/);
-  assert.match(note.text, /not matched rounds/); assert.match(note.text, /small sample/);
+  assert.match(note.text, /4 league games/); assert.match(note.text, /over 38 games/);
+  assert.doesNotMatch(note.text, /not matched rounds|small sample/);
 });
 test('cup fixtures do not receive league points comparisons', () => {
   const note = buildGroundedAnalystNote({}, { homeSeasonRecord: { played: 4, wins: 3, draws: 1 } }, { competitionType: 'Cup' });
@@ -78,11 +79,11 @@ test('coach tenure and offseason arrivals are dated, deduplicated and never clai
         { date: '2026-10-01', teams: { in: { id: 1 } } }] }] } });
   assert.match(note.text, /change this season from Old/);
   assert.match(note.text, /1 recorded arrivals since 2026-05-30: Player/);
-  assert.match(note.text, /do not prove lineup availability/);
+  assert.doesNotMatch(note.text, /do not prove lineup availability|undefined season/);
 });
 test('absent coach/transfer responses stay unverified, not no changes', () => {
   const note = buildGroundedAnalystNote({}, { home: 'A', homeTeamId: 1 });
-  assert.match(note.text, /coach change unverified/); assert.match(note.text, /arrivals unavailable/);
+  assert.match(note.text, /current coach: unavailable/); assert.match(note.text, /arrivals unavailable/);
 });
 test('Goal Fest displays missing verified evidence without loosening xG gating', () => {
   const signal = calculateGoalFestSignal({ status: '2H', matchMinutes: 70, score: '2-2',

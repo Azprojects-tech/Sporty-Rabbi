@@ -620,7 +620,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             {Array.isArray(signal.reasons) && signal.reasons.length
               ? ` | ${signal.reasons.join(' | ')}` : ''}
           </div>}
-          <div style={{fontSize:9,color:'#4a5568',marginTop:5}}>Live signal only - not a probability or guaranteed outcome.</div>
+          <div style={{fontSize:9,color:'#4a5568',marginTop:5}}>Goal Fest score out of 100.</div>
         </div>
       ); })()}
 
@@ -649,6 +649,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
               <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Home {outcomeProbabilities.homeWin}%</span>
               <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Draw {outcomeProbabilities.draw}%</span>
               <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Away {outcomeProbabilities.awayWin}%</span>
+            </div>
+          )}
+          {analysis?.oddsSnapshot?.status === 'AVAILABLE' && (
+            <div style={{fontSize:10,color:'#8b9ab3',marginBottom:8}}>
+              {analysis.oddsSnapshot.bookmaker.name} · Prematch odds updated {new Date(analysis.oddsSnapshot.providerUpdatedAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'})}
             </div>
           )}
           {playedMessage && (
@@ -759,7 +764,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                 ? `${describeMatchClock(match)} Score: ${match.score || 'unavailable'}.`
                 : item.label === 'Score pressure' ? describeScorePressure(match)
                 : item.label === 'What this means now'
-                  ? (goalFestView(match, [match?.goalFest, analysis?.goalFest])?.summary || 'No current live Goal Fest signal. Historical patterns are not a prediction.')
+                  ? (goalFestView(match, [match?.goalFest, analysis?.goalFest])?.summary || 'No current live Goal Fest signal.')
                   : item.text}</div>
             </div>
           )) : <p style={{fontSize:12,color:'#94a3b8',lineHeight:1.65,margin:0}}>{analysis.narrative.text}</p>}

@@ -77,7 +77,6 @@ export default function LiveAnalysisPanel({ match }) {
 function NextGoalPredictor({ nextGoal, match }) {
   const homeProb = nextGoal.home.probability || 0;
   const awayProb = nextGoal.away.probability || 0;
-  const maxProb = Math.max(homeProb, awayProb);
 
   return (
     <div className="card bg-gradient-to-br from-blue-900/30 to-blue-900/10 border-blue-500/30">
@@ -115,9 +114,10 @@ function NextGoalPredictor({ nextGoal, match }) {
         </div>
       </div>
 
-      {maxProb > 50 && (
-        <div className="mt-3 p-2 bg-yellow-900/40 border border-yellow-500/40 rounded text-xs text-yellow-300">
-          ⚡ High probability incoming - <strong>watch for goals soon!</strong>
+      {nextGoal.none && (
+        <div className="mt-3 flex justify-between text-sm text-gray-300">
+          <span>No further goal in regulation</span>
+          <strong>{nextGoal.none.probability}%</strong>
         </div>
       )}
     </div>

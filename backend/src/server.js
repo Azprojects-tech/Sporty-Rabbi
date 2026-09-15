@@ -1,3 +1,7 @@
+import { evaluateForecasts } from '../../shared/forecastEvaluation.js';
+import { FORECAST_VERSION } from '../../shared/forecastMath.js';
+import { eligibleTicketCandidates, chooseCombination, MIN_COMBINED_PROBABILITY } from './services/ticketSelectionService.js';
+import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -15,7 +19,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
-import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence } from './services/analyticsService.js';
+import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence, getPrematchOdds, getPrematchOddsStatus } from './services/analyticsService.js';
 import { buildGroundedAnalystNote } from './services/groundedAnalystService.js';
 import { analyzeV9 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
@@ -566,11 +570,14 @@ function compactDailyAnalysis(analysis) {
         selection: r?.selection ?? null,
         confidence: r?.confidence ?? null,
         modelProbability: r?.modelProbability ?? r?.confidence ?? null,
+        probability01: r?.probability01 ?? null,
+        value: r?.value ?? null,
         tier: r?.tier ?? null,
         decisionState: r?.decisionState ?? null,
       }))
     : [];
   return {
+    analysisVersion: analysis.analysisVersion ?? null,
     dailySignal: analysis.dailySignal ?? null,
     recommendations,
     odds: analysis.odds ?? null,
@@ -1518,7 +1525,7 @@ async function analyzeMatch(match) {
         isKnockout: round.includes('knockout') || round.includes('round of') || round.includes('quarter') || round.includes('semi') || round.includes('final'),
         notes: league.type || '',
         matchType,
-        status: normalizedStatus,   // 'LIVE' for in-play — triggers live logic in agent47
+        status: statusStr, // Preserve HT/ET and the actual provider period.
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
         // ── Live-data blending: Bayesian update of season averages with match evidence ──
@@ -1528,10 +1535,10 @@ async function analyzeMatch(match) {
           const isLive = normalizedStatus === 'LIVE' && liveMin > 0;
           // homeXgAvg: genuine in-play xG from API-Football only; null otherwise.
           // Goals-per-game (homeAvgGF) is fed to homeGoalsAvgFor below — not here.
-          const hXgAvg  = xg.home != null && xg.home > 0 ? xg.home : null;
-          const aXgAvg  = xg.away != null && xg.away > 0 ? xg.away : null;
-          const hXgaAvg = xg.away != null && xg.away > 0 ? xg.away : null;
-          const aXgaAvg = xg.home != null && xg.home > 0 ? xg.home : null;
+          const hXgAvg = null; // No historical xG averages returned by this provider call.
+          const aXgAvg = null;
+          const hXgaAvg = null;
+          const aXgaAvg = null;
           // Shots per game — N=180 (moderately stable; tactical changes take time)
           const baseHomeShots = homeSeasonShots ?? null;
           const baseAwayShots = awaySeasonShots ?? null;
@@ -1588,7 +1595,7 @@ async function analyzeMatch(match) {
       };
       try {
         analysisObj      = analyzeV9(matchData);
-        confidence       = getTopExecutableRecommendation({ home: teams.home?.name, away: teams.away?.name, analysis: analysisObj })?.probability || 0;
+        confidence       = analysisObj.decisionMetrics?.modelProbability?.value ?? 0;
         opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
       } catch (v9Err) {
         console.warn(`[analyzeMatch] V9 error for ${teams.home?.name} vs ${teams.away?.name}: ${v9Err.message} — dropping match`);
@@ -1610,8 +1617,8 @@ async function analyzeMatch(match) {
       status: statusStr,
       isLive: normalizedStatus === 'LIVE',
       matchMinutes: liveElapsed || matchMinutesElapsed || 0,
-      confidence: confidence > 0 ? Math.min(Math.max(Math.round(confidence), 10), 98) : 0,
-      decisionProbability: confidence > 0 ? Math.min(Math.max(Math.round(confidence), 10), 98) : 0,
+      confidence: confidence > 0 ? +confidence.toFixed(1) : 0,
+      decisionProbability: confidence > 0 ? confidence : null,
       opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',
       leagueId: league.id || 0,
@@ -2428,208 +2435,88 @@ function bestSelection(match) {
   };
 }
 
+const archivedOddsSnapshots = new Set();
+async function loadOddsSnapshot(fixtureId, deadline = Infinity) {
+  const result = await getPrematchOdds(fixtureId, {
+    canLaunch: () => Date.now() < deadline && !shouldSkipApiCalls(), onResponse: updateQuotaFromHeaders,
+  });
+  const { offers, ...snapshot } = result;
+  const db = getDb();
+  if (snapshot.status === 'AVAILABLE' && db) {
+    const id = `${snapshot.fixtureId}_${snapshot.bookmaker.id}_${Date.parse(snapshot.providerUpdatedAt)}`;
+    if (!archivedOddsSnapshots.has(id)) {
+      try { await db.collection('oddsSnapshots').doc(id).create(snapshot); archivedOddsSnapshots.add(id); }
+      catch (err) {
+        if (err.code === 6 || err.code === 'already-exists') archivedOddsSnapshots.add(id);
+        else console.warn('[Odds] Snapshot save unavailable:', err.code);
+      }
+      if (archivedOddsSnapshots.size > 1500) archivedOddsSnapshots.delete(archivedOddsSnapshots.values().next().value);
+    }
+  }
+  return snapshot;
+}
+
+let oddsShortlistInFlight = null;
+async function enrichOddsShortlist(matches, maxFixtures = 24) {
+  const deadline = Date.now() + 5000;
+  const pool = matches.filter(m => m.status === 'NS' && m.calibratedInputs && Date.parse(m.kickoffUTC) > Date.now());
+  for (const m of pool) {
+    // Same-day state restored from an older release is re-analysed before pricing.
+    if (m.analysis?.analysisVersion !== FORECAST_VERSION) {
+      m.analysis = analyzeV9({ ...m, ...m.calibratedInputs, odds: null, oddsSnapshot: null });
+      m.dailySignal = m.analysis.dailySignal;
+    }
+  }
+  const probability = m => Math.max(0,...(m.analysis?.recommendations || []).map(r => r.modelProbability || 0));
+  const shortlist = pool.filter(m => probability(m) >= 65)
+    .sort((a,b) => (a.oddsCheckedAt ? 1 : 0) - (b.oddsCheckedAt ? 1 : 0) || probability(b)-probability(a)).slice(0,maxFixtures);
+  for (const m of shortlist) {
+    if (Date.now() >= deadline) break;
+    const snapshot = await loadOddsSnapshot(m.id, deadline);
+    m.oddsCheckedAt = new Date().toISOString();
+    m.oddsSnapshot = snapshot;
+    m.odds = snapshot.status === 'AVAILABLE' ? snapshot.odds : null;
+    m.analysis = analyzeV9({ ...m, ...m.calibratedInputs, odds: m.odds, oddsSnapshot: snapshot });
+    m.dailySignal = m.analysis.dailySignal;
+    m.decisionProbability = m.analysis.decisionMetrics?.modelProbability?.value ?? null;
+  }
+}
+
 function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   const modeProfile = resolveSlipMode(mode);
-  const modeCalibration = getModeCalibrationAdjustment(modeProfile.key);
-  const pool = calibrationStore.matches
-    .map((m) => {
-      const ctx = detectCompetitionContext({
-        leagueId: m.leagueId,
-        league: m.league,
-        country: m.leagueCountry,
-        matchType: m.matchType,
-        round: m.round,
-        isKnockout: (m.round || '').toLowerCase().includes('knockout') || (m.round || '').toLowerCase().includes('round of') || (m.round || '').toLowerCase().includes('quarter') || (m.round || '').toLowerCase().includes('semi') || (m.round || '').toLowerCase().includes('final'),
-        notes: m.notes,
-      });
-      const risk = getCompetitionRiskPolicy(ctx.family);
-      const familyCalibration = getFamilyCalibrationAdjustment(ctx.family);
-      const topExecutable = getTopExecutableRecommendation(m);
-      return {
-        ...m,
-        _competitionFamily: ctx.family,
-        _riskPolicy: risk,
-        _familyCalibration: familyCalibration,
-        _topExecutable: topExecutable,
-      };
-    })
-    .filter((m) => m.status === 'NS' && m._topExecutable && (m.decisionProbability || m.confidence || 0) >= Math.max(
-      52,
-      m._riskPolicy.confidenceFloor +
-      modeProfile.confidenceFloorAdjustment +
-      (modeCalibration.confidenceFloorAdjustment || 0) +
-      (m._familyCalibration?.confidenceFloorAdjustment || 0)
-    ));
-
-  if (pool.length === 0) {
-    return { tier1: null, tier2: null, tier3: null, pool: 0, generatedAt: new Date().toISOString() };
-  }
-
-  pool.sort((a, b) => (b.decisionProbability || b.confidence || 0) - (a.decisionProbability || a.confidence || 0));
-
-  // ── Dynamic stake allocation: protect capital when bankroll is small ─────
-  // Low bankroll → heavier weight on Tier 1 (safest), smaller Tiers 2+3.
-  // Kelly-inspired: never risk more than 60% of bankroll total.
-  //   bankroll < 20k  → Tier1=50%, Tier2=10%, Tier3=skip
-  //   bankroll < 50k  → Tier1=45%, Tier2=15%, Tier3=5%
-  //   bankroll < 100k → Tier1=40%, Tier2=20%, Tier3=8%
-  //   bankroll ≥ 100k → Tier1=35%, Tier2=25%, Tier3=10%
-  let t1Pct, t2Pct, t3Pct;
-  if (bankroll < 20000) {
-    t1Pct = 0.50; t2Pct = 0.10; t3Pct = 0.00;
-  } else if (bankroll < 50000) {
-    t1Pct = 0.45; t2Pct = 0.15; t3Pct = 0.05;
-  } else if (bankroll < 100000) {
-    t1Pct = 0.40; t2Pct = 0.20; t3Pct = 0.08;
-  } else {
-    t1Pct = 0.35; t2Pct = 0.25; t3Pct = 0.10;
-  }
-  const modeAllocation = applyModeAllocation({ tier1: t1Pct, tier2: t2Pct, tier3: t3Pct }, modeProfile);
-  t1Pct = modeAllocation.tier1;
-  t2Pct = modeAllocation.tier2;
-  t3Pct = modeAllocation.tier3;
-
-  // ── TIER 1: Singles ≥85% — no fallback forcing ───────────────────────────
-  const tier1Candidates = pool.filter(m => (m.decisionProbability || m.confidence || 0) >= 85).slice(0, 3);
-  const tier1 = tier1Candidates.map(m => {
-    const sel = bestSelection(m);
-    if (!sel) return null;
-    const odds = oddsForSelection(m, sel.type);
-    if (odds == null) return null;
-    const rawStake = Math.round(bankroll * t1Pct / Math.max(tier1Candidates.length, 1));
-    const guardedStake = Math.round(Math.min(
-      rawStake *
-        m._riskPolicy.stakeMultiplier *
-        modeProfile.stakeMultiplier *
-        (modeCalibration.stakeMultiplierAdjustment || 1) *
-        (m._familyCalibration?.stakeMultiplierAdjustment || 1),
-      bankroll * m._riskPolicy.maxSingleStakePct * modeProfile.maxSingleStakePctMultiplier
-    ));
-    return {
-      match: `${m.home} vs ${m.away}`,
-      league: m.league,
-      leagueId: m.leagueId,
-      competitionFamily: m._competitionFamily,
-      kickoffUTC: m.kickoffUTC,
-      selection: sel.label,
-      selectionType: sel.type,
-      confidence: m.decisionProbability || m.confidence,
-      odds: +odds.toFixed(2),
-      stake: guardedStake,
-      potentialReturn: Math.round(guardedStake * odds),
-      potentialProfit: Math.round(guardedStake * (odds - 1)),
-    };
-  }).filter(Boolean);
-
-  // ── TIER 2: Accumulator 2-3 legs, each ≥72% — no fallback forcing ────────
-  const tier2Legs = pool
-    .filter(m => (m.decisionProbability || m.confidence || 0) >= 72 && !tier1Candidates.find(t => t.id === m.id))
-    .slice(0, 3)
-    .filter(m => {
-      const sel = bestSelection(m);
-      return sel && oddsForSelection(m, sel.type) != null;
-    });
-  const tier2Combined = tier2Legs.reduce((acc, m) => {
-    const sel = bestSelection(m);
-    if (!sel) return acc;
-    const legOdds = oddsForSelection(m, sel.type);
-    if (legOdds == null) return acc;
-    return {
-      legs: [...acc.legs, {
-        match: `${m.home} vs ${m.away}`,
-        league: m.league,
-        leagueId: m.leagueId,
-        competitionFamily: m._competitionFamily,
-        kickoffUTC: m.kickoffUTC,
-        selection: sel.label,
-        selectionType: sel.type,
-        confidence: m.decisionProbability || m.confidence,
-        odds: +legOdds.toFixed(2),
-      }],
-      combinedOdds: +(acc.combinedOdds * legOdds).toFixed(2),
-    };
-  }, { legs: [], combinedOdds: 1.0 });
-  const tier2StakeRaw = t2Pct > 0 ? Math.round(bankroll * t2Pct) : 0;
-  const tier2RiskMultiplier = tier2Legs.length > 0
-    ? Math.min(...tier2Legs.map(m => m._riskPolicy.stakeMultiplier * (m._familyCalibration?.stakeMultiplierAdjustment || 1)))
-    : 1;
-  const tier2Stake = Math.round(tier2StakeRaw * tier2RiskMultiplier * modeProfile.stakeMultiplier * (modeCalibration.stakeMultiplierAdjustment || 1));
-  const tier2 = tier2Combined.legs.length >= 2 ? {
-    ...tier2Combined,
-    stake: tier2Stake,
-    potentialReturn: Math.round(tier2Stake * tier2Combined.combinedOdds),
-    potentialProfit: Math.round(tier2Stake * (tier2Combined.combinedOdds - 1)),
-  } : null;
-
-  // ── TIER 3: Value combo 2-4 legs ≥65% and <72% — no fallback forcing ─────
-  const tier3Candidates = pool
-    .filter(m => (m.decisionProbability || m.confidence || 0) >= 65 && (m.decisionProbability || m.confidence || 0) < 72)
-    .filter(m => !tier1Candidates.find(t => t.id === m.id) && !tier2Legs.find(t => t.id === m.id))
-    .slice(0, 4);
-  const tier3Legs = tier3Candidates.map(m => {
-    const sel = bestSelection(m);
-    if (!sel) return null;
-    const odds = oddsForSelection(m, sel.type);
-    if (odds == null) return null;
-    return {
-      match: `${m.home} vs ${m.away}`,
-      league: m.league,
-      leagueId: m.leagueId,
-      competitionFamily: m._competitionFamily,
-      kickoffUTC: m.kickoffUTC,
-      selection: sel.label,
-      selectionType: sel.type,
-      confidence: m.decisionProbability || m.confidence,
-      odds: +odds.toFixed(2),
-    };
-  }).filter(Boolean);
-  const tier3CombinedOdds = +tier3Legs.reduce((acc, l) => acc * l.odds, 1.0).toFixed(2);
-  const tier3StakeRaw = t3Pct > 0 ? Math.round(bankroll * t3Pct) : 0;
-  const tier3RiskMultiplier = tier3Candidates.length > 0
-    ? Math.min(...tier3Candidates.map(m => m._riskPolicy.stakeMultiplier * (m._familyCalibration?.stakeMultiplierAdjustment || 1)))
-    : 1;
-  const tier3Stake = Math.round(tier3StakeRaw * tier3RiskMultiplier * modeProfile.stakeMultiplier * (modeCalibration.stakeMultiplierAdjustment || 1));
-  const tier3 = tier3Legs.length >= 2 ? {
-    legs: tier3Legs,
-    combinedOdds: tier3CombinedOdds,
-    stake: tier3Stake,
-    potentialReturn: Math.round(tier3Stake * tier3CombinedOdds),
-    potentialProfit: Math.round(tier3Stake * (tier3CombinedOdds - 1)),
-  } : null;
-
-  const totalStake = (tier1.reduce((s, t) => s + t.stake, 0)) +
-    (tier2?.stake || 0) + (tier3?.stake || 0);
-  const bestCaseProfit = (tier1.reduce((s, t) => s + t.potentialProfit, 0)) +
-    (tier2?.potentialProfit || 0) + (tier3?.potentialProfit || 0);
-
-  return {
-    tier1,
-    tier2,
-    tier3,
-    summary: {
-      mode: modeProfile.key,
-      modeLabel: modeProfile.label,
-      availableModes: Object.keys(SLIP_MODES),
-      bankroll,
-      targetProfit: DAILY_TARGET_PROFIT,
-      targetBankroll: bankroll + DAILY_TARGET_PROFIT,
-      totalStake,
-      totalStakePercent: +((totalStake / bankroll) * 100).toFixed(1),
-      bestCaseProfit,
-      bestCaseProfitPercent: +((bestCaseProfit / bankroll) * 100).toFixed(1),
-      progressToTargetPct: DAILY_TARGET_PROFIT > 0
-        ? +Math.min((bestCaseProfit / DAILY_TARGET_PROFIT) * 100, 999).toFixed(1)
-        : null,
-      profitGapToTarget: DAILY_TARGET_PROFIT - bestCaseProfit,
-      postMatchCalibration: {
-        updatedAt: postMatchCalibrationStore.updatedAt,
-        totalSettled: postMatchCalibrationStore.totalSettled,
-        mode: modeCalibration,
-      },
-      allocation: { tier1: Math.round(t1Pct * 100), tier2: Math.round(t2Pct * 100), tier3: Math.round(t3Pct * 100) },
-    },
-    generatedAt: new Date().toISOString(),
+  const candidates = eligibleTicketCandidates(calibrationStore.matches).filter(c => {
+    const family = detectCompetitionContext(c._match).family;
+    const policy = getCompetitionRiskPolicy(family);
+    return c.probability01 * 100 >= Math.max(52,policy.confidenceFloor + modeProfile.confidenceFloorAdjustment);
+  });
+  const singles = candidates.filter(c=>c.probability01 >= .85).slice(0,3);
+  const used = new Set(singles.map(c=>String(c.fixtureId)));
+  const double = chooseCombination(candidates,2,used);
+  if (double) double.legs.forEach(l=>used.add(String(l.fixtureId)));
+  const treble = chooseCombination(candidates,3,used);
+  const weights = applyModeAllocation({ tier1: bankroll < 20000 ? .50 : .35, tier2: bankroll < 20000 ? .10 : .25, tier3: bankroll < 20000 ? 0 : .10 },modeProfile);
+  const allocationTotal = weights.tier1 + weights.tier2 + weights.tier3;
+  const allocationScale = allocationTotal > .60 ? .60 / allocationTotal : 1;
+  const clean = ({ _match, ...leg }) => leg;
+  const applyStake = (item, amount) => {
+    const odds = item.combinedOdds ?? item.odds;
+    const stake = Math.max(0,Math.floor(amount));
+    return { ...item, stake, potentialReturn: Math.round(stake*odds), potentialProfit: Math.round(stake*(odds-1)) };
   };
+  const tier1 = singles.map(c=>{
+    const risk = getCompetitionRiskPolicy(detectCompetitionContext(c._match).family);
+    return applyStake(clean(c),Math.min(bankroll*weights.tier1*allocationScale/Math.max(singles.length,1),bankroll*risk.maxSingleStakePct));
+  });
+  const tier2 = double ? applyStake({ ...double, legs: double.legs.map(clean) },bankroll*weights.tier2*allocationScale) : null;
+  const tier3 = treble && weights.tier3 > 0 ? applyStake({ ...treble, legs: treble.legs.map(clean) },bankroll*weights.tier3*allocationScale) : null;
+  const items = [...tier1,tier2,tier3].filter(Boolean);
+  const totalStake = items.reduce((s,t)=>s+t.stake,0), bestCaseProfit = items.reduce((s,t)=>s+t.potentialProfit,0);
+  return { tier1,tier2,tier3,pool:candidates.length,minimumCombinedProbability:MIN_COMBINED_PROBABILITY,
+    probabilityMethod:'FRECHET_LOWER_BOUND',odds:getPrematchOddsStatus(),
+    summary: { mode:modeProfile.key,modeLabel:modeProfile.label,availableModes:Object.keys(SLIP_MODES),bankroll,
+      totalStake,totalStakePercent:+(100*totalStake/bankroll).toFixed(1),bestCaseProfit,bestCaseProfitPercent:+(100*bestCaseProfit/bankroll).toFixed(1),
+      allocation:Object.fromEntries(Object.entries(weights).map(([k,v])=>[k,Math.round(v*allocationScale*100)])) },
+    generatedAt:new Date().toISOString() };
 }
 
 // ─── REST API ENDPOINTS ────────────────────────────────────────────────────
@@ -2769,21 +2656,7 @@ app.get('/api/debug/upcoming-sources', async (req, res) => {
 
 // ─── V10.5B PREDICTION LEDGER ──────────────────────────────────────────────
 
-function finalScoreFromProviderFixture(raw = {}) {
-  const status = String(raw?.fixture?.status?.short || '').toUpperCase();
-  if (!['FT', 'AET', 'PEN'].includes(status)) return null;
 
-  const h = raw?.score?.fulltime?.home;
-  const a = raw?.score?.fulltime?.away;
-  if (Number.isFinite(Number(h)) && Number.isFinite(Number(a))) {
-    return { home: Number(h), away: Number(a), status };
-  }
-
-  if (status === 'FT' && Number.isFinite(Number(raw?.goals?.home)) && Number.isFinite(Number(raw?.goals?.away))) {
-    return { home: Number(raw.goals.home), away: Number(raw.goals.away), status };
-  }
-  return null;
-}
 
 async function fetchFinishedFixturesForUtcDate(dateStamp) {
   if (!API_KEY || shouldSkipApiCalls()) return [];
@@ -2948,16 +2821,23 @@ app.get('/api/predictions', async (req, res) => {
 
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 250, 1), 500);
-    const snapshot = await db.collection('predictions')
-      .orderBy('predictedAt', 'desc')
-      .limit(limit)
-      .get();
-    const predictions = snapshot.docs.map((d) =>
+    let query = db.collection('predictions').orderBy('predictedAt','desc');
+    if (req.query.cursor) {
+      const cursorId = String(req.query.cursor);
+      if (cursorId.includes('/') || cursorId.length > 200) return res.status(400).json({ error:'Invalid cursor' });
+      const cursor = await db.collection('predictions').doc(cursorId).get();
+      if (!cursor.exists) return res.status(400).json({ error:'Cursor unavailable' });
+      query = query.startAfter(cursor);
+    }
+    const snapshot = await query.limit(limit + 1).get();
+    const page = snapshot.docs.slice(0,limit);
+    const predictions = page.map((d) =>
       normalizePredictionLedgerDocument({ predictionId: d.id, ...d.data() })
     );
     res.json({
       predictions,
       summary: summarizePredictionDocuments(predictions),
+      pagination: { hasMore:snapshot.docs.length > limit, nextCursor:snapshot.docs.length > limit ? page[page.length-1].id : null },
     });
   } catch (err) {
     console.error('[PredictionLedger] Read failed:', err.message);
@@ -3222,11 +3102,14 @@ app.get('/api/bets', async (req, res) => {
 });
 
 // ── Bet slip tier suggestions ─────────────────────────────────────────────
-app.get('/api/bets/slips', (req, res) => {
-  const bankroll = Number(req.query.bankroll) || BANKROLL;
-  const mode = req.query.mode || 'balanced';
-  const slips = generateBetSlips(bankroll, mode);
-  res.json(slips);
+app.get('/api/odds/status', (req,res) => res.json(getPrematchOddsStatus()));
+app.get('/api/bets/slips', async (req, res) => {
+  try {
+    if (!oddsShortlistInFlight) oddsShortlistInFlight = enrichOddsShortlist(calibrationStore.matches, 16).finally(() => { oddsShortlistInFlight = null; });
+    await oddsShortlistInFlight;
+    const bankroll = Math.max(1, Math.min(Number(req.query.bankroll) || BANKROLL, 1e9));
+    res.json(generateBetSlips(bankroll,req.query.mode || 'balanced'));
+  } catch (err) { res.status(500).json({ error:'Bet Desk refresh unavailable.' }); }
 });
 
 app.post('/api/bets', async (req, res) => {
@@ -3525,7 +3408,7 @@ app.get('/api/bets/patterns', async (req, res) => {
     });
   }
 
-  const MIN_SAMPLE = 5;
+  const MIN_SAMPLE = 100;
 
   function groupStats(items) {
     const won = items.filter(b => b.result === 'won').length;
@@ -3552,13 +3435,13 @@ app.get('/api/bets/patterns', async (req, res) => {
         message: `${label}: winning ${stats.winRate}% but avg stated confidence ${stats.avgConf}%. Overconfident by ${Math.abs(stats.calibrationGap)}pp.` };
     if (stats.calibrationGap != null && stats.calibrationGap > 20)
       return { severity: 'MEDIUM', type: 'UNDERCONFIDENT', label,
-        message: `${label}: winning ${stats.winRate}% vs ${stats.avgConf}% stated. Consider increasing stake here.` };
+        message: `${label}: ${stats.winRate}% won across ${stats.settled} settled bets; average recorded probability ${stats.avgConf}%.` };
     if (stats.winRate < 35)
       return { severity: 'HIGH', type: 'LOW_HIT_RATE', label,
         message: `${label}: only ${stats.winRate}% win rate over ${stats.settled} bets. Review selection criteria.` };
     if (stats.winRate > 80 && stats.settled >= 8)
       return { severity: 'LOW', type: 'HIGH_HIT_RATE', label,
-        message: `${label}: strong ${stats.winRate}% win rate. This category is outperforming — consider increasing allocation.` };
+        message: `${label}: ${stats.winRate}% won across ${stats.settled} settled bets.` };
     return null;
   }
 
@@ -3581,17 +3464,17 @@ app.get('/api/bets/patterns', async (req, res) => {
   ];
   const betsWithConf = settled.filter(b => b.confidence != null);
   const byConfidenceBand = BANDS.map(({ label, min, max, mid }) => {
-    const items = betsWithConf.filter(b => Number(b.confidence) >= min && Number(b.confidence) <= max);
+    const items = betsWithConf.filter(b => Number(b.confidence) >= min && (max === 100 ? Number(b.confidence) <= 100 : Number(b.confidence) < max + 1));
     if (items.length === 0) return null;
     const stats = groupStats(items);
-    const calibGap = stats.winRate != null ? +(stats.winRate - mid).toFixed(1) : null;
+    const calibGap = stats.calibrationGap;
     const flag = items.length >= MIN_SAMPLE && calibGap != null
       ? (calibGap < -20
           ? { severity: 'HIGH', type: 'OVERCONFIDENT', label: `Band ${label}`,
               message: `At ${label} confidence: winning only ${stats.winRate}%. Model overestimates by ${Math.abs(calibGap)}pp.` }
           : calibGap > 20
           ? { severity: 'MEDIUM', type: 'UNDERCONFIDENT', label: `Band ${label}`,
-              message: `At ${label} confidence: winning ${stats.winRate}% — better than stated. Increase stake here.` }
+              message: `At ${label}: ${stats.winRate}% won across ${stats.settled} settled bets; average recorded probability ${stats.avgConf}%.` }
           : null)
       : null;
     return { band: label, midConf: mid, ...stats, calibrationGapFromBand: calibGap, flag };
@@ -3642,10 +3525,9 @@ app.get('/api/bets/patterns', async (req, res) => {
       overallWinRate,
       avgStatedConfidence: allAvgConf,
       overallCalibrationGap: overallCalGap,
-      calibrationStatus: overallCalGap == null ? 'No confidence data'
-        : overallCalGap < -20 ? '🔴 OVERCONFIDENT — model overstates probability'
-        : overallCalGap > 20  ? '🟡 UNDERCONFIDENT — model understates probability'
-        : '🟢 WELL CALIBRATED',
+      calibrationStatus: overallCalGap == null ? 'Probability unavailable'
+        : settled.length < 100 ? 'COLLECTING RESULTS' : 'RECORDED',
+      forecastMetrics: evaluateForecasts(settled),
       lastUpdated: new Date().toISOString(),
     },
     byBetType,
@@ -3656,9 +3538,7 @@ app.get('/api/bets/patterns', async (req, res) => {
     dataQuality: {
       betsWithConfidence: betsWithConf.length,
       betsWithLeague: settled.filter(b => b.leagueName || b.league).length,
-      note: betsWithConf.length < 10
-        ? 'Calibration improves with more data. Log at least 10 settled bets with confidence scores for meaningful patterns.'
-        : null,
+      note: `${betsWithConf.length} settled bets with recorded probabilities.`,
     },
   });
 });
@@ -4137,41 +4017,12 @@ app.post('/api/analyze', async (req, res) => {
       }
     }
 
-    // ── Step 2: Live xG projection ───────────────────────────────────────────
-    // Only runs when ACTUAL in-match accumulated xG was available (hasLiveXg=true).
-    // Never runs on season-average fallback defaults — those would be squashed by
-    // the Poisson interaction formula (lH = avg² / L) giving absurd λ values.
-    if (isLive && matchMins >= 15 && enriched.hasLiveXg) {
-      const phase = getLivePhase(matchMins);
-      if (phase === 'LATE') {
-        if (enriched.xg?.home > 0) {
-          enriched.homeXgAvg = enriched.xg.home;
-          enriched.awayXgaAvg = enriched.xg.home;
-        }
-        if (enriched.xg?.away > 0) {
-          enriched.awayXgAvg = enriched.xg.away;
-          enriched.homeXgaAvg = enriched.xg.away;
-        }
-      } else {
-        const progress    = Math.min(matchMins / 90, 1.0);
-        const projFactor  = Math.min(90 / matchMins, 3.2);
-        const blendWeight = phase === 'MID' ? Math.min(0.55, progress * 1.05) : Math.min(0.35, progress * 0.8);
-        const project = (v) => v > 0
-          ? Math.min(v * (1 - blendWeight) + v * projFactor * blendWeight, 3.5)
-          : v;
-        enriched.homeXgAvg  = project(enriched.homeXgAvg  || 0);
-        enriched.homeXgaAvg = project(enriched.homeXgaAvg || 0);
-        enriched.awayXgAvg  = project(enriched.awayXgAvg  || 0);
-        enriched.awayXgaAvg = project(enriched.awayXgaAvg || 0);
-      }
-      // Detect early goal for V9 chaos variable
-      const [hG, aG] = (enriched.score || '0-0').split('-').map(n => parseInt(n) || 0);
-      if (hG + aG > 0 && matchMins <= 20) {
-        enriched.earlyGoalScored = true;
-        enriched.earlyGoalMinute = matchMins;
-      }
-    }
+    // Observed cumulative xG stays in enriched.xg; historical per-match averages retain their units.
 
+    if (String(enriched.status || 'NS').toUpperCase() === 'NS' && fixtureId) {
+      enriched.oddsSnapshot = await loadOddsSnapshot(fixtureId);
+      enriched.odds = enriched.oddsSnapshot.status === 'AVAILABLE' ? enriched.oddsSnapshot.odds : null;
+    } else { enriched.odds = null; enriched.oddsSnapshot = null; }
     // ── Step 3: Run V9 engine ────────────────────────────────────────────────
     const analysis = analyzeV9(enriched);
     // A selected game gets checked immediately, rather than waiting its turn in
@@ -4280,7 +4131,7 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       isKnockout: (match.round || '').toLowerCase().includes('knockout') || (match.round || '').toLowerCase().includes('round of') || (match.round || '').toLowerCase().includes('quarter') || (match.round || '').toLowerCase().includes('semi') || (match.round || '').toLowerCase().includes('final'),
       notes: match.notes || '',
       matchType: match.matchType || 'League',
-      status: 'LIVE', matchMinutes: liveMin, score: match.score || '0-0',
+      status: match.status, matchMinutes: liveMin, score: match.score || '0-0',
       gameWeek, totalGW: (totalTeams != null && totalTeams > 1) ? (totalTeams - 1) * 2 : null, totalTeams,
       homePosition, awayPosition, homePoints, awayPoints,
       homeSquadIntegrity, awaySquadIntegrity,
@@ -4294,10 +4145,8 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
       homeLateGoalPct,
       awayLateGoalPct,
       // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
-      homeXgAvg:  liveXgHome > 0 ? liveXgHome : null,
-      awayXgAvg:  liveXgAway > 0 ? liveXgAway : null,
-      homeXgaAvg: liveXgAway > 0 ? liveXgAway : null,
-      awayXgaAvg: liveXgHome > 0 ? liveXgHome : null,
+      homeXgAvg: null, awayXgAvg: null, homeXgaAvg: null, awayXgaAvg: null,
+      xg: match.xg,
       cards: match.cards,
     };
 
@@ -4346,44 +4195,7 @@ app.post('/api/analyze/natural', async (req, res) => {
  * Returns null when fewer than 5 settled bets with confidence exist.
  */
 function computeCalibrationHealth(settledBets) {
-  const withConf = settledBets.filter(b => b.confidence != null && (b.result === 'won' || b.result === 'lost'));
-  if (withConf.length < 5) return null;
-
-  const N = withConf.length;
-  let brierSum = 0, logLossSum = 0, wins = 0;
-  for (const b of withConf) {
-    const p = Math.min(Math.max(Number(b.confidence) / 100, 0.0001), 0.9999);
-    const y = b.result === 'won' ? 1 : 0;
-    brierSum   += (p - y) ** 2;
-    logLossSum += -(y * Math.log(p) + (1 - y) * Math.log(1 - p));
-    if (y) wins++;
-  }
-
-  const brier   = +(brierSum   / N).toFixed(4);
-  const logLoss = +(logLossSum / N).toFixed(4);
-  const winRate = +(wins / N * 100).toFixed(1);
-  const avgConf = +(withConf.reduce((s, b) => s + Number(b.confidence), 0) / N).toFixed(1);
-  const calGap  = +(winRate - avgConf).toFixed(1);
-
-  const brierStatus   = brier   < 0.18 ? '🟢 EXCELLENT' : brier   < 0.22 ? '🟢 GOOD' : brier   < 0.25 ? '🟡 FAIR' : '🔴 POOR';
-  const logLossStatus = logLoss < 0.30 ? '🟢 EXCELLENT' : logLoss < 0.35 ? '🟢 GOOD' : logLoss < 0.40 ? '🟡 FAIR' : '🔴 POOR';
-  const calStatus     = Math.abs(calGap) < 10
-    ? '🟢 WELL CALIBRATED'
-    : calGap < -20 ? '🔴 OVERCONFIDENT'
-    : calGap >  20 ? '🟡 UNDERCONFIDENT'
-    : '🟡 SLIGHT DEVIATION';
-
-  return {
-    sampleSize: N,
-    brierScore: brier,    brierStatus,
-    logLoss,              logLossStatus,
-    winRate,
-    avgStatedConfidence: avgConf,
-    calibrationGap: calGap,
-    calibrationStatus: calStatus,
-    halt:    brier > 0.25 || logLoss > 0.45,
-    caution: brier > 0.22 || logLoss > 0.40,
-  };
+  return evaluateForecasts(settledBets);
 }
 
 /**
@@ -4671,7 +4483,7 @@ async function runCalibration() {
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
         confidence: analysis?.dailySignal?.score ?? 0,
-        decisionProbability: getTopExecutableRecommendation({ home: matchMeta.home, away: matchMeta.away, analysis })?.probability || 0,
+        decisionProbability: analysis.decisionMetrics?.modelProbability?.value ?? 0,
         opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
@@ -4698,6 +4510,10 @@ async function runCalibration() {
         awayGoalsAvgAgainst: matchData.awayGoalsAvgAgainst ?? null,
         homeSampleSize: matchData.homeSampleSize ?? null,
         awaySampleSize: matchData.awaySampleSize ?? null,
+        homeXgAvg: matchData.homeXgAvg ?? null,
+        homeXgaAvg: matchData.homeXgaAvg ?? null,
+        awayXgAvg: matchData.awayXgAvg ?? null,
+        awayXgaAvg: matchData.awayXgaAvg ?? null,
       };
       // Store context adjustments for transparency (null if none applied this cycle)
       matchObj.contextAdjustments = ctxAdj || null;
@@ -4711,6 +4527,8 @@ async function runCalibration() {
       console.warn(`[Calibrate] V9 skip: ${f.match?.home} vs ${f.match?.away}: ${vErr.message}`);
     }
   }
+
+  await enrichOddsShortlist(analyzed, 24);
 
   // V10.5B: freeze one immutable PRE-MATCH snapshot identity for this preparation run.
   // Later live analysis may change, but this original prediction ID never changes.
