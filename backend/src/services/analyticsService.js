@@ -1,3 +1,4 @@
+import { createPrematchOddsService } from './prematchOddsService.js';
 /**
  * Team & H2H Analytics Service
  * Fetches historical data for informed betting decisions
@@ -748,3 +749,13 @@ export async function getTeamInjuries(teamId, leagueId, season = null) {
     return offlineFallback('injuries', teamId, leagueId);
   }
 }
+
+
+// Uses the existing subscription, request pacing and 429 circuit.
+const prematchOdds = createPrematchOddsService({ request: singleFlightGet,
+  available: API_AVAILABLE && String(process.env.ENABLE_PREMATCH_ODDS || 'true') !== 'false',
+  dailyLimit: Math.max(0, Number(process.env.ODDS_DAILY_CALL_BUDGET || 120)),
+  bookmakerId: process.env.ODDS_BOOKMAKER_ID || null,
+});
+export const getPrematchOdds = (fixtureId, options) => prematchOdds.get(fixtureId, options);
+export const getPrematchOddsStatus = () => prematchOdds.status();

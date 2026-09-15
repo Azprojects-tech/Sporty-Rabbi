@@ -18,5 +18,5 @@ export function describeScorePressure(match = {}) {
   if (!score) return 'Score pressure unavailable: verified score missing.';
   const gap = Number(score[1]) - Number(score[2]);
   if (!gap) return 'Scores level: neither team is protecting a lead.';
-  return `${gap > 0 ? match.away : match.home} is chasing ${Math.abs(gap) === 1 ? 'an equaliser' : `a ${Math.abs(gap)}-goal deficit`}; ${gap > 0 ? match.home : match.away} is protecting the lead. This score state does not establish how either team will play.`;
+  return `${gap > 0 ? match.away : match.home} is chasing ${Math.abs(gap) === 1 ? 'an equaliser' : `a ${Math.abs(gap)}-goal deficit`}; ${gap > 0 ? match.home : match.away} is protecting the lead.`;
 }

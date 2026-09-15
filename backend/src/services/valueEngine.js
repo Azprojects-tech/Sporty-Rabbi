@@ -45,7 +45,7 @@ export function evaluateValue({
       decision: DECISION.NEEDS_PRICE,
       reason: 'PRICE_MISSING',
       fairOdds: +fairOdds.toFixed(2),
-      minimumAcceptableOdds: +minimumAcceptableOdds.toFixed(2),
+      minimumAcceptableOdds: Math.ceil((minimumAcceptableOdds - 1e-12) * 100) / 100,
       expectedValue: null,
     };
   }
@@ -55,7 +55,7 @@ export function evaluateValue({
     decision: expectedValue >= minEv ? DECISION.BET : DECISION.NO_BET,
     reason: expectedValue >= minEv ? 'EV_PASS' : 'EV_BELOW_THRESHOLD',
     fairOdds: +fairOdds.toFixed(2),
-    minimumAcceptableOdds: +minimumAcceptableOdds.toFixed(2),
+    minimumAcceptableOdds: Math.ceil((minimumAcceptableOdds - 1e-12) * 100) / 100,
     expectedValue: +expectedValue.toFixed(4),
   };
 }

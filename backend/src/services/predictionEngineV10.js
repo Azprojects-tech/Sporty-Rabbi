@@ -1,5 +1,7 @@
+import { FORECAST_VERSION, LIVE_STATUSES, scoreDistribution, displayProbabilities, remainingForecast, observedNumber } from '../../../shared/forecastMath.js';
+
 /**
- * SportyRabbi V10.1 prediction core.
+ * SportyRabbi V10.6A prediction core.
  *
  * First-principles rules:
  * - Never invent observed football data.
@@ -16,9 +18,8 @@ const AWAY_PRIOR = 0.97;
 const SHRINK_MATCHES = 5;
 
 function finite(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  const n = observedNumber(value);
+  return n != null && n >= 0 ? n : null;
 }
 
 function clamp(value, min, max) {
@@ -96,73 +97,17 @@ function emptyPoisson(reason) {
 }
 
 function matrixFromLambdas(homeLambda, awayLambda, modelBasis) {
-  const lH = clamp(homeLambda, 0.08, 4.5);
-  const lA = clamp(awayLambda, 0.08, 4.5);
-
-  let mass = 0;
-  let homeWin = 0;
-  let draw = 0;
-  let awayWin = 0;
-  let btts = 0;
-  let under15 = 0;
-  let under25 = 0;
-  let under35 = 0;
-  let bestP = -1;
-  let bestScore = '0-0';
-
-  for (let h = 0; h <= 10; h++) {
-    for (let a = 0; a <= 10; a++) {
-      const raw = poisson(lH, h) * poisson(lA, a) * dcTau(h, a, lH, lA);
-      const p = Math.max(raw, 0);
-      mass += p;
-      if (h > a) homeWin += p;
-      else if (h < a) awayWin += p;
-      else draw += p;
-
-      if (h > 0 && a > 0) btts += p;
-      const total = h + a;
-      if (total <= 1) under15 += p;
-      if (total <= 2) under25 += p;
-      if (total <= 3) under35 += p;
-      if (p > bestP) {
-        bestP = p;
-        bestScore = `${h}-${a}`;
-      }
-    }
-  }
-
-  if (mass <= 0) return emptyPoisson('Probability matrix could not be normalised.');
-
-  const pct = (v) => Math.round((v / mass) * 100);
-  const over15 = 100 - pct(under15);
-  const u25 = pct(under25);
-  const o25 = 100 - u25;
-  const over35 = 100 - pct(under35);
-
+  const lH = clamp(homeLambda, 0.08, 4.5), lA = clamp(awayLambda, 0.08, 4.5);
+  const matrix = scoreDistribution(lH, lA, { rho: DC_RHO });
+  if (!matrix) return emptyPoisson('Probability distribution unavailable.');
   return {
-    homeLambda: +lH.toFixed(2),
-    awayLambda: +lA.toFixed(2),
+    homeLambda: lH, awayLambda: lA,
     expectedTotalGoals: +(lH + lA).toFixed(2),
-    probabilities: {
-      over05: Math.round((1 - Math.exp(-(lH + lA))) * 100),
-      over15,
-      over25: o25,
-      over35,
-      under25: u25,
-      btts: pct(btts),
-      homeWin: pct(homeWin),
-      draw: pct(draw),
-      awayWin: pct(awayWin),
-    },
-    likelyScore: {
-      score: bestScore,
-      probability: Math.round((bestP / mass) * 100),
-    },
-    insufficientData: false,
-    modelBasis,
-    assessment:
-      `V10.1 ${modelBasis}: projected ${(lH + lA).toFixed(2)} goals. ` +
-      `1X2 H ${pct(homeWin)}% | D ${pct(draw)}% | A ${pct(awayWin)}%.`,
+    marketProbabilities: matrix.marketProbabilities,
+    probabilities: displayProbabilities(matrix.marketProbabilities),
+    likelyScore: { score: matrix.likelyScore.score, probability: Math.round(matrix.likelyScore.probability01 * 100) },
+    insufficientData: false, modelBasis, marketPeriod: 'REGULATION',
+    assessment: `${modelBasis}: ${(lH + lA).toFixed(2)} expected goals.`,
   };
 }
 
@@ -270,7 +215,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
     if (!exactSeason) missing.push('fixture season');
 
     return {
-      version: 'V10.1',
+      version: FORECAST_VERSION,
       coreReady: false,
       modelBasis: null,
       reliability,
@@ -338,6 +283,22 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
   }
 
   const poissonModel = matrixFromLambdas(homeLambda, awayLambda, modelBasis);
+  const liveStatus = LIVE_STATUSES.has(String(matchData.status || '').toUpperCase());
+  if (liveStatus) {
+    const live = remainingForecast(matchData, poissonModel.homeLambda, poissonModel.awayLambda);
+    poissonModel.live = live;
+    poissonModel.marketProbabilities = live.available ? live.marketProbabilities : {};
+    poissonModel.probabilities = displayProbabilities(poissonModel.marketProbabilities);
+    poissonModel.likelyScore = live.available ? { score: live.likelyScore.score, probability: Math.round(live.likelyScore.probability01 * 100) } : null;
+    poissonModel.liveProjectedFinalScore = live.available ? {
+      score: live.likelyScore.score, remainingLambda: live.remainingLambda,
+      probAnotherGoal: Math.round(live.nextGoal.any * 100), marketPeriod: 'REGULATION', minutesRemaining: live.minutesRemaining,
+    } : null;
+    poissonModel.expectedTotalGoals = live.available ? +live.expectedTotalGoals.toFixed(2) : null;
+    poissonModel.assessment = live.available
+      ? `${live.minute}' played · ${live.minutesRemaining}' regulation remaining. Expected final total: ${live.expectedTotalGoals.toFixed(2)} goals.`
+      : 'Regulation market probabilities unavailable for the current match period.';
+  }
   const primary = primaryPrediction(
     poissonModel.probabilities,
     matchData.home || 'Home',
@@ -375,7 +336,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
   });
 
   return {
-    version: 'V10.1',
+    version: FORECAST_VERSION,
     coreReady: true,
     modelBasis,
     reliability,

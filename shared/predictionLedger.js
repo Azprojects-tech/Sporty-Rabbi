@@ -1,4 +1,5 @@
 import { MARKET, finiteNumberOrNull, recommendationToMarketKey } from './marketKeys.js';
+import { observedNumber } from './forecastMath.js';
 
 export const SETTLEABLE_MARKETS = new Set([
   MARKET.HOME_WIN, MARKET.DRAW, MARKET.AWAY_WIN,
@@ -79,6 +80,9 @@ export function buildPredictionMarkets(match = {}) {
       marketKey,
       selection,
       modelProbability: probability,
+      probability01: rec.probability01 ?? probability / 100,
+      offeredOdds: rec.value?.offeredOdds ?? null,
+      oddsSnapshot: match.oddsSnapshot ?? match.analysis?.oddsSnapshot ?? null,
       confidence: finiteNumberOrNull(rec?.confidence) ?? probability,
       tier: finiteNumberOrNull(rec?.tier),
       decisionState: rec?.decisionState || null,
@@ -95,7 +99,7 @@ export function buildPredictionMarkets(match = {}) {
     : winCall?.outcome === 'AWAY'
       ? MARKET.AWAY_WIN
       : null;
-  const winProbability = finiteNumberOrNull(winCall?.confidence);
+  const winProbability = finiteNumberOrNull(winCall?.modelProbability ?? winCall?.confidence);
 
   if (winMarketKey && winProbability != null && !seen.has(winMarketKey)) {
     seen.add(winMarketKey);
@@ -108,9 +112,12 @@ export function buildPredictionMarkets(match = {}) {
           : String(match.away || 'Away') + ' Win')
       ),
       modelProbability: winProbability,
+      probability01: winCall.probability01 ?? winProbability / 100,
+      offeredOdds: null,
+      oddsSnapshot: match.oddsSnapshot ?? match.analysis?.oddsSnapshot ?? null,
       confidence: winProbability,
       tier: null,
-      decisionState: null,
+      decisionState: winCall.decisionState || null,
       evidence: null,
       source: 'WIN_CALL',
       result: 'pending',
@@ -130,7 +137,7 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
   if (markets.length === 0) return null;
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     predictionId,
     snapshotType: 'PRE_MATCH',
     matchId: match.id,
@@ -145,6 +152,17 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
     preparedDateUK,
     predictedAt,
     analysisVersion: match.analysis?.analysisVersion || null,
+    modelState: {
+      homeLambda: observedNumber(match.analysis?.poisson?.homeLambda),
+      awayLambda: observedNumber(match.analysis?.poisson?.awayLambda),
+      marketProbabilities: match.analysis?.poisson?.marketProbabilities || null,
+      marketPeriod: match.analysis?.poisson?.marketPeriod || 'REGULATION',
+    },
+    forecastInputs: Object.fromEntries([
+      'season','homeGoalsAvgFor','homeGoalsAvgAgainst','awayGoalsAvgFor','awayGoalsAvgAgainst',
+      'homeXgAvg','homeXgaAvg','awayXgAvg','awayXgaAvg','homeSampleSize','awaySampleSize',
+      'homeForm','awayForm','homeTeamId','awayTeamId',
+    ].map(key => [key, match.calibratedInputs?.[key] ?? match[key] ?? null])),
     dailySignal: match.analysis?.dailySignal || match.dailySignal || null,
     markets,
     settlementStatus: 'PENDING',
@@ -174,9 +192,9 @@ export function normalizePredictionLedgerDocument(doc = {}) {
 }
 
 export function settleMarketPrediction(marketKey, homeGoals, awayGoals) {
-  const h = Number(homeGoals);
-  const a = Number(awayGoals);
-  if (!Number.isFinite(h) || !Number.isFinite(a)) return null;
+  const h = observedNumber(homeGoals);
+  const a = observedNumber(awayGoals);
+  if (![h,a].every(n => Number.isInteger(n) && n >= 0)) return null;
   const total = h + a;
 
   switch (marketKey) {

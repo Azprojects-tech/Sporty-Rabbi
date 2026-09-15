@@ -1,3 +1,4 @@
+import { remainingForecast, observedNumber, LIVE_STATUSES } from '../../../shared/forecastMath.js';
 /**
  * Live Match Analytics Service
  * Real-time next goal prediction & momentum meter (zero AI cost)
@@ -14,79 +15,28 @@ function finiteObserved(value) {
  * Based on: xG, shots on target, conversion rate, time elapsed
  */
 export function calculateNextGoalProbability(match) {
-  try {
-    if (!match || match.status !== 'LIVE') {
-      return { error: 'Match not live' };
-    }
-
-    const homeShots = finiteObserved(match.shots?.home);
-    const awayShots = finiteObserved(match.shots?.away);
-    const homeXG = finiteObserved(match.xg?.home);
-    const awayXG = finiteObserved(match.xg?.away);
-    const homeConvPct = finiteObserved(match.homeConversionPct);
-    const awayConvPct = finiteObserved(match.awayConversionPct);
-    const minsElapsed = finiteObserved(match.matchMinutes);
-
-    const scoreMatch = typeof match.score === 'string'
-      ? match.score.trim().match(/^(\d+)\s*-\s*(\d+)$/)
-      : null;
-
-    if (
-      homeShots == null || awayShots == null ||
-      homeXG == null || awayXG == null ||
-      homeConvPct == null || awayConvPct == null ||
-      minsElapsed == null || minsElapsed <= 0 ||
-      !scoreMatch
-    ) {
-      return { error: 'Missing verified live evidence' };
-    }
-
-    const minutesRemaining = Math.max(1, 90 - minsElapsed);
-    const homeXgRate = homeXG / minsElapsed;
-    const awayXgRate = awayXG / minsElapsed;
-
-    // No cross-league/default conversion assumptions: use only verified team rates.
-    const homeConvRate = Math.max(0, homeConvPct) / 100;
-    const awayConvRate = Math.max(0, awayConvPct) / 100;
-    const homeShotXg = homeShots * homeConvRate;
-    const awayShotXg = awayShots * awayConvRate;
-
-    const rawHomeLambda = ((homeXgRate * 0.7) + ((homeShotXg / minsElapsed) * 0.3)) * minutesRemaining;
-    const rawAwayLambda = ((awayXgRate * 0.7) + ((awayShotXg / minsElapsed) * 0.3)) * minutesRemaining;
-    const homeLambda = Math.min(Math.max(rawHomeLambda, 0), 4.0);
-    const awayLambda = Math.min(Math.max(rawAwayLambda, 0), 4.0);
-
-    const homeNextGoalProb = Math.min(+((1 - Math.exp(-homeLambda)) * 100).toFixed(1), 95);
-    const awayNextGoalProb = Math.min(+((1 - Math.exp(-awayLambda)) * 100).toFixed(1), 95);
-
-    const totalGoals = Number(scoreMatch[1]) + Number(scoreMatch[2]);
-    const goalsPerMinute = totalGoals / minsElapsed;
-    const xgBasedFinal = (homeXG + awayXG) * (90 / minsElapsed);
-    const projectedFinalGoals = (goalsPerMinute * 90 * 0.5) + (xgBasedFinal * 0.5);
-
-    return {
-      nextGoal: {
-        home: {
-          probability: homeNextGoalProb,
-          reasoning: `${homeShots} shots, xG ${homeXG.toFixed(1)}`,
-        },
-        away: {
-          probability: awayNextGoalProb,
-          reasoning: `${awayShots} shots, xG ${awayXG.toFixed(1)}`,
-        },
-      },
-      goalPace: {
-        currentGoalRate: goalsPerMinute.toFixed(2),
-        projectedFinalGoals: projectedFinalGoals.toFixed(1),
-        over25Likely: projectedFinalGoals > 2.5,
-        over15Likely: projectedFinalGoals > 1.5,
-      },
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error) {
-    console.error('Error calculating next goal:', error.message);
-    return { error: 'Could not calculate probability' };
+  if (!match || !LIVE_STATUSES.has(String(match.status).toUpperCase())) return { error: 'Match not live' };
+  const core = match.analysis?.poisson;
+  let homeRate = observedNumber(core?.homeLambda), awayRate = observedNumber(core?.awayLambda);
+  let modelBasis = 'SHARED_TEAM_RATE_CORE';
+  if (homeRate == null || awayRate == null) {
+    const minute = observedNumber(match.matchMinutes);
+    const values = [match.shots?.home, match.shots?.away, match.xg?.home, match.xg?.away, match.homeConversionPct, match.awayConversionPct].map(observedNumber);
+    if (!(minute > 0) || values.some(n => n == null || n < 0)) return { error: 'Missing verified live evidence' };
+    const [hs, as, hx, ax, hc, ac] = values;
+    homeRate = Math.min(20, (.7 * hx + .3 * hs * hc / 100) / minute * 90);
+    awayRate = Math.min(20, (.7 * ax + .3 * as * ac / 100) / minute * 90);
+    modelBasis = 'OBSERVED_LIVE_RATE';
   }
+  const forecast = remainingForecast(match, homeRate, awayRate);
+  if (!forecast.available) return { error: 'Regulation probability unavailable', reason: forecast.reason };
+  const result = side => ({ probability: +(forecast.nextGoal[side] * 100).toFixed(1),
+    probability01: forecast.nextGoal[side], reasoning: `${forecast.minutesRemaining}' regulation remaining.` });
+  return { nextGoal: { home: result('home'), away: result('away'), none: result('none') },
+    goalPace: { currentGoalRate: ((forecast.homeGoals + forecast.awayGoals) / Math.max(forecast.minute,1)).toFixed(2),
+      projectedFinalGoals: forecast.expectedTotalGoals.toFixed(1), over25Likely: forecast.marketProbabilities.over25 > .5,
+      over15Likely: forecast.marketProbabilities.over15 > .5 },
+    modelBasis, marketPeriod: 'REGULATION', timestamp: new Date().toISOString() };
 }
 
 /**
@@ -178,8 +128,8 @@ export function calculateMomentum(match) {
 
 function getTrendInsight(trend, homePercent, awayPercent) {
   const insights = {
-    'home-surging': `🔥 Home team is dominating (${homePercent}% momentum) - high goal probability!`,
-    'away-surging': `🔥 Away team is dominating (${awayPercent}% momentum) - high goal probability!`,
+    'home-surging': `🔥 Home team is dominating (${homePercent}% momentum).`,
+    'away-surging': `🔥 Away team is dominating (${awayPercent}% momentum).`,
     'home-dominant': `💪 Home team has advantage (${homePercent}% momentum)`,
     'away-dominant': `💪 Away team has advantage (${awayPercent}% momentum)`,
     balanced: `⚖️ Evenly matched. Watch for momentum shifts.`,
@@ -220,7 +170,7 @@ export function calculateGoalFestSignal(match) {
     const missing = [minute == null || minute <= 0 ? 'match minute' : null, !scoreMatch ? 'score' : null,
       hs == null || as == null ? 'shots on target' : null, hx == null || ax == null ? 'xG' : null].filter(Boolean);
     return { active:false, level:'NONE', score:null, status:'INSUFFICIENT_DATA', minute:minute ?? null, evaluatedAt, observedScore,
-      summary:`Goal Fest unavailable: verified ${missing.join(', ')} missing. No signal is inferred.` };
+      summary:`Goal Fest unavailable: verified ${missing.join(', ')} missing.` };
   }
 
   if (minute < 12) {

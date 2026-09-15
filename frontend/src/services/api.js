@@ -74,7 +74,7 @@ export const apiService = {
     const params = {};
     if (bankroll) params.bankroll = bankroll;
     if (mode) params.mode = mode;
-    return client.get('/bets/slips', { params });
+    return client.get('/bets/slips', { params, timeout: 20000 });
   },
 
   // Stats
@@ -226,4 +226,3 @@ export function off(eventType, callback) {
 }
 
 export default apiService;
-

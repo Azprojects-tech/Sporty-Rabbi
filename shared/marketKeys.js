@@ -54,6 +54,7 @@ export function recommendationToMarketKey(recommendation, context = {}) {
   const home = String(context.home || '').toLowerCase();
   const away = String(context.away || '').toLowerCase();
 
+  if (Object.values(MARKET).includes(recommendation?.marketKey) && upperType !== 'NO_BET') return recommendation.marketKey;
   if (!type && !selection) return null;
   if (upperType === 'NO_BET' || selection.includes('no bet')) return null;
   if (upperType === 'SNIPER_WATCH' || upperType === 'WATCH_LIVE') return null;
@@ -98,10 +99,12 @@ export function recommendationToMarketKey(recommendation, context = {}) {
 export function getTopExecutableRecommendation(match = {}) {
   const recs = Array.isArray(match.analysis?.recommendations) ? match.analysis.recommendations : [];
   for (const rec of recs) {
+    if (rec?.decisionState !== 'BET' || rec?.value?.decision === 'NO_BET') continue;
     const marketKey = recommendationToMarketKey(rec, { home: match.home, away: match.away });
     if (!marketKey) continue;
-    const probability = finiteNumberOrNull(rec.confidence);
-    if (probability == null) continue;
+    const fraction = finiteNumberOrNull(rec.probability01);
+    const probability = fraction == null ? finiteNumberOrNull(rec.modelProbability) : fraction * 100;
+    if (probability == null || probability <= 0 || probability >= 100) continue;
     return { recommendation: rec, marketKey, probability };
   }
   return null;
