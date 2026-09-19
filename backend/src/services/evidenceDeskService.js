@@ -77,6 +77,14 @@ export function buildEvidenceDesk(analysis = {}, match = {}, evidence = {}, now 
       key === 'p13_squad' ? 'Configured competition profile' : 'Fixture analysis inputs; checked '+(analysis.analysisTimestamp || 'Unavailable'),
       key === 'p7_poisson' ? 'Generates market probabilities' : key === 'p12_market' ? 'Price comparison; price also controls ticket eligibility' : 'Context indicator; its score is not a probability multiplier');
   }
+  const trace = analysis.forecastContract;
+  if (trace) panels.unshift(card('engine-inputs','What drives this forecast',trace.modelBasis || 'Unavailable',[
+    row('Model version',trace.modelVersion),row('Probability calibration',trace.probabilityCalibration),
+    ...Object.entries(trace.inputsUsed).map(([key,used])=>row(key,used ? 'Used by forecast' : 'Not used by forecast')),
+    row('Live xG observed',trace.liveEvidence ? `${trace.liveEvidence.xg.home ?? 'Unavailable'} / ${trace.liveEvidence.xg.away ?? 'Unavailable'}` : null),
+    row('Live statistics checked',trace.liveEvidence?.observedAt)],
+    'Market probabilities come from one score distribution. Context cards describe available evidence; they do not add independent percentage bonuses.',
+    'Shared forecast contract','Identifies the inputs actually used'));
   const cutoff = Math.min(stamp(match.kickoffUTC) ?? now, now);
   for (const side of ['home','away']) {
     const id = match[`${side}TeamId`], name = match[side] || side, info = evidence[side] || {};

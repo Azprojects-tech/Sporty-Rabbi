@@ -1,5 +1,5 @@
 // Probabilities are fractions here. Presentation code alone rounds percentages.
-export const FORECAST_VERSION = 'V10.6A-Coherent-Core';
+export const FORECAST_VERSION = 'V10.6C-Unified-Decisions';
 export const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
 
 export function observedNumber(value) {

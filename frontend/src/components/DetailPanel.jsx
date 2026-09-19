@@ -570,8 +570,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
               <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Data completeness from resolved input coverage.">
                 Data {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataCompletenessLabel ? ` (${dataCompletenessLabel})` : ''}
               </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Recommendation confidence after probability + data quality checks.">
-                Rec {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}%` : 'Unavailable'}{recommendationConfidenceLabel ? ` (${recommendationConfidenceLabel})` : ''}
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Evidence quality score from available historical inputs.">
+                Evidence {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}{recommendationConfidenceLabel ? ` (${recommendationConfidenceLabel})` : ''}
               </span>
               <span style={{ fontSize: 11, fontWeight: 800, color: decisionStatusStyle.color, background: decisionStatusStyle.bg, border: `1px solid ${decisionStatusStyle.border}`, borderRadius: 4, padding: '2px 6px' }} title={decisionStatusObj?.reason || 'Decision status'}>
                 {decisionStatus.replace('_', ' ')}
@@ -639,8 +639,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             AGENT RECOMMENDATION
           </div>
           <div style={{ fontSize: 10, color: '#8b9ab3', marginBottom: 8, lineHeight: 1.5 }}>
-            Signal strength, model probability, data completeness, recommendation confidence, and decision status are separated.
-            Signal: {modelSignalScore}% | Model P: {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'} | Rec: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}%` : 'Unavailable'}
+            Model probability, evidence quality and price decision.
+            Signal: {modelSignalScore}/100 | Model P: {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'} | Evidence: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}
           </div>
           {decisionStatusObj?.reason && (
             <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8 }}>
@@ -664,6 +664,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
               {playedMessage}
             </div>
           )}
+          {analysis?.marketSummary && (
+            <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.6,marginBottom:8}}>
+              <div>Most likely: {analysis.marketSummary.mostLikely?.selection || 'Unavailable'}</div>
+              <div>Best priced opportunity: {analysis.marketSummary.bestPriced?.selection || 'No qualifying price'}</div>
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {topPicks.map((r, i) => (
               <div key={i} style={{
@@ -683,12 +689,16 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                   </span>
                   <span style={{ fontSize: 9, color: '#4a5568' }}>&middot;</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: scoreColor(r.confidence) }}>
-                    {r.confidence}% signal confidence
+                    {r.modelProbability == null ? 'Probability unavailable' : `${r.confidence}% model probability`}
                   </span>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 800, color: '#e2e8f0', marginBottom: 5, lineHeight: 1.3 }}>
                   &rsaquo; {r.selection}
                 </div>
+                {r.marketKey && <div style={{fontSize:10,color:'#94a3b8',marginBottom:5}}>
+                  {r.decisionState === 'BET' ? 'Price qualifies' : r.decisionState === 'NEEDS_PRICE' ? 'Price required' : 'Outside selection criteria'}
+                  {r.value?.minimumAcceptableOdds != null ? ` · Minimum odds ${r.value.minimumAcceptableOdds.toFixed(2)}` : ''}
+                </div>}
                 {r.logic && (
                   <div style={{ fontSize: 11, color: '#6b7d96', lineHeight: 1.5 }}>
                     {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
