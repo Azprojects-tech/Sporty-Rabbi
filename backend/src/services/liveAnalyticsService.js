@@ -17,17 +17,9 @@ function finiteObserved(value) {
 export function calculateNextGoalProbability(match) {
   if (!match || !LIVE_STATUSES.has(String(match.status).toUpperCase())) return { error: 'Match not live' };
   const core = match.analysis?.poisson;
-  let homeRate = observedNumber(core?.homeLambda), awayRate = observedNumber(core?.awayLambda);
-  let modelBasis = 'SHARED_TEAM_RATE_CORE';
-  if (homeRate == null || awayRate == null) {
-    const minute = observedNumber(match.matchMinutes);
-    const values = [match.shots?.home, match.shots?.away, match.xg?.home, match.xg?.away, match.homeConversionPct, match.awayConversionPct].map(observedNumber);
-    if (!(minute > 0) || values.some(n => n == null || n < 0)) return { error: 'Missing verified live evidence' };
-    const [hs, as, hx, ax, hc, ac] = values;
-    homeRate = Math.min(20, (.7 * hx + .3 * hs * hc / 100) / minute * 90);
-    awayRate = Math.min(20, (.7 * ax + .3 * as * ac / 100) / minute * 90);
-    modelBasis = 'OBSERVED_LIVE_RATE';
-  }
+  const homeRate = observedNumber(core?.homeLambda), awayRate = observedNumber(core?.awayLambda);
+  const modelBasis = 'SHARED_TEAM_RATE_CORE';
+  if (homeRate == null || awayRate == null) return { error: 'Shared team-rate forecast unavailable' };
   const forecast = remainingForecast(match, homeRate, awayRate);
   if (!forecast.available) return { error: 'Regulation probability unavailable', reason: forecast.reason };
   const result = side => ({ probability: +(forecast.nextGoal[side] * 100).toFixed(1),
@@ -45,7 +37,7 @@ export function calculateNextGoalProbability(match) {
  */
 export function calculateMomentum(match) {
   try {
-    if (!match || match.status !== 'LIVE') {
+    if (!match || !['LIVE','1H','2H'].includes(String(match.status).toUpperCase())) {
       return { error: 'Match not live' };
     }
 

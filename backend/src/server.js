@@ -1,3 +1,5 @@
+import { phaseBlendCountRate } from '../../shared/liveEvidenceRates.js';
+import { refreshLiveForecast } from './services/liveForecastRefreshService.js';
 import { createHash } from 'node:crypto';
 import { captureDisplayedOdds } from '../../shared/playedBetEvidence.js';
 import { createPlayedBetSettler } from './services/playedBetSettlementService.js';
@@ -1186,11 +1188,7 @@ function getLivePhase(matchMinutes = 0) {
 }
 
 function phaseBlendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength) {
-  if (liveCount == null || liveCount <= 0) return seasonAvg;
-  const phase = getLivePhase(elapsedMin);
-  if (phase === 'LATE') return liveCount;
-  if (phase === 'MID') return blendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength);
-  return blendCountStat(seasonAvg, liveCount, elapsedMin, priorStrength * 1.8);
+  return phaseBlendCountRate(seasonAvg, liveCount, elapsedMin, priorStrength);
 }
 
 function phaseBlendPctStat(seasonAvg, livePct, elapsedMin, priorStrength) {
@@ -1321,18 +1319,27 @@ async function analyzeMatch(match) {
           return v == null ? 0 : v;
         };
         const liveElapsed = typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0;
-        return {
+        const current = {
           ...cached.result,
           score: currentScore,
+          status: fixture.status?.short || fixture.status || cached.result.status,
+          homeCards: undefined, awayCards: undefined,
+          liveStatsObservedAt: new Date().toISOString(),
           matchMinutes: liveElapsed || cached.result.matchMinutes,
           possession: { home: getStat(homeStats, 'Ball Possession'), away: getStat(awayStats, 'Ball Possession') },
+          totalShots: { home: getStat(homeStats, 'Total Shots'), away: getStat(awayStats, 'Total Shots') },
           shots:       { home: getStat(homeStats, 'Shots on Goal'),   away: getStat(awayStats, 'Shots on Goal') },
           xg:          { home: getStat(homeStats, 'expected_goals'),  away: getStat(awayStats, 'expected_goals') },
           cards: {
-            home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStatZero(homeStats, 'Red Cards') },
-            away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStatZero(awayStats, 'Red Cards') },
+            home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
+            away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
           },
         };
+        const refreshed = refreshLiveForecast(current, cached.result);
+        if (refreshed) return { ...current, ...refreshed,
+          homeCards: { ...current.cards.home, red: current.cards.home.red ?? cached.result.homeCards?.red ?? cached.result.cards?.home?.red ?? null },
+          awayCards: { ...current.cards.away, red: current.cards.away.red ?? cached.result.awayCards?.red ?? cached.result.cards?.away?.red ?? null } };
+
       }
     }
     const teams = match.teams || {};
@@ -1532,6 +1539,7 @@ async function analyzeMatch(match) {
         status: statusStr, // Preserve HT/ET and the actual provider period.
         matchMinutes: liveMin,
         score: `${goals.home || 0}-${goals.away || 0}`,
+        id: fixture.id, xg, shots, liveStatsObservedAt: new Date().toISOString(),
         // ── Live-data blending: Bayesian update of season averages with match evidence ──
         // Pre-match (NS): season avg only. Live: blend decaying toward live observation.
         // See blendCountStat / blendPctStat for derivation and prior-strength rationale.
@@ -1617,7 +1625,10 @@ async function analyzeMatch(match) {
       score: `${goals.home || 0}-${goals.away || 0}`,
       possession,
       shots,
+      totalShots,
       xg,
+      homeCards: cards.home, awayCards: cards.away,
+      liveStatsObservedAt: new Date().toISOString(),
       status: statusStr,
       isLive: normalizedStatus === 'LIVE',
       matchMinutes: liveElapsed || matchMinutesElapsed || 0,
@@ -1758,22 +1769,21 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
           const recentGoalFest = previous?.goalFest && gfAge < GOAL_FEST_SCAN_SECONDS * 1500
             ? previous.goalFest
             : null;
-          if (!previous || previous.score !== lite.score) return lite;
-          if (!previous.analysis) {
-            return recentGoalFest ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
-          }
+          if (!previous) return lite;
+          const refreshed = refreshLiveForecast(lite, previous);
+          if (!refreshed) return previous.score === lite.score && recentGoalFest
+            ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
+          const sameScore = previous.score === lite.score;
           return {
-            ...lite,
-            confidence: previous.confidence ?? lite.confidence,
-            decisionProbability: previous.decisionProbability ?? lite.decisionProbability,
-            opportunities: previous.opportunities || [],
-            possession: previous.possession || lite.possession,
-            shots: previous.shots || lite.shots,
-            xg: previous.xg || lite.xg,
-            goalFest: recentGoalFest || null,
-            analysis: previous.analysis,
+            ...lite, ...refreshed,
+            possession: sameScore ? previous.possession || lite.possession : lite.possession,
+            shots: sameScore ? previous.shots || lite.shots : lite.shots,
+            xg: sameScore ? previous.xg || lite.xg : lite.xg,
+            liveStatsObservedAt: previous.liveStatsObservedAt ?? null,
+            goalFest: sameScore ? recentGoalFest : null,
+            homeCards: previous.homeCards ?? previous.cards?.home ?? null,
+            awayCards: previous.awayCards ?? previous.cards?.away ?? null,
             _lite: false,
-            _staleAnalysis: true,
           };
         });
 
@@ -3773,7 +3783,7 @@ app.get('/api/analyze/narrative/:key', (req, res) => {
  * Required body fields: home, away, leagueId, status
  * Optional enrichment:  homeTeamId, awayTeamId (enables real form/standings)
  */
-app.post('/api/analyze', async (req, res) => {
+async function analyzeFixtureRequest(req, res) {
   try {
     const body = req.body;
     if (!body || typeof body !== 'object') {
@@ -3966,6 +3976,7 @@ app.post('/api/analyze', async (req, res) => {
         const directStats = await fetchFixtureStatistics(fixtureId);
         if (directStats) {
           directFixtureStatsStatus = { status: 'available', source: 'fixture-statistics', reason: null };
+          enriched.liveStatsObservedAt = new Date().toISOString();
           if (directStats.possession?.home != null || directStats.possession?.away != null) {
             enriched.possession = {
               home: directStats.possession?.home ?? enriched.possession?.home ?? null,
@@ -3985,6 +3996,7 @@ app.post('/api/analyze', async (req, res) => {
             };
             enriched.hasLiveXg = true;
           }
+          if (directStats.totalShots) enriched.totalShots = directStats.totalShots;
           if (directStats.cards) {
             enriched.homeCards = directStats.cards.home;
             enriched.awayCards = directStats.cards.away;
@@ -4028,19 +4040,16 @@ app.post('/api/analyze', async (req, res) => {
     // ── Step 2a: Phase-based live shots & possession blending ───────────────
     // EARLY: baseline-heavy, MID: blended, LATE: live-only when available.
     if (isLive) {
-      const hShots = enriched.shots?.home ?? 0;
-      const aShots = enriched.shots?.away ?? 0;
+      const hShots = enriched.totalShots?.home ?? null;
+      const aShots = enriched.totalShots?.away ?? null;
       const hPoss  = enriched.possession?.home ?? null;
-      const norm  = matchMins > 0 ? (90 / matchMins) : 1;
-      if (hShots > 0) {
-        const liveShotsH = hShots * norm;
+      if (hShots != null && hShots >= 0) {
         const baseH = enriched.homeShotsPerGame ?? null;
-        if (baseH != null) enriched.homeShotsPerGame = parseFloat(phaseBlendCountStat(baseH, liveShotsH, matchMins, 180).toFixed(1));
+        if (baseH != null) enriched.homeShotsPerGame = parseFloat(phaseBlendCountStat(baseH, hShots, matchMins, 180).toFixed(1));
       }
-      if (aShots > 0) {
-        const liveShotsA = aShots * norm;
+      if (aShots != null && aShots >= 0) {
         const baseA = enriched.awayShotsPerGame ?? null;
-        if (baseA != null) enriched.awayShotsPerGame = parseFloat(phaseBlendCountStat(baseA, liveShotsA, matchMins, 180).toFixed(1));
+        if (baseA != null) enriched.awayShotsPerGame = parseFloat(phaseBlendCountStat(baseA, aShots, matchMins, 180).toFixed(1));
       }
       if (hPoss != null && hPoss > 0) {
         const basePoss = enriched.homePossession ?? null;
@@ -4081,7 +4090,8 @@ app.post('/api/analyze', async (req, res) => {
     console.error('V10 analysis error:', error.message);
     res.status(500).json({ error: 'Analysis failed', detail: error.message });
   }
-});
+}
+app.post('/api/analyze', analyzeFixtureRequest);
 
 /**
  * GET /api/analyze/live/:matchId
@@ -4090,111 +4100,11 @@ app.post('/api/analyze', async (req, res) => {
  * Otherwise fetches real standings + team stats from API-Football (all cached 1–6 h) and runs V9.
  */
 app.get('/api/analyze/live/:matchId', async (req, res) => {
-  try {
-    const { matchId } = req.params;
-    const match = liveMatches.find((m) => m.id == matchId || m.id === parseInt(matchId));
-    if (!match) return res.status(404).json({ error: 'Match not found in live matches' });
-
-    // Fast path: polling already ran V9 with real data for this match
-    if (match.analysis) return res.json(match.analysis);
-
-    // Slow path: match exists but V9 was skipped — fetch real context and re-run
-    const homeTeamId = match.homeTeamId;
-    const awayTeamId = match.awayTeamId;
-    const leagueId   = match.leagueId;
-
-    const onDemandDisabled = { status: 'rejected', reason: new Error('ON_DEMAND_API_ENRICHMENT_DISABLED') };
-    const [standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = !shouldSkipApiCalls()
-      ? await Promise.allSettled([
-          getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
-          getTeamStatistics(homeTeamId, leagueId, match.season ?? null),
-          getTeamStatistics(awayTeamId, leagueId, match.season ?? null),
-          getTeamInjuries(homeTeamId, leagueId, match.season ?? null, match.id),
-          getTeamInjuries(awayTeamId, leagueId, match.season ?? null, match.id),
-        ])
-      : [onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled];
-
-    let homePosition = null, awayPosition = null, homePoints = null, awayPoints = null, totalTeams = null, gameWeek = null;
-    if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
-      const tms = standingsRes.value.teams;
-      totalTeams = standingsRes.value.totalTeams || null;
-      if (tms[homeTeamId]) { homePosition = tms[homeTeamId].position ?? null; homePoints = tms[homeTeamId].points ?? null; }
-      if (tms[awayTeamId]) { awayPosition = tms[awayTeamId].position ?? null; awayPoints = tms[awayTeamId].points ?? null; }
-      const played = Math.max(tms[homeTeamId]?.played || 0, tms[awayTeamId]?.played || 0);
-      if (played > 0) gameWeek = played;
-    }
-
-    let homeSquadIntegrity = null, awaySquadIntegrity = null;
-    let homeConversionPct = null, awayConversionPct = null;
-    let homeSeasonShots = null, awaySeasonShots = null, homeSeasonPossession = null;
-    let homeLateGoalPct = null, awayLateGoalPct = null;
-    if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
-      const s = hStatsRes.value.stats;
-      if (s.conversionPct != null) homeConversionPct    = s.conversionPct;
-      if (s.avgShotsTotal  >  0)   homeSeasonShots      = s.avgShotsTotal;
-      if (s.avgPossession != null) homeSeasonPossession = s.avgPossession;
-      if (s.lateGoalPct   != null) homeLateGoalPct      = s.lateGoalPct;
-    }
-    if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
-      const s = aStatsRes.value.stats;
-      if (s.conversionPct != null) awayConversionPct = s.conversionPct;
-      if (s.avgShotsTotal  >  0)   awaySeasonShots   = s.avgShotsTotal;
-      if (s.lateGoalPct   != null) awayLateGoalPct   = s.lateGoalPct;
-    }
-    if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.squadIntegrity != null) homeSquadIntegrity = hInjRes.value.squadIntegrity;
-    if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.squadIntegrity != null) awaySquadIntegrity = aInjRes.value.squadIntegrity;
-    let homeKeyAbsences = [], awayKeyAbsences = [];
-    if (hInjRes.status === 'fulfilled' && !hInjRes.value?.offline && hInjRes.value?.keyAbsences?.length) homeKeyAbsences = hInjRes.value.keyAbsences;
-    if (aInjRes.status === 'fulfilled' && !aInjRes.value?.offline && aInjRes.value?.keyAbsences?.length) awayKeyAbsences = aInjRes.value.keyAbsences;
-
-    const liveMin       = match.matchMinutes || 0;
-    const isLive        = match.isLive && liveMin > 0;
-    const livePoss      = match.possession?.home || 0;
-    const liveShotsHome = match.shots?.home || 0;
-    const liveShotsAway = match.shots?.away || 0;
-    const liveXgHome    = match.xg?.home || 0;
-    const liveXgAway    = match.xg?.away || 0;
-    const baseHomeShots = homeSeasonShots ?? null;
-    const baseAwayShots = awaySeasonShots ?? null;
-
-    const matchData = {
-      home: match.home, away: match.away, league: match.league, leagueId,
-      country: match.leagueCountry || '',
-      round: match.round || '',
-      isKnockout: (match.round || '').toLowerCase().includes('knockout') || (match.round || '').toLowerCase().includes('round of') || (match.round || '').toLowerCase().includes('quarter') || (match.round || '').toLowerCase().includes('semi') || (match.round || '').toLowerCase().includes('final'),
-      notes: match.notes || '',
-      matchType: match.matchType || 'League',
-      status: match.status, matchMinutes: liveMin, score: match.score || '0-0',
-      gameWeek, totalGW: (totalTeams != null && totalTeams > 1) ? (totalTeams - 1) * 2 : null, totalTeams,
-      homePosition, awayPosition, homePoints, awayPoints,
-      homeSquadIntegrity, awaySquadIntegrity,
-      homeKeyAbsences, awayKeyAbsences,
-      homeConversionPct, awayConversionPct,
-      homePossession:   isLive && livePoss > 0
-        ? (homeSeasonPossession != null ? phaseBlendPctStat(homeSeasonPossession, livePoss, liveMin, 360) : livePoss)
-        : (homeSeasonPossession ?? null),
-      homeShotsPerGame: isLive && liveShotsHome > 0 && baseHomeShots != null ? phaseBlendCountStat(baseHomeShots, liveShotsHome, liveMin, 180) : baseHomeShots,
-      awayShotsPerGame: isLive && liveShotsAway > 0 && baseAwayShots != null ? phaseBlendCountStat(baseAwayShots, liveShotsAway, liveMin, 180) : baseAwayShots,
-      homeLateGoalPct,
-      awayLateGoalPct,
-      // Use observed live xG directly; null when not yet accumulated (avoids fake tier-bucket defaults)
-      homeXgAvg: null, awayXgAvg: null, homeXgaAvg: null, awayXgaAvg: null,
-      xg: match.xg,
-      cards: match.cards,
-    };
-
-    res.json(analyzeV9(matchData));
-  } catch (error) {
-    console.error('V9 live analysis error:', error.message);
-    res.status(500).json({ error: 'Live analysis failed', detail: error.message });
-  }
+  const match = liveMatches.find(m => String(m.id) === String(req.params.matchId));
+  if (!match) return res.status(404).json({ error:'Match not found in live matches' });
+  return analyzeFixtureRequest({ body:{ ...match, enrich:true } }, res);
 });
 
-/**
- * POST /api/analyze/natural
- * Natural language → Gemini → matchData → V9 analysis + Groq narrative.
- * Body: { query: "Persija is playing now" }
- */
 app.post('/api/analyze/natural', async (req, res) => {
   try {
     const { query } = req.body;

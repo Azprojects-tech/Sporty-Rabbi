@@ -75,7 +75,7 @@ test('direct fixture statistics obey the API quota guard', () => {
 test('exact H2H is fetched only on deliberate match-click enrichment and safely re-oriented', () => {
   const backgroundStart = server.indexOf('async function analyzeMatch(match)');
   const backgroundEnd = server.indexOf('// ─── LIVE POLLER', backgroundStart);
-  const clickStart = server.indexOf("app.post('/api/analyze'");
+  const clickStart = server.indexOf("async function analyzeFixtureRequest");
   const clickEnd = server.indexOf("app.get('/api/analyze/live/", clickStart);
   assert.equal(server.slice(backgroundStart, backgroundEnd).includes('getH2H('), false);
   assert.equal(server.slice(clickStart, clickEnd).includes('getH2H(homeTeamId, awayTeamId)'), true);

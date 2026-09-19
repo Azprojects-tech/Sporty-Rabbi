@@ -50,6 +50,7 @@ test('finished match and stale Goal Fest are not actionable',()=>{
   assert.equal(finished.actionable,false);assert.equal(stale.actionable,false);
 });
 test('score changes drop stale Goal Fest evidence and Goal Fest dedup refreshes within its actionable window',()=>{
-  assert.match(server,/if \(!previous \|\| previous\.score !== lite\.score\) return lite/);
+  assert.match(server,/const sameScore = previous\.score === lite\.score/);
+  assert.match(server,/goalFest: sameScore \? recentGoalFest : null/);
   assert.match(server,/alertPayload\.type === 'GOAL_FEST' \? 10 \* 60 \* 1000/);
 });

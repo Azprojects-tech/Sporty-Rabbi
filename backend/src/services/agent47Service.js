@@ -1,3 +1,5 @@
+import { decideMarkets, summarizeMarketDecisions } from './marketDecisionService.js';
+import { forecastContract } from '../../../shared/forecastContract.js';
 import { FORECAST_VERSION, LIVE_STATUSES } from '../../../shared/forecastMath.js';
 /**
  * ╔══════════════════════════════════════════════════════════╗
@@ -20,10 +22,8 @@ import {
 import {
   finiteNumberOrNull,
   recommendationToMarketKey,
-  offeredOddsForMarket,
 } from '../../../shared/marketKeys.js';
 import { DECISION } from '../../../shared/decisionStates.js';
-import { evaluateValue } from './valueEngine.js';
 import { buildPredictionCore } from './predictionEngineV10.js';
 
 // ─── TIER DEFINITIONS ─────────────────────────────────────────────────────────
@@ -108,103 +108,6 @@ const LEAGUE_GOALS_AVG = {
 };
 export function getLeagueGoalsAvg(leagueId) {
   return LEAGUE_GOALS_AVG[+leagueId] ?? 1.35;
-}
-
-// ─── RESEARCH CONSTANTS (April 2026 end-of-season findings) ───────────────────
-const RESEARCH = {
-  LIGUE1_LATE_GOAL_PCT:         0.30,  // 30% of Ligue 1 goals after 76'
-  RELEGATION_AVG_CONCEDED:      1.95,  // bottom-tier: 1.7–2.2 avg
-  EARLY_GOAL_O35_BOOST:         0.40,  // early goal increases O3.5 by ~40%
-  PSG_TRAP_POSSESSION_THRESHOLD: 70,   // 70%+ possession = stalling xG warning
-  LEAGUE_AVG_GOALS_PER_GAME:    1.35,  // baseline per team
-};
-
-// ─── POISSON HELPERS ──────────────────────────────────────────────────────────
-function factorial(n) {
-  if (n <= 0) return 1;
-  let r = 1;
-  for (let i = 2; i <= Math.min(n, 15); i++) r *= i;
-  return r;
-}
-
-function poissonProb(lambda, k) {
-  if (lambda <= 0) return k === 0 ? 1 : 0;
-  return (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
-}
-
-// Dixon-Coles ρ correction for low-scoring cells (Dixon & Coles, 1997)
-// Corrects Poisson's systematic under-prediction of 0-0, 1-0, 0-1, 1-1 outcomes.
-// ρ = -0.1 is empirically fitted to European football leagues.
-const DC_RHO = -0.1;
-function dcTau(h, a, lH, lA) {
-  if (h === 0 && a === 0) return 1 - lH * lA * DC_RHO;
-  if (h === 1 && a === 0) return 1 + lA * DC_RHO;
-  if (h === 0 && a === 1) return 1 + lH * DC_RHO;
-  if (h === 1 && a === 1) return 1 - DC_RHO;
-  return 1.0;
-}
-
-/** P(total goals > threshold) with Dixon-Coles low-score correction */
-function probOver(lH, lA, threshold) {
-  let pUnder = 0;
-  for (let h = 0; h <= 9; h++) {
-    for (let a = 0; a <= 9; a++) {
-      if (h + a <= threshold) {
-        pUnder += poissonProb(lH, h) * poissonProb(lA, a) * dcTau(h, a, lH, lA);
-      }
-    }
-  }
-  return Math.min(Math.max(1 - pUnder, 0), 1);
-}
-
-/** P(both teams score at least 1 goal) with Dixon-Coles correction */
-function probBTTS(lH, lA) {
-  let p = 0;
-  for (let h = 1; h <= 9; h++) {
-    for (let a = 1; a <= 9; a++) {
-      p += poissonProb(lH, h) * poissonProb(lA, a) * dcTau(h, a, lH, lA);
-    }
-  }
-  return Math.min(Math.max(p, 0), 1);
-}
-
-/** Most statistically likely scoreline */
-function likelyScore(lH, lA) {
-  let best = 0, score = '1-0';
-  for (let h = 0; h <= 5; h++) {
-    for (let a = 0; a <= 5; a++) {
-      const p = poissonProb(lH, h) * poissonProb(lA, a);
-      if (p > best) { best = p; score = `${h}-${a}`; }
-    }
-  }
-  return { score, probability: Math.round(best * 100) };
-}
-
-/**
- * P(leader maintains their goal advantage at full time).
- * Uses independent bivariate Poisson: P(trailer_goals_added - leader_goals_added < diff)
- * where each side follows Pois(remaining_lambda).
- *
- * This is the only scientifically valid way to compute live-match win confidence: it
- * accounts for actual team quality (λ), remaining time, and game-state motivation.
- * A strong trailing team (e.g. Bayern at HT, high λ) correctly shows lower confidence
- * for the leading team — which no hardcoded table can capture.
- *
- * @param {number} lLeader_rem  - Expected goals remaining for the leading team
- * @param {number} lTrailer_rem - Expected goals remaining for the trailing team
- * @param {number} diff         - Current goal gap (integer >= 1)
- */
-function pLeadMaintained(lLeader_rem, lTrailer_rem, diff) {
-  let p = 0;
-  for (let hAdd = 0; hAdd <= 10; hAdd++) {
-    for (let aAdd = 0; aAdd <= 10; aAdd++) {
-      // lead is maintained when trailer fails to close the full gap: aAdd - hAdd < diff
-      if (aAdd - hAdd < diff) {
-        p += poissonProb(lLeader_rem, hAdd) * poissonProb(lTrailer_rem, aAdd);
-      }
-    }
-  }
-  return Math.min(Math.max(p, 0), 1);
 }
 
 // ─── FORM PARSER ──────────────────────────────────────────────────────────────
@@ -390,7 +293,7 @@ function scoreDefensiveGap(homeGAAvg, awayGAAvg, leagueAvgGA = 1.35, homeCBOut =
   };
 }
 
-// P7 — handled via Poisson (see runPoisson, score injected below)
+// P7 — handled via Poisson (shared prediction core, score injected below)
 
 // P8 — xG QUALITY DIFFERENTIAL (directional attacking edge)
 // Scores WHO has the xG advantage, not HOW MUCH xG both teams produce.
@@ -577,56 +480,6 @@ function scoreCrisisMode({
 }
 
 // ─── POISSON PROJECTION ───────────────────────────────────────────────────────
-function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
-  if (hXg == null || aXg == null || hXga == null || aXga == null) {
-    return {
-      homeLambda: null, awayLambda: null,
-      expectedTotalGoals: null,
-      probabilities: { over05: null, over15: null, over25: null, over35: null, btts: null, under25: null, draw: null, homeWin: null, awayWin: null },
-      likelyScore: null,
-      insufficientData: true,
-      assessment: 'Insufficient team statistics for Poisson projection.',
-    };
-  }
-  const L = getLeagueGoalsAvg(leagueId);
-  // Attack strength × opponent defensive weakness
-  const lH = Math.max((hXg / L) * (aXga / L) * L, 0.10);
-  const lA = Math.max((aXg / L) * (hXga / L) * L, 0.10);
-
-  // Full 1X2 probability matrix (home/draw/away) using Dixon-Coles correction.
-  let pHome = 0;
-  let pDraw = 0;
-  let pAway = 0;
-  for (let h = 0; h <= 9; h++) {
-    for (let a = 0; a <= 9; a++) {
-      const p = dcTau(h, a, lH, lA) * poissonProb(lH, h) * poissonProb(lA, a);
-      if (h > a) pHome += p;
-      else if (h < a) pAway += p;
-      else pDraw += p;
-    }
-  }
-
-  const probs = {
-    over05:  Math.round(probOver(lH, lA, 0)  * 100),
-    over15:  Math.round(probOver(lH, lA, 1)  * 100),
-    over25:  Math.round(probOver(lH, lA, 2)  * 100),
-    over35:  Math.round(probOver(lH, lA, 3)  * 100),
-    btts:    Math.round(probBTTS(lH, lA)      * 100),
-    under25: Math.round((1 - probOver(lH, lA, 2)) * 100),
-    draw:    Math.round(pDraw * 100),
-    homeWin: Math.round(pHome * 100),
-    awayWin: Math.round(pAway * 100),
-  };
-
-  const ls = likelyScore(lH, lA);
-  return {
-    homeLambda: +lH.toFixed(2), awayLambda: +lA.toFixed(2),
-    expectedTotalGoals: +(lH + lA).toFixed(2),
-    probabilities: probs,
-    likelyScore: ls,
-    assessment: `Projected ${(lH + lA).toFixed(1)} goals. 1X2: H ${probs.homeWin}% | D ${probs.draw}% | A ${probs.awayWin}%. ${probs.over25}% O2.5. ${probs.btts}% BTTS. Most likely: ${ls.score} (${ls.probability}%).`,
-  };
-}
 
 // ─── CHAOS VARIABLES ──────────────────────────────────────────────────────────
 function evaluateChaos() {
@@ -671,247 +524,12 @@ function tierFromConfidence(conf = 50) {
   return conf >= 85 ? 1 : conf >= 72 ? 2 : conf >= 62 ? 3 : 4;
 }
 
-const STRICT_NO_BET_POLICY = {
-  // V10.1 gates on CORE prediction evidence, not completion of 15 legacy explainers.
-  minQualityPreMatch: 55,
-  minQualityLive: 55,
-  minCoveragePreMatch: 1.0,
-  minCoverageLive: 1.0,
-  minTopConfidencePreMatch: 55,
-  minTopConfidenceLive: 55,
-};
 
-function forceNoBet(reason, analysisQuality = null, baselineConfidence = 50) {
-  const qualityBias = Math.round((analysisQuality?.score ?? baselineConfidence) - 6);
-  const conf = Math.max(38, Math.min(58, qualityBias));
-  const tier = tierFromConfidence(conf);
-  return [{
-    type: 'NO_BET',
-    selection: 'No Bet',
-    confidence: conf,
-    tier,
-    tierName: TIERS[tier].name,
-    logic: reason,
-  }];
-}
 
-function enforceStrictNoBetPolicy(recommendations = [], { analysisQuality = null, status = 'NS' } = {}) {
-  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
 
-  const top = recommendations[0];
-  const isLive = ['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT'].includes(status);
-  const qualityScore = Number(analysisQuality?.score ?? 0);
-  const coverage = Number(analysisQuality?.paramCoverage ?? 0);
-  const directionalStrength = Number(analysisQuality?.directionalStrength ?? 0);
-
-  const minQuality = isLive ? STRICT_NO_BET_POLICY.minQualityLive : STRICT_NO_BET_POLICY.minQualityPreMatch;
-  const minCoverage = isLive ? STRICT_NO_BET_POLICY.minCoverageLive : STRICT_NO_BET_POLICY.minCoveragePreMatch;
-  const minTopConfidence = isLive ? STRICT_NO_BET_POLICY.minTopConfidenceLive : STRICT_NO_BET_POLICY.minTopConfidencePreMatch;
-
-  if (top?.type === 'NO_BET') return recommendations;
-
-  if (qualityScore < minQuality) {
-    return forceNoBet(
-      `Model quality score ${qualityScore} is below execution threshold ${minQuality}. Signal is too weak for a bet.`,
-      analysisQuality,
-      48,
-    );
-  }
-
-  if (analysisQuality?.coreReady === false || coverage < minCoverage) {
-    return forceNoBet(
-      `Core prediction evidence is incomplete (${Math.round(coverage * 100)}% of required goals-rate inputs).`,
-      analysisQuality,
-      50,
-    );
-  }
-
-  if (analysisQuality?.contradiction && top?.type === 'WINS_ONLY' && directionalStrength < 0.67) {
-    return forceNoBet(
-      'Directional signals conflict across key parameters. No Bet enforced instead of forcing a winner pick.',
-      analysisQuality,
-      50,
-    );
-  }
-
-  if (!analysisQuality?.hasPoisson && ['WINS_ONLY', 'NEXT_GOAL', 'SNIPER_WATCH'].includes(top?.type)) {
-    return forceNoBet(
-      'Poisson team-quality projection unavailable for directional market. No Bet enforced.',
-      analysisQuality,
-      49,
-    );
-  }
-
-  if (!top?.evSanity?.evPass && Number(top?.evSanity?.penalty || 0) >= 8) {
-    return forceNoBet(
-      `Market sanity checks flagged the play (penalty ${top.evSanity.penalty}). No Bet enforced.`,
-      analysisQuality,
-      50,
-    );
-  }
-
-  if (Number(top?.confidence || 0) < minTopConfidence) {
-    return forceNoBet(
-      `Best available play is only ${top?.confidence || 0}% confidence, below execution minimum ${minTopConfidence}%.`,
-      analysisQuality,
-      50,
-    );
-  }
-
-  return recommendations;
-}
-
-function fallbackRecommendation({ home, away, overallScore, poisson, p1, p4, p8, analysisQuality = null }) {
-  const probs = poisson?.probabilities || {};
-  const contradiction = Boolean(analysisQuality?.contradiction);
-  const drawProb = Number(probs.draw || 0);
-
-  // True NO_BET mode: low coverage/quality should not force a market pick.
-  if (!analysisQuality || analysisQuality.coreReady === false || (analysisQuality.score ?? 0) < 55) {
-    return {
-      type: 'NO_BET',
-      selection: 'No Bet',
-      confidence: Math.max(35, Math.min(55, Math.round((analysisQuality?.score ?? 50) - 5))),
-      tier: 4,
-      tierName: TIERS[4].name,
-      logic: 'Insufficient or low-quality signal coverage. Better to pass than force a weak play.',
-    };
-  }
-
-  if (contradiction) {
-    if (drawProb >= 30 && (probs.under25 || 0) >= 56) {
-      const conf = Math.max(54, Math.min(84, Math.round(probs.under25)));
-      const tier = tierFromConfidence(conf);
-      return {
-        type: 'GOALS_ONLY',
-        selection: 'Under 2.5 Goals',
-        confidence: conf,
-        tier,
-        tierName: TIERS[tier].name,
-        logic: `Contradictory directional signals. Draw risk ${drawProb}% and U2.5 ${probs.under25}% favor a safer fallback.`,
-      };
-    }
-    if ((probs.over15 || 0) >= 68) {
-      const conf = Math.max(55, Math.min(86, Math.round(probs.over15)));
-      const tier = tierFromConfidence(conf);
-      return {
-        type: 'GOALS_ONLY',
-        selection: 'Over 1.5 Goals',
-        confidence: conf,
-        tier,
-        tierName: TIERS[tier].name,
-        logic: `Contradictory directional signals. Broad-goals fallback selected with O1.5 at ${probs.over15}%.`,
-      };
-    }
-  }
-
-  const fallbackOptions = [
-    { type: 'GOALS_ONLY', selection: 'Over 1.5 Goals', confidence: probs.over15 ?? null, logic: `Fallback by Poisson O1.5 (${probs.over15 ?? 'Unavailable'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: probs.over25 ?? null, logic: `Fallback by Poisson O2.5 (${probs.over25 ?? 'Unavailable'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Under 2.5 Goals', confidence: probs.under25 ?? null, logic: `Fallback by Poisson U2.5 (${probs.under25 ?? 'Unavailable'}%).` },
-    { type: 'GOALS_ONLY', selection: 'Both Teams to Score', confidence: probs.btts ?? null, logic: `Fallback by Poisson BTTS (${probs.btts ?? 'Unavailable'}%).` },
-  ].filter(x => x.confidence != null);
-
-  const directionalEdge = p1?.edge !== 'NEUTRAL' ? p1.edge : (p4?.edge !== 'NEUTRAL' ? p4?.edge : p8?.edge);
-  if (directionalEdge && directionalEdge !== 'NEUTRAL') {
-    const team = directionalEdge === 'HOME' ? home : away;
-    const conf = Math.max(55, Math.min(88, Math.round((overallScore || 50) * 0.9)));
-    fallbackOptions.push({
-      type: 'WINS_ONLY',
-      selection: `${team} Win`,
-      confidence: conf,
-      logic: `Fallback directional lean from motivation/form (${directionalEdge}).`,
-    });
-  }
-
-  if (fallbackOptions.length === 0) {
-    const conf = Math.max(38, Math.min(62, Math.round(overallScore || 55)));
-    return {
-      type: 'NO_BET',
-      selection: 'No Bet',
-      confidence: conf,
-      tier: tierFromConfidence(conf),
-      tierName: TIERS[tierFromConfidence(conf)].name,
-      logic: 'No market crossed reliability threshold after fallback checks.',
-    };
-  }
-
-  const best = fallbackOptions.sort((a, b) => b.confidence - a.confidence)[0];
-  if ((best.confidence ?? 0) < 60) {
-    const conf = Math.max(38, Math.min(60, Math.round(best.confidence || 50)));
-    return {
-      type: 'NO_BET',
-      selection: 'No Bet',
-      confidence: conf,
-      tier: tierFromConfidence(conf),
-      tierName: TIERS[tierFromConfidence(conf)].name,
-      logic: `Best fallback confidence ${best.confidence}% is below execution threshold.`,
-    };
-  }
-  const tier = tierFromConfidence(best.confidence);
-  return {
-    ...best,
-    tier,
-    tierName: TIERS[tier].name,
-  };
-}
-
-function recommendationEVSanity(recommendation, context = {}) {
-  const { poisson, p1, p4, p8 } = context;
-  const probs = poisson?.probabilities || {};
-  const selection = String(recommendation.selection || '').toLowerCase();
-  let penalty = 0;
-  const reasons = [];
-
-  const directionalVotes = [p1?.edge, p4?.edge, p8?.edge];
-  const homeVotes = directionalVotes.filter(v => v === 'HOME').length;
-  const awayVotes = directionalVotes.filter(v => v === 'AWAY').length;
-  const directionalConflict = homeVotes > 0 && awayVotes > 0;
-
-  if (recommendation.type === 'GOALS_ONLY') {
-    if (selection.includes('over 3.5') && (probs.over35 ?? 0) < 34) {
-      penalty += 8;
-      reasons.push(`O3.5 model support only ${probs.over35 ?? 0}%`);
-    }
-    if (selection.includes('over 2.5') && (probs.over25 ?? 0) < 50) {
-      penalty += 10;
-      reasons.push(`O2.5 model support only ${probs.over25 ?? 0}%`);
-    }
-    if (selection.includes('under 2.5') && (probs.under25 ?? 0) < 54) {
-      penalty += 10;
-      reasons.push(`U2.5 model support only ${probs.under25 ?? 0}%`);
-    }
-    if (selection.includes('both teams to score') && (probs.btts ?? 0) < 55) {
-      penalty += 8;
-      reasons.push(`BTTS model support only ${probs.btts ?? 0}%`);
-    }
-  }
-
-  if (recommendation.type === 'WINS_ONLY') {
-    const drawProb = probs.draw ?? 0;
-    if (drawProb >= 31) {
-      penalty += 8;
-      reasons.push(`Draw risk elevated at ${drawProb}%`);
-    }
-    if (directionalConflict) {
-      penalty += 6;
-      reasons.push('Motivation/form/xG directional conflict');
-    }
-    if (selection.includes('home') && awayVotes > homeVotes) {
-      penalty += 8;
-      reasons.push('Directional signals lean away');
-    }
-    if (selection.includes('away') && homeVotes > awayVotes) {
-      penalty += 8;
-      reasons.push('Directional signals lean home');
-    }
-  }
-
-  return {
-    penalty,
-    evPass: penalty <= 6,
-    reasons,
-  };
+function fallbackRecommendation() {
+  return { type:'NO_BET', selection:'No qualifying selection', confidence:null,
+    tier:4, tierName:TIERS[4].name, logic:'No market meets the evidence and probability criteria.' };
 }
 
 function computeAnalysisQuality({ p1, p4, p8, p12, poisson, status, matchMinutes = 0, scalar = 1, paramCoverage = 1 }) {
@@ -962,44 +580,7 @@ function computeAnalysisQuality({ p1, p4, p8, p12, poisson, status, matchMinutes
   };
 }
 
-function recalibrateRecommendations(recommendations = [], analysisQuality) {
-  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
-  return recommendations
-    .map((r) => {
-      let conf = Number(r.confidence || 50);
-      conf *= analysisQuality?.confidenceMultiplier || 1;
 
-      if (analysisQuality?.contradiction && r.type === 'WINS_ONLY') conf -= 6;
-      if ((analysisQuality?.paramCoverage || 1) < 0.75) conf -= 4;
-      if (!analysisQuality?.hasPoisson && (r.type === 'NEXT_GOAL' || r.type === 'SNIPER_WATCH')) conf -= 5;
-
-      const floor = r.type === 'NO_BET' ? 30 : 45;
-      conf = Math.round(Math.max(floor, Math.min(conf, 97)));
-      const tier = tierFromConfidence(conf);
-      return {
-        ...r,
-        confidence: conf,
-        tier,
-        tierName: TIERS[tier].name,
-      };
-    })
-    .sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
-}
-
-function applyRecommendationSanityChecks(recommendations = [], context = {}) {
-  if (!Array.isArray(recommendations) || recommendations.length === 0) return recommendations;
-  return recommendations
-    .map((r) => {
-      const ev = recommendationEVSanity(r, context);
-      return {
-        ...r,
-        // Do not mutate the model probability. Sanity is an execution flag.
-        modelProbability: r.modelProbability ?? r.confidence,
-        evSanity: ev,
-      };
-    })
-    .sort((a, b) => b.confidence - a.confidence || a.tier - b.tier);
-}
 
 function attachEvidenceToRecommendations(recommendations = [], analysisCtx = {}) {
   const {
@@ -1075,24 +656,6 @@ function computeWinCall({ home, away, poisson, recommendations = [] }) {
 }
 
 // ─── BOOKIE EDGE DETECTOR ─────────────────────────────────────────────────────
-function detectBookieEdges(p1, p2, p4, chaos) {
-  const edges = [];
-  if (p2.awayEffective < 60)
-    edges.push(`Star Power — Away team significantly weakened${p2.assessment.includes('missing') ? '. Bookies may be pricing squad at full strength.' : '.'}`);
-  if (p4.home.coiledSpring)
-    edges.push(`Home Coiled Spring — xG overperforming vs actual goals. Bookies price on actual goals; true scoring threat is higher.`);
-  if (p4.away.coiledSpring)
-    edges.push(`Away Coiled Spring — goals overdue for away team. Away goals market may offer value.`);
-  if (p1.home.situation === 'relegation-fight' && p1.away.situation === 'mid-table')
-    edges.push(`Safety Trap — Away side in dead zone, bookies may underestimate home desperation surge.`);
-  if (p1.away.situation === 'relegation-fight' && p1.home.situation === 'mid-table')
-    edges.push(`Desperation Away — Away team fighting for survival, bookies may have them too long.`);
-  if (chaos.psgTrapWarning)
-    edges.push(`PSG Trap — High possession but stalling conversion. Under/draw markets may offer edge.`);
-  if (chaos.mwvIndex > 0.8)
-    edges.push(`MWV ${chaos.mwvLabel} — Draw is a "death sentence" for one/both teams. Draw odds may be inflated.`);
-  return edges;
-}
 
 function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations = [], analysisQuality = null }) {
   const probs = poisson?.probabilities || {};
@@ -1130,14 +693,8 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
         ? 'Medium'
         : 'Low';
 
-  let recommendationConfidence = null;
-  if (topProbability != null && qualityScore != null) {
-    recommendationConfidence = Math.max(0, Math.min(99, Math.round((topProbability * 0.7) + (qualityScore * 0.3))));
-  } else if (topProbability != null) {
-    recommendationConfidence = topProbability;
-  } else if (qualityScore != null) {
-    recommendationConfidence = qualityScore;
-  }
+  // Compatibility field now mirrors evidence quality; never mix it with probability.
+  const recommendationConfidence = qualityScore;
 
   const recommendationConfidenceLabel = recommendationConfidence == null
     ? 'Unknown'
@@ -1191,7 +748,7 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
         recommendationProbability: topProbability,
         qualityScore,
       },
-      meaning: 'Execution confidence after combining market probability with data quality and consistency checks.',
+      meaning: 'Evidence quality score. Market probability is shown separately.',
     },
     decisionStatus: {
       status: decisionStatus,
@@ -1216,60 +773,6 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
   };
 }
 
-function annotateRecommendationDecisions(recommendations = [], { home, away, odds } = {}) {
-  if (!Array.isArray(recommendations)) return [];
-  return recommendations.map((rec) => {
-    if (String(rec?.type || '').toUpperCase() === 'NO_BET') {
-      return {
-        ...rec,
-        marketKey: null,
-        decisionState: DECISION.NO_BET,
-        value: {
-          decision: DECISION.NO_BET,
-          reason: 'MODEL_NO_BET',
-          fairOdds: null,
-          minimumAcceptableOdds: null,
-          offeredOdds: null,
-          expectedValue: null,
-        },
-      };
-    }
-
-    const marketKey = rec.marketKey || recommendationToMarketKey(rec, { home, away });
-    if (!marketKey) {
-      return {
-        ...rec,
-        marketKey: null,
-        decisionState: DECISION.WATCH_LIVE,
-        value: {
-          decision: DECISION.WATCH_LIVE,
-          reason: 'MARKET_UNMAPPED',
-          fairOdds: null,
-          minimumAcceptableOdds: null,
-          offeredOdds: null,
-          expectedValue: null,
-        },
-      };
-    }
-
-    const offeredOdds = offeredOddsForMarket(odds || {}, marketKey);
-    const value = evaluateValue({
-      calibratedProbability: rec?.probability01 ?? (rec?.modelProbability == null ? null : rec.modelProbability / 100),
-      offeredOdds,
-      minEv: 0.05,
-    });
-
-    return {
-      ...rec,
-      marketKey,
-      decisionState: value.decision,
-      value: {
-        ...value,
-        offeredOdds,
-      },
-    };
-  });
-}
 
 // ─── P11 — HOME ADVANTAGE SIGNAL (replaces dead timezone placeholder) ─────────────
 function scoreHomeAdvantage(homePossession = null, homeShotsPerGame = null, awayShotsPerGame = null, venue = null, status = 'NS') {
@@ -1554,13 +1057,9 @@ export function analyzeV9(matchData = {}) {
       modelProbability: probability01 == null ? null : probability01 * 100,
       confidence: probability01 == null ? r.confidence : +(probability01 * 100).toFixed(1) };
   });
-  recommendations = applyRecommendationSanityChecks(recommendations, { poisson: poi, p1, p4, p8 });
-  recommendations = enforceStrictNoBetPolicy(recommendations, { analysisQuality, status, matchMinutes });
-  recommendations = annotateRecommendationDecisions(recommendations, {
-    home,
-    away,
-    odds: String(status).toUpperCase() === 'NS' ? matchData.odds || null : null,
-  });
+  // All markets use one probability source and independent evidence/price gates.
+  recommendations = decideMarkets(recommendations, predictionCore,
+    String(status).toUpperCase() === 'NS' ? matchData.odds || null : null);
   recommendations = attachEvidenceToRecommendations(recommendations, {
     p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
     poisson: poi,
@@ -1605,6 +1104,8 @@ export function analyzeV9(matchData = {}) {
       competitionContext: resolvedCompetitionContext,
     },
     recommendations,
+    marketSummary: summarizeMarketDecisions(recommendations),
+    forecastContract: forecastContract(matchData, predictionCore),
     parameters: { p1_motivation: p1, p2_starPower: p2, p3_h2h: p3, p4_form: p4,
                   p5_scoringTiming: p5, p6_defensiveGap: p6, p7_poisson: p7,
                   p8_xg: p8, p9_xga: p9, p10_pace: p10,

@@ -137,7 +137,7 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
   if (markets.length === 0) return null;
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     predictionId,
     snapshotType: 'PRE_MATCH',
     matchId: match.id,
@@ -152,6 +152,8 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
     preparedDateUK,
     predictedAt,
     analysisVersion: match.analysis?.analysisVersion || null,
+    forecastContract: match.analysis?.forecastContract || null,
+    marketSummary: match.analysis?.marketSummary || null,
     modelState: {
       homeLambda: observedNumber(match.analysis?.poisson?.homeLambda),
       awayLambda: observedNumber(match.analysis?.poisson?.awayLambda),

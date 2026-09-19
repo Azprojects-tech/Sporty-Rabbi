@@ -1,3 +1,4 @@
+import { completedFixtureHistory } from '../../../shared/completedFixtureHistory.js';
 import { createPrematchOddsService } from './prematchOddsService.js';
 /**
  * Team & H2H Analytics Service
@@ -250,7 +251,7 @@ export async function getTeamForm(teamId, league = null, season = null) {
     if (season != null) params.season = season;
 
     const response = await singleFlightGet('/fixtures', { params });
-    const matches = response.data.response || [];
+    const matches = completedFixtureHistory(response.data.response, { teamId, leagueId:league || null, season });
     // Season is not available in a form-only fetch; do not guess from current date.
     const standings = null;
 

@@ -62,5 +62,5 @@ test('parameter fixes preserve coherent core probabilities and bound context sco
  assert.equal(a.parameters.p6_defensiveGap.score,100);assert.equal(a.parameters.p15_crisis.score,null);assert.equal(a.parameters.p2_starPower.score,null);
  assert.deepEqual(a.poisson.marketProbabilities,b.poisson.marketProbabilities);
  assert.equal(b.chaosVariables.earlyGoalBoost,0);
- const desk=buildEvidenceDesk(a,base,{},now);assert.equal(Object.keys(desk.parameters).length,15);assert.equal(desk.panels.length,8);
+ const desk=buildEvidenceDesk(a,base,{},now);assert.equal(Object.keys(desk.parameters).length,15);assert.equal(desk.panels.length,9);
 });

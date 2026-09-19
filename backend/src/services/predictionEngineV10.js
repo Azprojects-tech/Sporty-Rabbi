@@ -385,6 +385,9 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
       homeSampleSize: homeSample,
       awaySampleSize: awaySample,
       season,
+      homeXgAvg:hXg, homeXgaAvg:hXga, awayXgAvg:aXg, awayXgaAvg:aXga,
+      homeForm:matchData.homeForm ?? null, awayForm:matchData.awayForm ?? null,
+      leagueId:matchData.leagueId ?? null,
     },
   };
 }
