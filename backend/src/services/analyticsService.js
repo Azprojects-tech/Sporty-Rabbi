@@ -610,7 +610,7 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     // Late-goal % — only compute when the minute-bucket structure AND goal count are present.
     const goalsByMinute = s.goals?.for?.minute ?? null;
     const lateGoalPct = (goalsByMinute != null && goalsFor != null && goalsFor > 0)
-      ? +((( goalsByMinute['76-90']?.total ?? 0) + (goalsByMinute['91-105']?.total ?? 0)) / goalsFor).toFixed(3)
+      ? (goalsByMinute['76-90']?.total != null ? +(Number(goalsByMinute['76-90'].total) / goalsFor).toFixed(3) : null)
       : null;
 
     const result = {
@@ -645,7 +645,7 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
   const request = async (url, params) => {
     const key = `${url}?${stableParamsKey(params)}`;
     const cached = analystEvidenceCache.get(key);
-    if (cached && Date.now() - cached.at < 12 * 3600000) return cached.data;
+    if (cached && Date.now() - cached.at < ((url === '/fixtures/lineups' || String(params.fixture) === String(match.id)) ? 60000 : 12 * 3600000)) return cached.data;
     if (shouldSkipApiCalls() || analystEvidenceCalls >= ANALYST_CONTEXT_DAILY_CALL_LIMIT) return null;
     analystEvidenceCalls++;
     try {
@@ -668,6 +668,16 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
   const out = { status: 'partial', season: seasonDates,
     competitionType: league?.league?.type ?? null,
     previousSeason: league?.seasons?.find((s) => s.year === season - 1) || null, home: {}, away: {} };
+  out.checkedAt = new Date().toISOString();
+  if (match.id) {
+    out.lineups = await request('/fixtures/lineups', { fixture: match.id });
+    if (['LIVE','1H','2H','HT','ET','FT','AET','PEN'].includes(match.status))
+      out.currentEvents = await request('/fixtures/events', { fixture: match.id });
+    out.injuries = await request('/injuries', { fixture: match.id });
+  }
+  for (const side of ['home', 'away']) {
+    out[side].coaches = await request('/coachs', { team: match[`${side}TeamId`] });
+  }
   // Never classify cup records as league form or compare mixed competitions.
   if (league?.league?.type !== 'League') return out;
   const cutoff = Date.parse(match.kickoffUTC) || Date.now();
@@ -681,6 +691,8 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
       && [f.homeTeamId, f.awayTeamId].some((tid) => String(tid) === String(id))
       && Date.parse(f.date) < cutoff).sort((a, b) => Date.parse(b.date) - Date.parse(a.date)).slice(0, 10);
     fixtureLists[side] = fixtures;
+    out[side].recentFixtures = fixtures;
+    if (fixtures[0]) out[side].previousLineups = await request('/fixtures/lineups', { fixture: fixtures[0].id });
   }
   // Interleave teams, so a quota boundary does not favour the home side.
   for (let i = 0; i < 10; i++) for (const side of ['home', 'away']) {
@@ -696,7 +708,6 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
     const previous = await request('/teams/statistics', { team: id, league: leagueId, season: season - 1 });
     out[side].previousRecord = previous?.fixtures ? { played: previous.fixtures.played?.total ?? null,
       wins: previous.fixtures.wins?.total ?? null, draws: previous.fixtures.draws?.total ?? null } : null;
-    out[side].coaches = await request('/coachs', { team: id });
     out[side].transfers = await request('/transfers', { team: id });
   }
   return out;
@@ -706,25 +717,24 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
  * Get active injury/suspension count and derive squad integrity score.
  * Cached 2 hours — squad availability can change before match day.
  */
-export async function getTeamInjuries(teamId, leagueId, season = null) {
+export async function getTeamInjuries(teamId, leagueId, season = null, fixtureId = null) {
   if (!API_AVAILABLE) return offlineFallback('injuries', teamId, leagueId);
   if (!teamId || !leagueId) return offlineFallback('injuries', teamId, leagueId);
-  if (season == null) {
-    return { status: 'MISSING', reason: 'FIXTURE_SEASON_NOT_AVAILABLE', teamId, leagueId };
-  }
+  if (!fixtureId) return { status: 'MISSING', reason: 'FIXTURE_ID_NOT_AVAILABLE', squadIntegrity: null };
   try {
     const year = season;
-    const key = cacheKey('injuries', teamId, leagueId, year);
+    const key = cacheKey('injuries', teamId, leagueId, fixtureId);
     const cached = getCache(key);
     if (cached) return cached;
 
     const response = await singleFlightGet('/injuries', {
-      params: { team: teamId, league: leagueId, season: year },
+      params: { fixture: fixtureId, team: teamId },
     });
-    const injuries = response.data.response || [];
+    if (response.data?.errors && Object.keys(response.data.errors).length) throw new Error('Injury evidence unavailable');
+    const injuries = (response.data.response || []).filter(i => String(i.fixture?.id) === String(fixtureId) && String(i.team?.id) === String(teamId));
     const active = injuries.filter(i => {
       const type = (i.player?.type || '').toLowerCase();
-      return type === 'injury' || type === 'suspension';
+      return type === 'injury' || type === 'suspension' || type === 'missing fixture';
     });
     const injuryCount = active.length;
 
@@ -737,10 +747,8 @@ export async function getTeamInjuries(teamId, leagueId, season = null) {
       position: positionMap[i.player?.id] || null,
     }));
 
-    // squadIntegrity starts at 100 after a verified API call; scoreStarPower()
-    // applies position-weighted penalties from keyAbsences to reduce it.
-    // 100 = "no recorded absences per this API response", not "observably full strength".
-    const result = { teamId, leagueId, injuryCount, squadIntegrity: 100, keyAbsences };
+    // An absence list does not measure player ability or full-squad strength.
+    const result = { teamId, leagueId, injuryCount, squadIntegrity: null, keyAbsences, status: 'PARTIAL' };
     // 2-hour cache
     statsCache.set(key, { data: result, timestamp: Date.now() - (CACHE_TTL - 2 * 3600000) });
     return result;
@@ -759,3 +767,12 @@ const prematchOdds = createPrematchOddsService({ request: singleFlightGet,
 });
 export const getPrematchOdds = (fixtureId, options) => prematchOdds.get(fixtureId, options);
 export const getPrematchOddsStatus = () => prematchOdds.status();
+
+// Reuses request pacing and the 429 circuit for old user bets as well as today's games.
+export async function getSettlementFixture(id, { shouldSkipApiCalls, updateQuotaFromHeaders }) {
+  if (!API_AVAILABLE || shouldSkipApiCalls()) return null;
+  const response = await singleFlightGet('/fixtures', { params: { id }, timeout: 4000 }, () => !shouldSkipApiCalls());
+  updateQuotaFromHeaders(response.headers);
+  if (response.data?.errors && Object.keys(response.data.errors).length) throw new Error('Fixture result unavailable');
+  return response.data?.response?.find(f => String(f.fixture?.id) === String(id)) || null;
+}

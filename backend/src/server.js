@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import { captureDisplayedOdds } from '../../shared/playedBetEvidence.js';
+import { createPlayedBetSettler } from './services/playedBetSettlementService.js';
+import { getSettlementFixture } from './services/analyticsService.js';
 import { evaluateForecasts } from '../../shared/forecastEvaluation.js';
 import { FORECAST_VERSION } from '../../shared/forecastMath.js';
 import { eligibleTicketCandidates, chooseCombination, MIN_COMBINED_PROBABILITY } from './services/ticketSelectionService.js';
@@ -1452,8 +1456,8 @@ async function analyzeMatch(match) {
           getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, league.id, league.season ?? null),
           getTeamStatistics(awayTeamId, league.id, league.season ?? null),
-          getTeamInjuries(homeTeamId, league.id, league.season ?? null),
-          getTeamInjuries(awayTeamId, league.id, league.season ?? null),
+          getTeamInjuries(homeTeamId, league.id, league.season ?? null, fixture.id),
+          getTeamInjuries(awayTeamId, league.id, league.season ?? null, fixture.id),
         ]);
         // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
         if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
@@ -1876,6 +1880,7 @@ console.log(
 
 // V10.5D: cheap, bounded Goal Fest scan while the portal is in use.
 let goalFestScanInFlight=false;
+let goalFestScanStatus = { lastCompletedAt: null, scanned: 0, active: 0 };
 let goalFestScanCursor=0;
 let lastGoalFestScanAt=0;
 
@@ -1904,13 +1909,14 @@ async function runGoalFestSignalScan(trigger='portal-active') {
 
   goalFestScanInFlight=true;
   lastGoalFestScanAt=now;
-  let scanned=0, active=0;
+  let scanned=0, active=0, missingEvidence=0;
 
   try {
     for(const match of batch) {
       if(shouldSkipApiCalls()) break;
       const stats=await fetchFixtureStatistics(match.id);
       if(!stats) {
+        missingEvidence++;
         const unavailable = calculateGoalFestSignal({ ...match, shots:null, xg:null });
         liveMatches=liveMatches.map(m=>String(m.id)===String(match.id) ? { ...m, goalFest:unavailable } : m);
         continue;
@@ -1918,6 +1924,7 @@ async function runGoalFestSignalScan(trigger='portal-active') {
 
       const observed={...match, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards};
       const goalFest=calculateGoalFestSignal(observed);
+      if (goalFest.status === 'INSUFFICIENT_DATA') missingEvidence++;
       scanned++;
 
       liveMatches=liveMatches.map(m=>String(m.id)===String(match.id)
@@ -1945,9 +1952,11 @@ async function runGoalFestSignalScan(trigger='portal-active') {
     setCache('liveMatches', liveMatches);
     broadcast({type:'LIVE_MATCHES', payload:liveMatches});
     console.log(`[GoalFest] ${trigger}: scanned ${scanned}, active ${active}`);
+    goalFestScanStatus = { lastCompletedAt: new Date().toISOString(), scanned, active, missingEvidence };
     return {scanned,active};
   } catch(err) {
     console.warn('[GoalFest] scan failed:',err.message);
+    goalFestScanStatus = { ...goalFestScanStatus, error: 'Latest scan could not complete' };
     return {scanned,active,error:err.message};
   } finally {
     goalFestScanInFlight=false;
@@ -2145,7 +2154,7 @@ async function saveAlert(alertData) {
   };
 
   // Dedup: skip if same match+type was sent within the last 30 minutes
-  const key = `${alertPayload.home}|${alertPayload.away}|${alertPayload.type || 'alert'}`;
+  const key = `${alertPayload.matchId || `${alertPayload.home}|${alertPayload.away}`}|${alertPayload.type || 'alert'}`;
   const lastSent = recentAlertKeys.get(key);
   const alertDedupMs = alertPayload.type === 'GOAL_FEST' ? 10 * 60 * 1000 : ALERT_DEDUP_MS;
   if (lastSent && Date.now() - lastSent < alertDedupMs) return;
@@ -2669,39 +2678,44 @@ async function fetchFinishedFixturesForUtcDate(dateStamp) {
   return Array.isArray(response.data?.response) ? response.data.response : [];
 }
 
+let playedSettlementCursor = null;
+const settlePendingPlayedBets = createPlayedBetSettler({
+  canLaunch: () => Boolean(getDb() && API_KEY && !shouldSkipApiCalls()),
+  loadPending: async () => {
+    const db = getDb();
+    if (!db) return [];
+    let query = db.collection('bets').where('result', '==', 'pending').orderBy('__name__').limit(250);
+    if (playedSettlementCursor) query = query.startAfter(playedSettlementCursor);
+    const snapshot = await query.get();
+    playedSettlementCursor = snapshot.size === 250 ? snapshot.docs.at(-1) : null;
+    return snapshot.docs.map(d => ({ ...d.data(), firestoreId: d.id }));
+  },
+  fetchFixture: id => getSettlementFixture(id, { shouldSkipApiCalls, updateQuotaFromHeaders }),
+  save: (bet, update) => getDb().collection('bets').doc(bet.firestoreId).update(update),
+  onSettled: bet => {
+    const existing = bets.find(b => b.firestoreId === bet.firestoreId);
+    if (existing) Object.assign(existing, bet);
+    broadcast({ type: 'BET_UPDATED', payload: bet });
+    recomputePostMatchCalibrationFromBets(bets);
+  },
+});
+
 async function settleRecentUserPlayedBets(matchId, homeGoals, awayGoals, settledAt) {
   const db = getDb();
   let settled = 0;
-
   for (const bet of bets) {
-    if (bet?.source !== 'USER_PLAYED') continue;
-    if (String(bet.matchId) !== String(matchId)) continue;
-    if (bet.result === 'won' || bet.result === 'lost') continue;
+    if (bet?.source !== 'USER_PLAYED' || String(bet.matchId) !== String(matchId) || bet.result !== 'pending') continue;
     const result = settleMarketPrediction(bet.marketKey, homeGoals, awayGoals);
     if (!result) continue;
-
-    bet.result = result;
-    bet.finalScore = `${homeGoals}-${awayGoals}`;
-    bet.settledAt = settledAt;
-    bet.updatedAt = settledAt;
-    settled += 1;
-
-    if (db && bet.firestoreId) {
-      try {
-        await db.collection('bets').doc(bet.firestoreId).update({
-          result,
-          finalScore: bet.finalScore,
-          settledAt,
-          updatedAt: settledAt,
-        });
-      } catch (err) {
-        console.warn('[PredictionLedger] My Bets settlement save failed:', err.message);
-      }
-    }
-    broadcast({ type: 'BET_UPDATED', payload: bet });
+    const update = { result, finalScore: `${homeGoals}-${awayGoals}`, settledAt, updatedAt: settledAt };
+    try {
+      if (db && bet.firestoreId) await db.collection('bets').doc(bet.firestoreId).update(update);
+      Object.assign(bet, update);
+      settled++;
+      broadcast({ type: 'BET_UPDATED', payload: bet });
+    } catch (err) { console.warn('[MyBets] Settlement will retry:', err.message); }
   }
-
-  if (settled > 0) recomputePostMatchCalibrationFromBets(bets);
+  if (settled) recomputePostMatchCalibrationFromBets(bets);
   return settled;
 }
 
@@ -2710,6 +2724,8 @@ async function settlePredictionLedger(trigger = 'manual') {
   if (!db || !API_KEY || shouldSkipApiCalls()) {
     return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: 0 };
   }
+
+  const playedSettlement = await settlePendingPlayedBets();
 
   // Only recent records need routine settlement. Older unresolved/postponed fixtures remain
   // permanently stored as pending rather than being guessed or deleted.
@@ -2727,7 +2743,7 @@ async function settlePredictionLedger(trigger = 'manual') {
     });
 
   if (pending.length === 0) {
-    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: 0 };
+    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: playedSettlement.settled, playedSettlement };
   }
 
   const byDate = new Map();
@@ -2740,7 +2756,7 @@ async function settlePredictionLedger(trigger = 'manual') {
 
   let settledMatches = 0;
   let settledCalls = 0;
-  let settledUserBets = 0;
+  let settledUserBets = playedSettlement.settled;
   const settledAt = new Date().toISOString();
 
   for (const [dateStamp, datePredictions] of byDate) {
@@ -2907,6 +2923,7 @@ app.post('/api/bets/played', async (req, res) => {
     dailySignalScore: finiteNumberOrNull(req.body.dailySignalScore),
     analysisVersion: req.body.analysisVersion || null,
     analysisTimestamp: req.body.analysisTimestamp || null,
+    systemOdds: captureDisplayedOdds(req.body.displayedOdds, req.body.matchId, marketKey),
     odds: finiteNumberOrNull(req.body.odds),
     stake: finiteNumberOrNull(req.body.stake),
     result: 'pending',
@@ -2916,8 +2933,11 @@ app.post('/api/bets/played', async (req, res) => {
   };
 
   const db = getDb();
+  if (!db) return res.status(503).json({ error: 'Bet recording storage is unavailable. Please retry.' });
   if (db) {
     try {
+      const existing = await db.collection('bets').where('sourceKey', '==', sourceKey).limit(1).get();
+      if (!existing.empty) return res.json({ success: true, duplicate: true, bet: { ...existing.docs[0].data(), firestoreId: existing.docs[0].id } });
       // If the linked prediction is already settled, settle this user selection immediately.
       if (bet.predictionId) {
         const predSnap = await db.collection('predictions').doc(bet.predictionId).get();
@@ -2926,7 +2946,7 @@ app.post('/api/bets/played', async (req, res) => {
             predictionId: predSnap.id,
             ...predSnap.data(),
           });
-          if (pred.finalScore && pred.settledAt) {
+          if (String(pred.matchId) === String(bet.matchId) && pred.finalScore && pred.settledAt) {
             const [h, a] = String(pred.finalScore).split('-').map(Number);
             const result = settleMarketPrediction(marketKey, h, a);
             if (result) {
@@ -2937,10 +2957,17 @@ app.post('/api/bets/played', async (req, res) => {
           }
         }
       }
-      const ref = await db.collection('bets').add(bet);
+      const ref = db.collection('bets').doc('played_' + createHash('sha256').update(sourceKey).digest('hex'));
+      try { await ref.create(bet); }
+      catch (err) {
+        if (err.code !== 6 && err.code !== 'already-exists') throw err;
+        const saved = await ref.get();
+        return res.json({ success: true, duplicate: true, bet: { ...saved.data(), firestoreId: ref.id } });
+      }
       bet.firestoreId = ref.id;
     } catch (err) {
       console.warn('[MyBets] Firestore save failed:', err.message);
+      return res.status(503).json({ error: 'Could not save your selection. Please retry.' });
     }
   }
 
@@ -3074,14 +3101,20 @@ app.get('/api/alerts', async (req, res) => {
         .limit(limit)
         .get();
       const firestoreAlerts = snapshot.docs.map(d => decorateAlertFreshness({ firestoreId: d.id, ...d.data() }));
-      return res.json({ count: firestoreAlerts.length, alerts: firestoreAlerts });
+      return res.json({ count: firestoreAlerts.length, alerts: firestoreAlerts, goalFestScan: { ...goalFestScanStatus, state: !API_KEY ? 'API not configured' : shouldSkipApiCalls() ? 'Paused by API quota guard' : clients.size === 0 ? 'Waiting for an open portal' : 'Portal scanning enabled' } });
     } catch (err) {
       console.error('Firestore alerts read error:', err.message);
       // Fall through to in-memory
     }
   }
   const decoratedAlerts = alerts.slice(0, 50).map((alert) => decorateAlertFreshness(alert));
-  res.json({ count: decoratedAlerts.length, alerts: decoratedAlerts });
+  res.json({ count: decoratedAlerts.length, alerts: decoratedAlerts, goalFestScan: { ...goalFestScanStatus, state: !API_KEY ? 'API not configured' : shouldSkipApiCalls() ? 'Paused by API quota guard' : clients.size === 0 ? 'Waiting for an open portal' : 'Portal scanning enabled' } });
+});
+
+app.post('/api/bets/settle', async (req, res) => {
+  if (!getDb() || !API_KEY || shouldSkipApiCalls()) return res.status(503).json({ error: 'Result checking is currently unavailable.' });
+  try { res.json(await settlePendingPlayedBets()); }
+  catch (err) { res.status(503).json({ error: 'Could not check results. Please retry.' }); }
 });
 
 app.get('/api/bets', async (req, res) => {
@@ -3680,7 +3713,7 @@ function buildNarrativeKey(matchData = {}) {
   const minute = Number(matchData.matchMinutes || 0);
   const live = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(status);
   const minuteBucket = live ? Math.floor(minute / 10) : 0;
-  return Buffer.from(`${fixtureIdentity}|grounded-v1|${status}|${score}|${minuteBucket}`).toString('base64url');
+  return Buffer.from(`${fixtureIdentity}|evidence-v106b|${status}|${score}|${minuteBucket}|${Math.floor(Date.now()/60000)}|${matchData.oddsSnapshot?.providerUpdatedAt || ''}`).toString('base64url');
 }
 
 function readNarrativeCache(key) {
@@ -3783,8 +3816,8 @@ app.post('/api/analyze', async (req, res) => {
           getStandings({ leagueId, season, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, leagueId, season),
           getTeamStatistics(awayTeamId, leagueId, season),
-          getTeamInjuries(homeTeamId, leagueId, season),
-          getTeamInjuries(awayTeamId, leagueId, season),
+          getTeamInjuries(homeTeamId, leagueId, season, fixtureId),
+          getTeamInjuries(awayTeamId, leagueId, season, fixtureId),
           getH2H(homeTeamId, awayTeamId),
         ]);
 
@@ -4076,8 +4109,8 @@ app.get('/api/analyze/live/:matchId', async (req, res) => {
           getStandings({ leagueId, season: match.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, leagueId, match.season ?? null),
           getTeamStatistics(awayTeamId, leagueId, match.season ?? null),
-          getTeamInjuries(homeTeamId, leagueId, match.season ?? null),
-          getTeamInjuries(awayTeamId, leagueId, match.season ?? null),
+          getTeamInjuries(homeTeamId, leagueId, match.season ?? null, match.id),
+          getTeamInjuries(awayTeamId, leagueId, match.season ?? null, match.id),
         ])
       : [onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled, onDemandDisabled];
 

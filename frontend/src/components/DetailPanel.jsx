@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { EvidenceCard, EvidenceContents } from './EvidenceCard.jsx';
 import { apiService } from '../services/api';
 import { describeMatchClock, describeScorePressure } from '../../../shared/matchClock.js';
 import { goalFestView } from '../../../shared/goalFestView.js';
@@ -8,12 +9,12 @@ const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
 const TIER_BORDER = { 1: '#78350f55', 2: '#00683355', 3: '#78350f55', 4: '#7c2d1255' };
 
 const PARAMS = [
-  { key: 'p4_form',           label: 'Form (L10)',   weight: '15%', icon: 'FRM' },
-  { key: 'p1_motivation',     label: 'Motivation',   weight: '13%', icon: 'MOT' },
+  { key: 'p4_form',           label: 'Recent form',   weight: '15%', icon: 'FRM' },
+  { key: 'p1_motivation',     label: 'Table position',   weight: '13%', icon: 'MOT' },
   { key: 'p7_poisson',        label: 'Poisson',      weight: '11%', icon: 'PSN' },
   { key: 'p15_crisis',        label: 'Crisis',       weight: '10%', icon: 'CRS' },
   { key: 'p2_starPower',      label: 'Star Power',   weight: '7%',  icon: 'STR' },
-  { key: 'p6_defensiveGap',   label: 'Defensive',    weight: '7%',  icon: 'DEF' },
+  { key: 'p6_defensiveGap',   label: 'Def. weakness',    weight: '7%',  icon: 'DEF' },
   { key: 'p8_xg',             label: 'xG Edge',      weight: '6%',  icon: 'XGA' },
   { key: 'p5_scoringTiming',  label: 'Timing',       weight: '5%',  icon: 'TIM' },
   { key: 'p9_xga',            label: 'Def. Solidity',weight: '5%',  icon: 'XGD' },
@@ -472,6 +473,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
     recommendations = [], bookieEdges = [],
     overallScore = 0, tier = 4, tierName = '',
   } = analysis || {};
+  const evidenceDesk = analysis?.narrative?.evidencePanels;
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
   const winCall = analysis?.winCall || null;
   const decisionMetrics = analysis?.decisionMetrics || {};
@@ -531,6 +533,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         competitionFamily: r?.evidence?.competitionFamily || null,
         analysisVersion: analysis?.analysisVersion || null,
         analysisTimestamp: analysis?.analysisTimestamp || null,
+        displayedOdds: analysis?.oddsSnapshot || null,
       });
       setPlayedMessage(`Recorded: ${r.selection}`);
     } catch (err) {
@@ -811,13 +814,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             {PARAMS.map(({ key, label, weight, icon }) => {
               const p = P[key] || {};
               const isExpanded = expandedParam === key;
-              const hasDetail = !!(
-                p.assessment || p.home?.formStr || p.away?.formStr ||
-                p.homeForm || p.awayForm || p.goalsAvg != null || p.homeWins != null
-              );
+              const hasDetail = true;
               return (
                 <div
                   key={key}
+                  role="button" tabIndex={0} aria-expanded={isExpanded}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedParam(isExpanded ? null : key); } }}
                   onClick={() => hasDetail && setExpandedParam(isExpanded ? null : key)}
                   style={{
                     borderBottom: '1px solid #0f1117',
@@ -839,7 +841,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                         {label}
                         {edgeBadge(p.edge)}
                       </div>
-                      <div style={{ fontSize: 9, color: '#4a5568' }}>{weight}</div>
+                      <div style={{ fontSize: 9, color: '#4a5568' }}>{key === 'p7_poisson' ? 'Model' : 'Context'}</div>
                     </div>
                     <ScoreBar score={p.score ?? null} />
                     {hasDetail && (
@@ -849,11 +851,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                     )}
                   </div>
                   {isExpanded && (
-                    <ParamDetail paramKey={key} p={p} match={match} />
+                    evidenceDesk?.parameters?.[key] ? <EvidenceContents item={evidenceDesk.parameters[key]} /> : <ParamDetail paramKey={key} p={p} match={match} />
                   )}
                 </div>
               );
             })}
+            {(evidenceDesk?.panels || []).map(item => <EvidenceCard key={item.id} item={item} />)}
           </div>
         )}
 
@@ -914,53 +917,15 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         )}
 
         {/* CHAOS */}
-        {section === 'chaos' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {!chaos && (
-              <p style={{ fontSize: 12, color: '#4a5568', textAlign: 'center', padding: '24px 0' }}>
-                Chaos analysis unavailable for this fixture.
-              </p>
-            )}
-            {chaos && [
-              { label: 'MWV Index',  val: chaos.mwvLabel,                           active: chaos.mwvIndex > 0.5 },
-              { label: 'Early Goal', val: chaos.earlyGoalActive ? 'ACTIVE' : 'NO',  active: chaos.earlyGoalActive },
-              { label: 'Bivariate',  val: chaos.bivariateDependency ? 'YES' : 'NO', active: chaos.bivariateDependency },
-              { label: 'PSG Trap',   val: chaos.psgTrapWarning ? 'WARNING' : 'CLEAR', active: chaos.psgTrapWarning },
-              { label: 'High Line',  val: chaos.highLineRisk ? 'ACTIVE' : 'NO',     active: chaos.highLineRisk },
-            ].map(({ label, val, active }) => (
-              <div key={label} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '10px 14px', background: '#0f1117', borderRadius: 7,
-                border: '1px solid #1e2535',
-              }}>
-                <span style={{ fontSize: 12, color: '#8b9ab3' }}>{label}</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: active ? '#fbbf24' : '#4a5568' }}>{val}</span>
-              </div>
-            ))}
-            {chaos?.summary && (
-              <p style={{ fontSize: 11, color: '#4a5568', marginTop: 4, lineHeight: 1.6 }}>{chaos.summary}</p>
-            )}
-          </div>
-        )}
-
+        {section === 'chaos' && <div>
+          {(evidenceDesk?.chaos || []).map(item => <EvidenceCard key={item.id} item={item} />)}
+          {!evidenceDesk && <p style={{ color: '#8b9ab3' }}>Evidence unavailable.</p>}
+        </div>}
         {/* EDGES */}
-        {section === 'edges' && (
-          <div>
-            {bookieEdges.length === 0 ? (
-              <p style={{ fontSize: 12, color: '#4a5568', textAlign: 'center', padding: '24px 0' }}>
-                No value edges detected for this fixture.
-              </p>
-            ) : bookieEdges.map((e, i) => (
-              <div key={i} style={{
-                background: '#120d00', border: '1px solid #78350f44',
-                borderRadius: 7, padding: '10px 14px', marginBottom: 8,
-                fontSize: 11, color: '#d97706', lineHeight: 1.6,
-              }}>
-                $ {e}
-              </div>
-            ))}
-          </div>
-        )}
+        {section === 'edges' && <div>
+          {(evidenceDesk?.edges || []).map(item => <EvidenceCard key={item.id} item={item} />)}
+          {!evidenceDesk?.edges?.length && <p style={{ color: '#8b9ab3' }}>Priced selection evidence unavailable.</p>}
+        </div>}
 
       </div>
       </div>

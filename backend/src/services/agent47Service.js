@@ -229,56 +229,15 @@ function parseForm(raw) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // P1 — MOTIVATION GAP
-function scoreMotivation({ homePosition, awayPosition, homePoints, awayPoints, totalTeams = 20, gameWeek, totalGW = 38 }) {
-  if (homePosition == null || awayPosition == null) {
-    return {
-      score: null, available: false, evidenceStatus: 'MISSING',
-      home: { motivation: null, situation: 'unknown' }, away: { motivation: null, situation: 'unknown' },
-      gap: null, edge: 'NEUTRAL', mwvIndex: 0,
-      assessment: 'Required inputs unavailable — league positions missing.',
-    };
-  }
-  const lifecycle = (gameWeek != null && totalGW != null && totalGW > 0) ? gameWeek / totalGW : 0;
-  const late = lifecycle > 0.75;
-
-  function classify(pos, pts) {
-    let m = 50, situation = 'mid-table';
-    if (pos <= 3 && late)               { m += 30; situation = 'title-race'; }
-    else if (pos <= 3)                  { m += 20; situation = 'title-race'; }
-    else if (pos <= 6 && late)          { m += 20; situation = 'european-push'; }
-    else if (pos <= 6)                  { m += 10; situation = 'european-push'; }
-    else if (pos >= totalTeams - 2 && late) { m += 35; situation = 'relegation-fight'; }
-    else if (pos >= totalTeams - 2)     { m += 25; situation = 'relegation-fight'; }
-    else if (pos >= totalTeams - 5 && late) { m += 15; situation = 'survival-nervous'; }
-    return { motivation: Math.min(m, 100), situation };
-  }
-
-  const hA = classify(homePosition, homePoints);
-  const aA = classify(awayPosition, awayPoints);
-  const gap = Math.abs(hA.motivation - aA.motivation);
-  const maxM = Math.max(hA.motivation, aA.motivation);
-
-  let edge = 'NEUTRAL';
-  if (hA.motivation > aA.motivation + 20) edge = 'HOME';
-  else if (aA.motivation > hA.motivation + 20) edge = 'AWAY';
-
-  // MWV: is a draw a death sentence?
-  const mwvIndex = (
-    (['relegation-fight', 'title-race'].includes(hA.situation) ? 1 : 0) +
-    (['relegation-fight', 'title-race'].includes(aA.situation) ? 1 : 0)
-  ) / 2;
-
-  const assessment =
-    gap > 30 ? `Extreme motivation gap — ${edge === 'HOME' ? 'Home' : 'Away'} team fighting for survival/title vs dead-zone opposition` :
-    maxM > 80 ? 'Both teams in high-stakes battle — expect high intensity' :
-    maxM > 60 ? 'Competitive motivation — neither side complacent' :
-    'Mid-table dead zone — reduced defensive structure, "Basketball Football" likely';
-
-  return {
-    score: Math.round((hA.motivation + aA.motivation) / 2),
-    home: hA, away: aA, gap, edge, mwvIndex,
-    assessment,
-  };
+function scoreMotivation({ homePosition, awayPosition, totalTeams }) {
+  if (![homePosition, awayPosition, totalTeams].every(v => typeof v === 'number' && Number.isInteger(v) && v > 0)
+    || totalTeams < 2 || homePosition > totalTeams || awayPosition > totalTeams)
+    return { score: null, home: {}, away: {}, mwvIndex: 0, assessment: 'Verified table position and league size unavailable.' };
+  const h = 100 * (totalTeams - homePosition) / (totalTeams - 1);
+  const a = 100 * (totalTeams - awayPosition) / (totalTeams - 1);
+  return { score: Math.round((h+a)/2), home: { rank: homePosition }, away: { rank: awayPosition },
+    gap: Math.abs(h-a), mwvIndex: 0, edge: h > a+20 ? 'HOME' : a > h+20 ? 'AWAY' : 'NEUTRAL',
+    assessment: `Table position: home ${homePosition}/${totalTeams}, away ${awayPosition}/${totalTeams}.` };
 }
 
 // P2 — STAR POWER
@@ -311,6 +270,7 @@ function scoreStarPower(homeIntegrity = null, awayIntegrity = null, homeAbsences
 
 // P3 — H2H HISTORY
 function scoreH2H(history = []) {
+  history = history.filter(m => [m.homeGoals, m.awayGoals].every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0));
   if (!history.length) {
     return { score: null, edge: 'NEUTRAL', assessment: 'No H2H history available.' };
   }
@@ -351,7 +311,7 @@ function weightedFormScore(raw) {
 }
 
 function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeGoalsAvg = null, awayGoalsAvg = null, homeXgTrend = null, awayXgTrend = null) {
-  if (!homeFormStr && !awayFormStr) {
+  if (!homeFormStr || !awayFormStr) {
     return { score: null, home: { formStr: null, winRate: 0 }, away: { formStr: null, winRate: 0 }, edge: 'NEUTRAL', assessment: 'No form data available.' };
   }
   const hF = parseForm(homeFormStr);
@@ -360,9 +320,9 @@ function scoreForm(homeFormStr, awayFormStr, homeXgAvg = 0, awayXgAvg = 0, homeG
     // V9 Tighter Coiled Spring: only fires if xG is NOT also collapsing.
   // If xG trend is negative (declining), the spring has no tension — no boost.
   const hCoil = homeXgAvg > 0 && homeGoalsAvg > 0 && (homeXgAvg / homeGoalsAvg) > 1.35
-    && (homeXgTrend === null || homeXgTrend >= 0);
+    && (homeXgTrend != null && homeXgTrend >= 0);
   const aCoil = awayXgAvg  > 0 && awayGoalsAvg  > 0 && (awayXgAvg  / awayGoalsAvg)  > 1.35
-    && (awayXgTrend === null || awayXgTrend >= 0);
+    && (awayXgTrend != null && awayXgTrend >= 0);
 
   // V8: blend recency-weighted score (60%) with flat win-rate base (40%)
   const hRecent = weightedFormScore(homeFormStr);
@@ -484,7 +444,7 @@ function scoreDefensiveSolidity(homeXgaAvg, awayXgaAvg, leagueAvgGA = 1.35) {
 
 // P10 — PACE & CONVERSION
 function scorePace(homeConv = null, awayConv = null, homeShotsPerGame = null, awayShotsPerGame = null) {
-  if (homeShotsPerGame == null || awayShotsPerGame == null) {
+  if ([homeShotsPerGame, awayShotsPerGame, homeConv, awayConv].some(v => v == null)) {
     return { score: null, available: false, evidenceStatus: 'MISSING', edge: 'NEUTRAL', assessment: 'Required inputs unavailable — shots data missing.' };
   }
   const combined = homeShotsPerGame + awayShotsPerGame;
@@ -551,11 +511,13 @@ function scoreLifecycle(gameWeek = null, totalGW = null) {
 //   isInterim + gamesInRole ≤ 3   → −15 to −25 hit (chaos)
 //   !isInterim + tenureWeeks ≥ 6 + improving → +10 to +18 boost (new coach bounce)
 function scoreCrisisMode({
-  homeGoalDrought = 0, awayGoalDrought = 0,
-  homeRecentLosses = 0, awayRecentLosses = 0,
+  homeGoalDrought = null, awayGoalDrought = null,
+  homeRecentLosses = null, awayRecentLosses = null,
   homeCoach = {}, awayCoach = {},
 }) {
-  let homeScore = 70; // baseline — no crisis signals
+  if ([homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses].some(v => v == null))
+    return { score: null, flags: [], assessment: 'Recent scoreless and losing streaks unavailable.' };
+  let homeScore = 70; // historical indicator baseline
   let awayScore = 70;
   const flags = [];
 
@@ -597,20 +559,7 @@ function scoreCrisisMode({
     flags.push(`⚠️ Away losing run: ${awayRecentLosses} games`);
   }
 
-  // ── Coach stability ───────────────────────────────────────────────────────
-  for (const [coach, label, isHome] of [[homeCoach, 'Home', true], [awayCoach, 'Away', false]]) {
-    const { isInterim = false, gamesInRole = 20, tenureWeeks = 20, improving = false } = coach;
-    if (isInterim && gamesInRole <= 3) {
-      const hit = gamesInRole <= 1 ? 25 : gamesInRole <= 2 ? 20 : 15;
-      if (isHome) homeScore -= hit; else awayScore -= hit;
-      flags.push(`🔴 ${label} interim chaos: only ${gamesInRole} game(s) in charge`);
-    } else if (!isInterim && tenureWeeks >= 6 && improving) {
-      const boost = tenureWeeks >= 10 ? 18 : tenureWeeks >= 8 ? 14 : 10;
-      if (isHome) homeScore += boost; else awayScore += boost;
-      flags.push(`✅ ${label} new coach bounce: ${tenureWeeks} weeks in, results improving`);
-    }
-  }
-
+  // Coach chronology and observed results are shown in the evidence desk.
   const hClamped = Math.min(Math.max(homeScore, 0), 100);
   const aClamped = Math.min(Math.max(awayScore, 0), 100);
   const score    = Math.round((hClamped + aClamped) / 2);
@@ -680,29 +629,10 @@ function runPoisson(hXg, aXg, hXga, aXga, leagueId = 0) {
 }
 
 // ─── CHAOS VARIABLES ──────────────────────────────────────────────────────────
-function evaluateChaos({ motivation, form, matchMinutes = 0, earlyGoalScored = false, earlyGoalMinute = null,
-                          homeTacticalHighLine = false, awayCounterThreat = false, homePossession = 50 }) {
-  const mwvLabel = motivation.mwvIndex >= 0.9 ? 'EXTREME' : motivation.mwvIndex >= 0.7 ? 'HIGH' : motivation.mwvIndex >= 0.5 ? 'MEDIUM' : 'LOW';
-  const earlyGoalActive = earlyGoalScored && (earlyGoalMinute !== null ? earlyGoalMinute <= 20 : true);
-  const earlyGoalBoost  = earlyGoalActive ? RESEARCH.EARLY_GOAL_O35_BOOST : 0;
-  const bivariate       = motivation.mwvIndex > 0.6 && form.home.winRate > 0.4 && form.away.winRate > 0.4;
-  const psgTrap         = homePossession >= RESEARCH.PSG_TRAP_POSSESSION_THRESHOLD;
-  const highLineRisk    = homeTacticalHighLine && awayCounterThreat;
-
-  return {
-    mwvIndex: +motivation.mwvIndex.toFixed(2), mwvLabel,
-    earlyGoalActive, earlyGoalBoost,
-    bivariateDependency: bivariate,
-    psgTrapWarning: psgTrap,
-    highLineRisk,
-    summary: [
-      `MWV Index: ${mwvLabel} (${Math.round(motivation.mwvIndex * 100)}%)`,
-      earlyGoalActive  ? `⚡ Early Goal Multiplier ACTIVE — O3.5 probability +${Math.round(earlyGoalBoost * 100)}%` : '',
-      bivariate        ? '🔗 Bivariate Dependency — both attack-minded, goals may cascade (1-1 → 3-2)' : '',
-      psgTrap          ? `⚠️ PSG Trap — possession ${homePossession}%+ with stalling xG conversion` : '',
-      highLineRisk     ? '⚠️ High-Line Risk — counter-attack vulnerability detected' : '',
-    ].filter(Boolean).join('\n'),
-  };
+function evaluateChaos() {
+  return { mwvIndex: null, mwvLabel: 'UNAVAILABLE', earlyGoalActive: null, earlyGoalBoost: 0,
+    bivariateDependency: null, psgTrapWarning: null, highLineRisk: null,
+    summary: 'Open the evidence cards for verified match events and context.' };
 }
 
 // ─── TIER RECOMMENDATIONS ─────────────────────────────────────────────────────
@@ -1388,7 +1318,8 @@ function scoreMarketSignal(odds = null, poissonProbs = null) {
   // Primary: Over 2.5 model vs market divergence
   if (odds.over25 && poissonProbs) {
     const rawImplied = 1 / parseFloat(odds.over25);
-    const modelProb  = (poissonProbs.over25 || 50) / 100;
+    const modelProb  = poissonProbs.over25 == null ? null : poissonProbs.over25 / 100;
+    if (modelProb == null) return { score: null, assessment: 'Model probability unavailable.' };
     const divergence = modelProb - rawImplied;
     const score = Math.min(Math.max(Math.round(50 + divergence * 80), 20), 80);
     return {
@@ -1493,8 +1424,8 @@ export function analyzeV9(matchData = {}) {
     homeCBInjured = false, awayGKError = false,
     referee = null, venue = null,
     // P15 Crisis/Drought Mode inputs
-    homeGoalDrought = 0, awayGoalDrought = 0,
-    homeRecentLosses = 0, awayRecentLosses = 0,
+    homeGoalDrought = null, awayGoalDrought = null,
+    homeRecentLosses = null, awayRecentLosses = null,
     homeRecentOpposition = null, awayRecentOpposition = null,
     homeCoach = {}, awayCoach = {},
     // xG trend (positive = improving, negative = declining, null = unknown)
@@ -1539,6 +1470,13 @@ export function analyzeV9(matchData = {}) {
   const p14 = scoreLifecycle(gameWeek, totalGW);
   const p15 = scoreCrisisMode({ homeGoalDrought, awayGoalDrought, homeRecentLosses, awayRecentLosses, homeCoach, awayCoach });
 
+  // These are bounded context indicators; the probability engine remains separate.
+  for (const parameter of [p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,p15]) {
+    if (parameter.score != null) {
+      parameter.rawScore = parameter.score;
+      parameter.score = Number.isFinite(parameter.score) ? Math.max(0, Math.min(100, parameter.score)) : null;
+    }
+  }
   if (homeRecentOpposition || awayRecentOpposition) {
     const formNotes = [];
     if (homeRecentOpposition?.summary) formNotes.push(`${home}: ${homeRecentOpposition.summary}`);
@@ -1644,7 +1582,7 @@ export function analyzeV9(matchData = {}) {
   });
 
   // ── Bookie edge detection ──────────────────────────────────────────────────
-  const bookieEdges = detectBookieEdges(p1, p2, p4, chaos);
+  const bookieEdges = recommendations.filter(r => r.value?.decision === 'BET').map(r => `${r.selection}: model ${(r.probability01 * 100).toFixed(1)}%, expected value ${((r.value.expectedValue || 0) * 100).toFixed(1)}%.`);
 
   return {
     match:   {

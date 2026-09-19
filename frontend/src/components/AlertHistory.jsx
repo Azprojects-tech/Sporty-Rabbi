@@ -13,8 +13,9 @@ function ago(iso){const m=Math.floor(age(iso)/60000);if(m<1)return'just now';if(
 const confColor=c=>c>=80?'#00b859':c>=65?'#f59e0b':'#ef4444';
 
 export default function AlertHistory(){
+  const[scan,setScan]=useState(null);
   const[alerts,setAlerts]=useState([]),[loading,setLoading]=useState(true),[scope,setScope]=useState('actionable');
-  const load=useCallback(async()=>{try{const r=await apiService.getAlerts();setAlerts(r.data?.alerts||[]);}catch(e){console.error('Could not load alerts:',e.message);}finally{setLoading(false);}},[]);
+  const load=useCallback(async()=>{try{const r=await apiService.getAlerts();setAlerts(r.data?.alerts||[]);setScan(r.data?.goalFestScan||null);}catch(e){console.error('Could not load alerts:',e.message);}finally{setLoading(false);}},[]);
   useEffect(()=>{
     load();
     const h=a=>setAlerts(p=>[a,...p].slice(0,100));
@@ -37,6 +38,7 @@ export default function AlertHistory(){
       <div>
         <div style={{fontSize:15,fontWeight:700,color:'#e2e8f0'}}>Alerts</div>
         <div style={{fontSize:11,color:'#4a5568',marginTop:2}}>{nowCount} actionable now | older alerts remain for audit</div>
+        <div style={{fontSize:11,color:'#8b9ab3',marginTop:4}}>Goal Fest: {scan?.lastCompletedAt ? `${scan.scanned} fixtures checked, ${scan.active} active · ${ago(scan.lastCompletedAt)}` : 'No completed scan recorded this session'}{scan?.missingEvidence ? ` · ${scan.missingEvidence} lacked required evidence` : ''}{scan?.state ? ` · ${scan.state}` : ''}{scan?.error ? ` · ${scan.error}` : ''}</div>
       </div>
       <button onClick={load} style={{background:'#131826',border:'1px solid #1e2535',borderRadius:6,color:'#8b9ab3',fontSize:11,padding:'5px 10px',cursor:'pointer'}}>Refresh</button>
     </div>
@@ -51,7 +53,7 @@ export default function AlertHistory(){
       {loading?<div style={{textAlign:'center',color:'#4a5568',paddingTop:40}}>Loading alerts...</div>:
       !shown.length?<div style={{textAlign:'center',paddingTop:40,color:'#4a5568',fontSize:13}}>
         {scope==='actionable'?'No actionable live alerts right now':'No alerts in this view'}
-        <div style={{color:'#2d3748',fontSize:11,marginTop:4}}>Live alerts expire from the actionable view after 30 minutes.</div>
+        <div style={{color:'#2d3748',fontSize:11,marginTop:4}}>Goal Fest alerts expire after 15 minutes; other live alerts after 30 minutes or when the match ends.</div>
       </div>:
       shown.map((a,i)=>{
         const act=actionable(a), gf=String(a.type||'').toUpperCase()==='GOAL_FEST';
