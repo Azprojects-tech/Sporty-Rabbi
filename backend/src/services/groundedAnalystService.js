@@ -1,3 +1,4 @@
+import { buildEvidenceDesk } from './evidenceDeskService.js';
 import { describeMatchClock, describeScorePressure } from '../../../shared/matchClock.js';
 
 const number = (v) => v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
@@ -107,5 +108,6 @@ export function buildGroundedAnalystNote(analysis = {}, match = {}, evidence = {
 
   return { text: sections.map((s) => `${s.label}: ${s.text}`).join('\n'), sections,
     provider: 'verified-evidence', evaluatedAt: new Date().toISOString(),
+    evidencePanels: buildEvidenceDesk(analysis, match, evidence),
     evidenceStatus: evidence.status || 'partial' };
 }

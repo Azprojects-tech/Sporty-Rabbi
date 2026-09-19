@@ -105,6 +105,11 @@ function MyBets({ bets }) {
             <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{b.selection}</div>
           </div>
           <span style={{ fontSize: 10, color: '#8b9ab3' }}>{b.modelProbability ?? b.confidence ?? '—'}%</span>
+          <span style={{ fontSize: 10, color: '#8b9ab3' }}>
+            System odds: {b.systemOdds?.price ? `${b.systemOdds.price.toFixed(2)} · ${b.systemOdds.bookmaker?.name}` : 'Unavailable'}
+            {b.systemOdds?.providerUpdatedAt && <small style={{ display: 'block' }}>Quote: {new Date(b.systemOdds.providerUpdatedAt).toLocaleString()}{b.systemOdds.status === 'EXPIRED' ? ' · expired when recorded' : ''}</small>}
+            {b.odds > 1 && <small style={{ display: 'block' }}>Taken odds: {b.odds}</small>}
+          </span>
           {b.finalScore && <span style={{ fontSize: 10, color: '#8b9ab3' }}>FT {b.finalScore}</span>}
           <ResultBadge result={b.result} />
         </div>
@@ -119,6 +124,18 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
   const [summary, setSummary] = useState(null);
   const [bets, setBets] = useState(liveBets);
   const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [checkMessage, setCheckMessage] = useState('');
+  async function checkResults() {
+    setChecking(true); setCheckMessage('Checking fixture results…');
+    try {
+      const response = await apiService.client.post('/bets/settle', {}, { timeout: 120000 });
+      const updated = await apiService.getBets();
+      setBets(updated.data?.bets || []);
+      setCheckMessage(`${response.data.settled} selections settled; ${response.data.checked} fixtures checked.${response.data.failed ? ' Some checks will retry.' : ''}`);
+    } catch (error) { setCheckMessage(error.response?.data?.error || 'Result check could not complete. Please retry.'); }
+    finally { setChecking(false); }
+  }
 
   useEffect(() => {
     setBets(liveBets);
@@ -163,6 +180,10 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
           ))}
         </div>
 
+        {tab === 'mine' && <div style={{ marginBottom: 12 }}>
+          <button disabled={checking} onClick={checkResults} style={{ padding: '8px 12px', background: '#001f0e', color: '#b8f5d2', border: '1px solid #006833', borderRadius: 6 }}>{checking ? 'Checking…' : 'Check results'}</button>
+          <span role="status" style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{checkMessage}</span>
+        </div>}
         {loading ? (
           <div style={{ color: '#64748b', fontSize: 12, padding: 20 }}>Loading track record...</div>
         ) : tab === 'sporty'

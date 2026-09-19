@@ -43,6 +43,8 @@ export default function App() {
  const [searching, setSearching] = useState(false);
  const [showBets, setShowBets] = useState(false);
  const [showAlerts, setShowAlerts] = useState(false);
+ const [alertNotice, setAlertNotice] = useState(null);
+ useEffect(() => { if (!alertNotice) return; const timer = setTimeout(() => setAlertNotice(null), 30000); return () => clearTimeout(timer); }, [alertNotice]);
  const [showRecord, setShowRecord] = useState(false);
  const [betTab, setBetTab] = useState('slips'); // 'slips' | 'logger'
  const [bets, setBets] = useState([]);
@@ -96,6 +98,8 @@ export default function App() {
  on('UPCOMING_MATCHES', handleUpcomingMatches);
  on('BET_LOGGED', handleBetLogged);
  on('BET_UPDATED', handleBetUpdated);
+ const handleNewAlert = a => { if (a?.actionable) setAlertNotice(a); };
+ on('NEW_ALERT', handleNewAlert);
 
  const fetchInitial = async () => {
  try {
@@ -140,6 +144,7 @@ export default function App() {
  off('UPCOMING_MATCHES', handleUpcomingMatches);
  off('BET_LOGGED', handleBetLogged);
  off('BET_UPDATED', handleBetUpdated);
+ off('NEW_ALERT', handleNewAlert);
  disconnectWebSocket();
  };
  }, []);
@@ -282,6 +287,12 @@ export default function App() {
  <div className="sporty-app" style={{ background: '#0f1117', height: '100dvh', color: '#e2e8f0', fontFamily: "'Inter', system-ui, sans-serif", display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
  {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• HEADER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+ {alertNotice && <div role="status" style={{ position: 'fixed', bottom: 18, left: 12, right: 12, maxWidth: 520, margin: 'auto', zIndex: 100, padding: 12, background: '#17231d', border: '1px solid #00b859', borderRadius: 8 }}>
+   <button onClick={() => { setShowAlerts(true); setShowBets(false); setShowRecord(false); setAlertNotice(null); }} style={{ background: 'transparent', border: 0, color: '#e2e8f0', cursor: 'pointer', textAlign: 'left', width: '90%' }}>
+     <strong>{alertNotice.type === 'GOAL_FEST' ? 'Goal Fest' : 'New alert'}: {alertNotice.home} vs {alertNotice.away}</strong><br />Open alert details
+   </button>
+   <button aria-label="Dismiss alert" onClick={() => setAlertNotice(null)} style={{ background: 'transparent', border: 0, color: '#e2e8f0', cursor: 'pointer' }}>×</button>
+ </div>}
  <header className="sporty-header" style={{
  background: '#0a0d15', borderBottom: '1px solid #1e2535',
  padding: '0 18px', height: 56,
