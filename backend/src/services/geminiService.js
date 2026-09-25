@@ -800,7 +800,8 @@ Return ONLY: {"homeSquadIntegrity":null,"awaySquadIntegrity":null,"homeKeyAbsenc
 export async function generateMatchNarrative(analysis, matchInfo) {
   const { home = '?', away = '?', league = '', leagueId = 0, status = 'NS', matchMinutes = 0, score = '0-0',
     homeCards, awayCards, homePosition = null, awayPosition = null, homePoints = null, awayPoints = null } = matchInfo || {};
-  const { overallScore = 0, recommendations = [], parameters = {}, poisson, winCall } = analysis || {};
+  const { overallScore = null, recommendations = [], parameters = {}, poisson, winCall } = analysis || {};
+  const pickScoreText = overallScore == null ? 'no model pick score' : `pick score ${overallScore}/100`;
 
   const topRec = recommendations[0];
 
@@ -857,8 +858,8 @@ export async function generateMatchNarrative(analysis, matchInfo) {
 
   const buildStructuredNarrative = (coreText = '') => {
     const baseline = isLive
-      ? `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, with table context ${tableContext}, driven by ${topParams[0]?.name || 'the strongest V9 signal'} and ${topParams[1]?.name || 'supporting context'}.`
-      : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence ?? overallScore}%, table context ${tableContext}, with form ${formCompact(homeFormRaw) || 'Unavailable'} vs ${formCompact(awayFormRaw) || 'Unavailable'} and opponent quality setting the baseline.`;
+      ? `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence != null ? `${winCall.confidence}%` : pickScoreText}, with table context ${tableContext}, driven by ${topParams[0]?.name || 'the strongest V9 signal'} and ${topParams[1]?.name || 'supporting context'}.`
+      : `${winCall?.selection || 'Wins (Undecided)'} at ${winCall?.confidence != null ? `${winCall.confidence}%` : pickScoreText}, table context ${tableContext}, with form ${formCompact(homeFormRaw) || 'Unavailable'} vs ${formCompact(awayFormRaw) || 'Unavailable'} and opponent quality setting the baseline.`;
 
     const liveReality = isLive
       ? `Possession is ${pairText(homePoss, awayPoss)}, shots are ${pairText(homeShots, awayShots)}, xG is ${pairText(homeXg, awayXg)}, and the score is ${score}.${dataSourceStatus?.liveStats?.status ? ` Live feed status: ${dataSourceStatus.liveStats.status}.` : ''}`
@@ -883,7 +884,7 @@ export async function generateMatchNarrative(analysis, matchInfo) {
     `ABSENCES / SUSPENSIONS: ${home}: ${absenceText(homeAbsences)} | ${away}: ${absenceText(awayAbsences)}.`,
     `CONFIRMED NEWS (last 72h, Gemini Search): ${confirmedNews ? JSON.stringify(confirmedNews) : 'No material confirmed news found.'}`,
     `OPPOSITION QUALITY: ${home} ${homeOpposition?.summary || 'recent opponent strength unavailable.'} ${away} ${awayOpposition?.summary || 'recent opponent strength unavailable.'}`,
-    `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence ?? overallScore}%).`,
+    `WIN CALL: ${winCall?.selection || 'Wins (Undecided)'} (${winCall?.confidence != null ? `${winCall.confidence}%` : pickScoreText}).`,
   ].join('\n');
 
   // ── Build rich live-context block for the LLM ──
@@ -935,14 +936,14 @@ Return ONLY valid JSON: {"text": "<your 2-3 sentence note>", "confidence": <inte
 
   const userText = topRec
     ? `Match: ${home} vs ${away} (${league}).
-${isLive ? liveContext : `Pre-match analysis. Overall V9 Score: ${overallScore}/100`}
+${isLive ? liveContext : `Pre-match analysis. Model ${pickScoreText} (not a win chance).`}
 ${metricsBlock}
 Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}
 Key signal 3: ${topParams[2]?.name} [score ${topParams[2]?.score}] — ${(topParams[2]?.assessment || '').slice(0, 100)}
 Write 2-3 sentences explaining the live betting opportunity and WHY the top recommendation makes sense given the situation.`
     : `Match: ${home} vs ${away} (${league}).
-${isLive ? liveContext : `Pre-match. Overall V9 Score: ${overallScore}/100`}
+${isLive ? liveContext : `Pre-match. Model ${pickScoreText} (not a win chance).`}
 ${metricsBlock}
 Key signal 1: ${topParams[0]?.name} [score ${topParams[0]?.score}] — ${(topParams[0]?.assessment || '').slice(0, 100)}
 Key signal 2: ${topParams[1]?.name} [score ${topParams[1]?.score}] — ${(topParams[1]?.assessment || '').slice(0, 100)}

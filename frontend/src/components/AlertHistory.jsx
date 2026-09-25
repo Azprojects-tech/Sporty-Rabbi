@@ -66,7 +66,7 @@ export default function AlertHistory(){
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               {gf&&<span style={{background:'#2a1200',border:'1px solid #f97316',borderRadius:5,padding:'2px 7px',fontSize:9,fontWeight:800,color:'#fb923c'}}>GOAL FEST</span>}
               <span style={{border:'1px solid '+(act?'#006833':'#2d3748'),borderRadius:5,padding:'2px 7px',fontSize:9,fontWeight:800,color:act?'#00b859':'#64748b'}}>{act?'ACTIONABLE':'EXPIRED'}</span>
-              <span style={{fontSize:11,fontWeight:700,color:confColor(a.confidence||0)}}>{a.confidence||0}</span>
+              <span title="Alert score out of 100" style={{fontSize:11,fontWeight:700,color:confColor(a.confidence||0)}}>{a.confidence!=null?`${Math.round(Number(a.confidence))}/100`:'—'}</span>
             </div>
           </div>
           <div style={{fontSize:10,color:'#4a5568',marginBottom:6}}>{a.league||'Match'}{a.currentMinute!=null?` | current minute ${a.currentMinute}'`:''}{a.status?` | ${a.status}`:''}</div>

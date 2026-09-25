@@ -8,6 +8,7 @@ import { evaluateForecasts } from '../../shared/forecastEvaluation.js';
 import { FORECAST_VERSION } from '../../shared/forecastMath.js';
 import { eligibleTicketCandidates, chooseCombination, MIN_COMBINED_PROBABILITY } from './services/ticketSelectionService.js';
 import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
+import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds } from '../../shared/betLogging.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -2350,7 +2351,8 @@ function deriveCalibrationAdjustment(bucket, minSample = 8) {
 }
 
 function recomputePostMatchCalibrationFromBets(allBets = bets) {
-  const settled = (allBets || []).filter((b) => b.result === 'won' || b.result === 'lost');
+  // Practice (paper) bets never feed real-money calibration.
+  const settled = splitPaperBets(allBets || []).real.filter((b) => b.result === 'won' || b.result === 'lost');
   const byMode = {};
   const byFamily = {};
 
@@ -2884,6 +2886,8 @@ app.post('/api/bets/played', async (req, res) => {
   if (!req.body?.matchId || !req.body?.selection) {
     return res.status(400).json({ error: 'matchId and exact selection are required.' });
   }
+  const betInputs = validateBetStakeAndOdds(req.body);
+  if (!betInputs.ok) return res.status(400).json({ error: betInputs.error });
 
   const sourceKey = [
     String(req.body.matchId),
@@ -2929,8 +2933,10 @@ app.post('/api/bets/played', async (req, res) => {
     analysisVersion: req.body.analysisVersion || null,
     analysisTimestamp: req.body.analysisTimestamp || null,
     systemOdds: captureDisplayedOdds(req.body.displayedOdds, req.body.matchId, marketKey),
-    odds: finiteNumberOrNull(req.body.odds),
-    stake: finiteNumberOrNull(req.body.stake),
+    odds: betInputs.odds,
+    stake: betInputs.stake,
+    bookmaker: betInputs.bookmaker,
+    paper: betInputs.paper,
     result: 'pending',
     finalScore: null,
     settledAt: null,
@@ -3158,6 +3164,9 @@ app.get('/api/bets/slips', async (req, res) => {
 });
 
 app.post('/api/bets', async (req, res) => {
+  // G: every new bet needs the stake and the SportyBet price actually taken.
+  const betInputs = validateBetStakeAndOdds(req.body);
+  if (!betInputs.ok) return res.status(400).json({ error: betInputs.error });
   // Normalize manual bet type labels to engine categories for pattern analysis
   const BET_TYPE_MAP = {
     home_win: 'WINS_ONLY', away_win: 'WINS_ONLY', draw: 'NEUTRAL',
@@ -3179,6 +3188,10 @@ app.post('/api/bets', async (req, res) => {
     betType: BET_TYPE_MAP[req.body.betType] || req.body.betType || 'UNKNOWN',
     slipMode: normalizeSlipMode(req.body.slipMode || req.body.mode || req.body.riskMode),
     competitionFamily: req.body.competitionFamily || competitionContext.family,
+    stake: betInputs.stake,
+    odds: betInputs.odds,
+    bookmaker: betInputs.bookmaker,
+    paper: betInputs.paper,
     createdAt: new Date().toISOString(),
   };
 
@@ -3249,6 +3262,8 @@ app.get('/api/stats', async (req, res) => {
       console.error('Firestore stats read error:', err.message);
     }
   }
+  const { real: realBets, paper: paperBets } = splitPaperBets(allBets);
+  allBets = realBets;
 
   const wins = allBets.filter((b) => b.result === 'won').length;
   const losses = allBets.filter((b) => b.result === 'lost').length;
@@ -3260,6 +3275,7 @@ app.get('/api/stats', async (req, res) => {
     losses,
     winRate: `${winRate}%`,
     liveBetsAvailable: liveMatches.length,
+    practiceBets: summarizePaperBets(paperBets),
   });
 });
 
@@ -3275,6 +3291,8 @@ app.get('/api/stats/competition', async (req, res) => {
       console.error('Firestore competition stats read error:', err.message);
     }
   }
+  const { real: realBets, paper: paperBets } = splitPaperBets(allBets);
+  allBets = realBets;
 
   const settled = allBets.filter((b) => b.result === 'won' || b.result === 'lost');
   const byFamily = {};
@@ -3330,6 +3348,7 @@ app.get('/api/stats/competition', async (req, res) => {
   res.json({
     totalSettled: settled.length,
     families: rows,
+    practiceBets: summarizePaperBets(paperBets),
   });
 });
 
@@ -3345,6 +3364,8 @@ app.get('/api/stats/mode', async (req, res) => {
       console.error('Firestore mode stats read error:', err.message);
     }
   }
+  const { real: realBets, paper: paperBets } = splitPaperBets(allBets);
+  allBets = realBets;
 
   const settled = allBets.filter((b) => b.result === 'won' || b.result === 'lost');
   const byMode = {};
@@ -3417,6 +3438,7 @@ app.get('/api/stats/mode', async (req, res) => {
     totalSettled: settled.length,
     modes: rows,
     bestMode,
+    practiceBets: summarizePaperBets(paperBets),
     note: rows.length === 0
       ? 'No settled bets with mode tags yet. Start logging bets with slipMode to unlock tracking.'
       : 'Best mode requires at least 5 settled bets with valid stake/odds inputs.',

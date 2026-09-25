@@ -657,6 +657,8 @@ function computeWinCall({ home, away, poisson, recommendations = [] }) {
 
 // ─── BOOKIE EDGE DETECTOR ─────────────────────────────────────────────────────
 
+const FULL_SAMPLE_GAMES = 10;
+
 function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations = [], analysisQuality = null }) {
   const probs = poisson?.probabilities || {};
   const homeWin = finiteNumberOrNull(probs.homeWin);
@@ -692,6 +694,18 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
       : dataCompletenessScore >= 60
         ? 'Medium'
         : 'Low';
+  // D: what the user sees is scaled by the smaller team's (effective) game sample,
+  // so "4 of 4 inputs from 2 games" is not shown as "Data 100%". The unscaled
+  // coverage score above still drives INSUFFICIENT_DATA so decisions are unchanged.
+  const sampleSizes = [analysisQuality?.homeSampleSize, analysisQuality?.awaySampleSize].map(finiteNumberOrNull);
+  const minSample = sampleSizes.every((v) => v != null) ? Math.min(...sampleSizes) : null;
+  const displayScore = dataCompletenessScore == null
+    ? null
+    : minSample == null ? dataCompletenessScore : Math.round(dataCompletenessScore * Math.min(1, minSample / FULL_SAMPLE_GAMES));
+  const displayLabel = displayScore == null ? 'Unknown' : displayScore >= 80 ? 'High' : displayScore >= 50 ? 'Medium' : 'Low';
+  const sampleText = minSample == null
+    ? 'game sample unknown'
+    : `${+minSample.toFixed(1)} of ${FULL_SAMPLE_GAMES} recent games for the thinner side`;
 
   // Compatibility field now mirrors evidence quality; never mix it with probability.
   const recommendationConfidence = qualityScore;
@@ -739,7 +753,11 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
       paramCoverage,
       hasPoisson: hasPoissonSignal,
       contradiction: hasContradiction,
-      meaning: 'How much required evidence is available and coherent for this match analysis.',
+      displayScore,
+      displayLabel,
+      sampleText,
+      minSample,
+      meaning: 'How much required evidence is available and coherent for this match analysis. displayScore is scaled down for small game samples.',
     },
     recommendationConfidence: {
       score: recommendationConfidence,
@@ -757,7 +775,7 @@ function buildDecisionMetrics({ overallScore, winCall, poisson, recommendations 
       meaning: 'Operational decision state for this recommendation: PLAY, WATCH, NO_PLAY, or INSUFFICIENT_DATA.',
     },
     signalStrength: {
-      score: overallScore,
+      score: overallScore ?? null,
       qualityScore: analysisQuality?.score ?? null,
       topRecommendationConfidence: recommendations?.[0]?.confidence ?? null,
       meaning: 'How strong and coherent the model signal is based on data quality and parameter agreement.',
@@ -1016,7 +1034,9 @@ export function analyzeV9(matchData = {}) {
     ? paramScores.reduce((acc, [s, w]) => acc + s * (w / totalWeight), 0)
     : 50;
   const legacyOverallScore = Math.round(Math.max(0, Math.min(rawScore * scalar + (competitionModelProfile.overallAdjustment ?? 0), 100)));
-  const overall = predictionCore.signalScore ?? legacyOverallScore;
+  // D: no model → no score. The legacy parameter composite is kept only as a
+  // diagnostic field; it must never be displayed as if it were a prediction.
+  const overall = predictionCore.signalScore ?? null;
 
   const legacyQuality = computeAnalysisQuality({
     p1,

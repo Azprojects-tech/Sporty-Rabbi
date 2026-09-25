@@ -6,7 +6,7 @@ const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P']);
 
 export function MatchCard({ match, onSelectMatch }) {
   const isLive = LIVE_STATUSES.has(match.status);
-  const conf   = match.confidence || 0;
+  const conf   = Number.isFinite(Number(match.confidence)) && match.confidence != null ? Math.round(Number(match.confidence)) : null;
   const [hs, as_] = (match.score || '0-0').split('-').map(Number);
   const hasPossession = Number(match.possession?.home) > 0 && Number(match.possession?.away) > 0;
   const hasShots = Number(match.shots?.home) > 0 && Number(match.shots?.away) > 0;
@@ -48,8 +48,8 @@ export function MatchCard({ match, onSelectMatch }) {
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: CONF_COLOR(conf) }}>
-            A47 {conf}%
+          <span title="Pick score out of 100. Not a win chance." style={{ fontSize: 11, fontWeight: 700, color: conf == null ? '#4a5568' : CONF_COLOR(conf) }}>
+            {conf == null ? 'No prediction' : `Pick ${conf}/100`}
           </span>
           <button
             onClick={e => { e.stopPropagation(); onSelectMatch(); }}
@@ -119,7 +119,7 @@ export function MatchCard({ match, onSelectMatch }) {
         <StatPill label="Shots" value={hasShots ? `${match.shots.home}-${match.shots.away}` : 'Unavailable'} />
         <StatPill label="xG"    value={hasXg ? `${Number(match.xg.home).toFixed(1)}-${Number(match.xg.away).toFixed(1)}` : 'Unavailable'} />
         <div style={{ flex: 1, minWidth: 80 }}>
-          <ConfBar score={conf} />
+          {conf != null && <ConfBar score={conf} />}
         </div>
       </div>
     </div>
