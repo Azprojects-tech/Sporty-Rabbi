@@ -61,6 +61,20 @@ import {
   settlePredictionDocument,
   summarizePredictionDocuments,
 } from '../../shared/predictionLedger.js';
+import { formResultToModelInputs, isUsableStoredGoalInputs } from '../../shared/teamEvidence.js';
+import {
+  applyStatusOverlay,
+  datesNeedingStatusRefresh,
+  isFinishedStatus,
+  isPredictionLocked,
+  isPrematchStatus,
+  isVoidStatus,
+  statusEntryFromLiveMatch,
+  statusEntryFromProviderFixture,
+  updateStatusOverlay,
+} from '../../shared/fixtureStatus.js';
+import { getLeagueCoverage } from './services/analyticsService.js';
+import { coveragePlan } from '../../shared/leagueCoverage.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -170,7 +184,7 @@ wss.on('connection', (ws) => {
     // Send initial state
     const connectedMsg = JSON.stringify({ type: 'CONNECTED', message: '🐰 SportyRabbi live feed active' });
     const liveMsg = JSON.stringify({ type: 'LIVE_MATCHES', payload: liveMatches || [] });
-    const upcomingMsg = JSON.stringify({ type: 'UPCOMING_MATCHES', payload: upcomingMatches || [] });
+    const upcomingMsg = JSON.stringify({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(upcomingMatches || []) });
     
     if (ws.readyState === ws.OPEN) {
       ws.send(connectedMsg);
@@ -474,6 +488,13 @@ const DAILY_PREP_TEAM_CALL_BUDGET = toNumberWithMin(
   2500,
   2,
 );
+// B: extra "last 20 games, any competition" calls for teams with < 5 games in
+// the fixture's competition this season (cups, early season). Capped per run.
+const DAILY_PREP_FALLBACK_CALL_BUDGET = toNumberWithMin(
+  process.env.DAILY_PREP_FALLBACK_CALL_BUDGET,
+  600,
+  0,
+);
 const PORTAL_OPEN_REFRESH_COOLDOWN_MS = toNumberWithMin(
   process.env.PORTAL_OPEN_REFRESH_COOLDOWN_MS,
   15000,
@@ -519,10 +540,12 @@ function getEffectiveDailyPrepTeamBudget() {
   return Math.min(DAILY_PREP_TEAM_CALL_BUDGET, spendable);
 }
 
-function selectDailyPrepCandidates(fixtures = [], maxFixtures = DAILY_PREP_MAX_ANALYZED_FIXTURES, teamBudget = DAILY_PREP_TEAM_CALL_BUDGET) {
+function selectDailyPrepCandidates(fixtures = [], maxFixtures = DAILY_PREP_MAX_ANALYZED_FIXTURES, teamBudget = DAILY_PREP_TEAM_CALL_BUDGET, now = Date.now()) {
   const valid = fixtures
     .filter((f) => f?.homeTeamId && f?.awayTeamId && f?.season != null && f?.kickoffUTC)
     .filter((f) => ['NS', 'TBD'].includes(String(f.status || 'NS').toUpperCase()))
+    // Predictions lock at kickoff: a started/finished fixture is never (re)analysed.
+    .filter((f) => Date.parse(f.kickoffUTC) > now)
     .sort((a, b) => Date.parse(a.kickoffUTC) - Date.parse(b.kickoffUTC));
 
   const target = Math.min(valid.length, maxFixtures, Math.floor(Math.max(0, teamBudget) / 2));
@@ -1107,7 +1130,7 @@ function sanitizeMatch(match) {
     },
     status: String(match.status || ''),
     matchMinutes: Number(match.matchMinutes || 0),
-    confidence: Number(match.confidence || 0),
+    confidence: numOrNull(match.confidence),
     decisionProbability: numOrNull(match.decisionProbability),
     opportunities: Array.isArray(match.opportunities) ? match.opportunities.map(String) : [],
     league: String(match.league || 'Unknown'),
@@ -1452,34 +1475,32 @@ async function analyzeMatch(match) {
       const awayTeamId = teams.away?.id;
       if (homeTeamId && awayTeamId) {
         const [hRes, aRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes] = await Promise.allSettled([
-          getTeamForm(homeTeamId, league.id, league.season ?? null),
-          getTeamForm(awayTeamId, league.id, league.season ?? null),
+          getTeamForm(homeTeamId, league.id, league.season ?? null, { before: fixture.date || null }),
+          getTeamForm(awayTeamId, league.id, league.season ?? null, { before: fixture.date || null }),
           getStandings({ leagueId: league.id, season: league.season ?? null, homeTeamId, awayTeamId }),
           getTeamStatistics(homeTeamId, league.id, league.season ?? null),
           getTeamStatistics(awayTeamId, league.id, league.season ?? null),
           getTeamInjuries(homeTeamId, league.id, league.season ?? null, fixture.id),
           getTeamInjuries(awayTeamId, league.id, league.season ?? null, fixture.id),
         ]);
-        // Convert 'WWDLWWDLWW' → 'W-W-D-L-W-W-D-L-W-W' for parseForm()
-        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
-          const hs = hRes.value.stats;
-          if (hs.form)  homeFormStr      = hs.form.split('').join('-');
-          homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
-          if (parseFloat(hs.avgGoalsFor)     >= 0) homeAvgGF        = parseFloat(hs.avgGoalsFor);
-          if (parseFloat(hs.avgGoalsAgainst) >= 0) homeAvgGA = parseFloat(hs.avgGoalsAgainst);
-          if (hs.goalDrought  != null) homeGoalDrought  = hs.goalDrought;
-          if (hs.recentLosses != null) homeRecentLosses = hs.recentLosses;
-          if (hs.recentOpposition) match.homeRecentOpposition = hs.recentOpposition;
+        // Placeholders ('Unavailable', 0.00 from an empty sample) stay missing.
+        const hIn = hRes.status === 'fulfilled' ? formResultToModelInputs(hRes.value) : null;
+        const aIn = aRes.status === 'fulfilled' ? formResultToModelInputs(aRes.value) : null;
+        if (hIn?.sampleSize != null) {
+          homeFormStr = hIn.form; homeSampleSize = hIn.sampleSize;
+          homeAvgGF = hIn.goalsAvgFor; homeAvgGA = hIn.goalsAvgAgainst;
+          if (hIn.goalDrought != null) homeGoalDrought = hIn.goalDrought;
+          if (hIn.recentLosses != null) homeRecentLosses = hIn.recentLosses;
+          if (hIn.recentOpposition) match.homeRecentOpposition = hIn.recentOpposition;
+          match.homeEvidence = hIn.evidence;
         }
-        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
-          const as = aRes.value.stats;
-          if (as.form)  awayFormStr      = as.form.split('').join('-');
-          awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
-          if (parseFloat(as.avgGoalsFor)     >= 0) awayAvgGF        = parseFloat(as.avgGoalsFor);
-          if (parseFloat(as.avgGoalsAgainst) >= 0) awayAvgGA = parseFloat(as.avgGoalsAgainst);
-          if (as.goalDrought  != null) awayGoalDrought  = as.goalDrought;
-          if (as.recentLosses != null) awayRecentLosses = as.recentLosses;
-          if (as.recentOpposition) match.awayRecentOpposition = as.recentOpposition;
+        if (aIn?.sampleSize != null) {
+          awayFormStr = aIn.form; awaySampleSize = aIn.sampleSize;
+          awayAvgGF = aIn.goalsAvgFor; awayAvgGA = aIn.goalsAvgAgainst;
+          if (aIn.goalDrought != null) awayGoalDrought = aIn.goalDrought;
+          if (aIn.recentLosses != null) awayRecentLosses = aIn.recentLosses;
+          if (aIn.recentOpposition) match.awayRecentOpposition = aIn.recentOpposition;
+          match.awayEvidence = aIn.evidence;
         }
         // V10.1: aggregate H2H counts are not converted into invented scorelines.
         // H2H remains optional until exact historical fixture rows are oriented safely
@@ -1570,6 +1591,8 @@ async function analyzeMatch(match) {
         awayGoalsAvgFor:     awayAvgGF,
         homeSampleSize,
         awaySampleSize,
+        homeEvidence: match.homeEvidence ?? null,
+        awayEvidence: match.awayEvidence ?? null,
         homeGoalsAvgAgainst: homeAvgGA,
         awayGoalsAvgAgainst: awayAvgGA,
         homeConversionPct,
@@ -1626,7 +1649,7 @@ async function analyzeMatch(match) {
       status: statusStr,
       isLive: normalizedStatus === 'LIVE',
       matchMinutes: liveElapsed || matchMinutesElapsed || 0,
-      confidence: confidence > 0 ? +confidence.toFixed(1) : 0,
+      confidence: confidence > 0 ? +confidence.toFixed(1) : null,
       decisionProbability: confidence > 0 ? confidence : null,
       opportunities: opportunitiesArr.filter(Boolean),
       league: league.name || 'Unknown',
@@ -1675,7 +1698,7 @@ async function analyzeMatch(match) {
       xg: { home: null, away: null },
       status: statusStr,
       matchMinutes: typeof fixture.status === 'object' ? (fixture.status?.elapsed || 0) : 0,
-      confidence: 0,
+      confidence: null,
       decisionProbability: null,
       opportunities: [],
       league: league.name || 'Unknown',
@@ -1781,6 +1804,7 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
           };
         });
 
+      updateStatusOverlay(fixtureStatusOverlay, lightweightLive.map((m) => statusEntryFromLiveMatch(m)));
       if (lightweightLive.length > 0) {
         liveMatches = lightweightLive;
         broadcast({ type: 'LIVE_MATCHES', payload: liveMatches });
@@ -1821,6 +1845,48 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
     livePollMetrics.lastDurationMs = Date.now() - pollStarted;
     isPolling = false;
   }
+}
+
+// ─── V10.7 FIXTURE STATUS OVERLAY ──────────────────────────────────────────
+// The morning schedule is static; this overlay keeps status/score/minute honest
+// during the day. Fed by the live poll (free — already fetched) and by a
+// throttled /fixtures?date= check that only runs while a portal is open AND a
+// fixture in the feed has kicked off without a known final status.
+const fixtureStatusOverlay = new Map();
+const SCHEDULE_STATUS_REFRESH_MINUTES = Math.max(5, Number(process.env.SCHEDULE_STATUS_REFRESH_MINUTES || 15));
+let lastScheduleStatusRefreshAt = 0;
+let scheduleStatusRefreshInFlight = null;
+
+function withFixtureStatuses(matches) {
+  return applyStatusOverlay(matches, fixtureStatusOverlay);
+}
+
+async function refreshScheduleStatuses(reason = 'portal-active') {
+  if (scheduleStatusRefreshInFlight) return scheduleStatusRefreshInFlight;
+  if (!API_KEY || shouldSkipApiCalls()) return 0;
+  if (Date.now() - lastScheduleStatusRefreshAt < SCHEDULE_STATUS_REFRESH_MINUTES * 60000) return 0;
+  const feed = [...(upcomingMatches || []), ...(calibrationStore.dailySchedule || [])];
+  const dates = datesNeedingStatusRefresh(feed, fixtureStatusOverlay).slice(0, 2);
+  if (dates.length === 0) return 0;
+  lastScheduleStatusRefreshAt = Date.now();
+  scheduleStatusRefreshInFlight = (async () => {
+    let updated = 0;
+    for (const date of dates) {
+      try {
+        const rows = await fetchFinishedFixturesForUtcDate(date);
+        const entries = rows.map((r) => statusEntryFromProviderFixture(r)).filter(Boolean);
+        updateStatusOverlay(fixtureStatusOverlay, entries);
+        updated += entries.length;
+      } catch (err) {
+        console.warn(`[Status] ${reason} schedule status refresh failed for ${date}: ${err.message}`);
+      }
+    }
+    if (updated > 0 && upcomingMatches.length > 0) {
+      broadcast({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(upcomingMatches) });
+    }
+    return updated;
+  })().finally(() => { scheduleStatusRefreshInFlight = null; });
+  return scheduleStatusRefreshInFlight;
 }
 
 let portalLiveRefreshPromise = null;
@@ -1864,6 +1930,7 @@ async function refreshLiveForConnectedPortals() {
   try {
     await pollLiveMatches({ forceApi: true, enrich: false });
     await runGoalFestSignalScan('portal-active');
+    await refreshScheduleStatuses('portal-active');
   } catch (err) {
     console.warn('[LiveRefresh] Shared portal refresh failed:', err.message);
   } finally {
@@ -1979,7 +2046,7 @@ async function pollUpcomingMatches() {
         setCache('upcomingMatches', upcomingMatches);
       }
       if (upcomingMatches.length > 0) {
-        broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+        broadcast({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(upcomingMatches) });
       }
       return;
     }
@@ -1990,7 +2057,7 @@ async function pollUpcomingMatches() {
   if (cached !== null) {
     if (cached.length > 0) {
       upcomingMatches = cached;
-      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+      broadcast({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(upcomingMatches) });
     }
     return;
   }
@@ -2020,7 +2087,7 @@ async function pollUpcomingMatches() {
       console.log(`✅ Processed ${upcomingMatches.length} upcoming matches`);
       setCache('upcomingMatches', upcomingMatches);
       
-      broadcast({ type: 'UPCOMING_MATCHES', payload: upcomingMatches });
+      broadcast({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(upcomingMatches) });
       console.log(`✓ Broadcasted ${upcomingMatches.length} upcoming matches to ${clients.size} clients`);
     } else {
       // Do NOT cache [] or broadcast [] — calibration data is the source of truth.
@@ -2486,6 +2553,14 @@ async function enrichOddsShortlist(matches, maxFixtures = 24) {
     .sort((a,b) => (a.oddsCheckedAt ? 1 : 0) - (b.oddsCheckedAt ? 1 : 0) || probability(b)-probability(a)).slice(0,maxFixtures);
   for (const m of shortlist) {
     if (Date.now() >= deadline) break;
+    const coverage = await getLeagueCoverage(m.leagueId, m.season ?? null, { canLaunch: () => Date.now() < deadline && !shouldSkipApiCalls() });
+    if (coverage?.odds === false) {
+      // E: provider has no odds for this league — do not spend a call asking.
+      m.oddsCheckedAt = new Date().toISOString();
+      m.oddsSnapshot = { status: 'UNAVAILABLE', source: 'API_FOOTBALL', reason: 'LEAGUE_ODDS_NOT_COVERED', odds: {} };
+      m.odds = null;
+      continue;
+    }
     const snapshot = await loadOddsSnapshot(m.id, deadline);
     m.oddsCheckedAt = new Date().toISOString();
     m.oddsSnapshot = snapshot;
@@ -3058,7 +3133,7 @@ app.get('/api/upcoming', (req, res) => {
     source = calibrationStore.matches;
   }
   
-  let filtered = matchType ? source.filter(m => m.matchType === matchType) : source;
+  let filtered = withFixtureStatuses(matchType ? source.filter(m => m.matchType === matchType) : source);
   res.json({ count: filtered.length, matches: filtered });
 });
 
@@ -3775,6 +3850,85 @@ app.get('/api/analyze/narrative/:key', (req, res) => {
 
 // ─── AGENT 47 V9 ENDPOINTS ─────────────────────────────────────────────────
 
+// ─── V10.7 KICKOFF LOCK ─────────────────────────────────────────────────────
+const kickoffStatusLookups = new Map(); // fixtureId → last provider lookup (ms)
+const KICKOFF_STATUS_LOOKUP_COOLDOWN_MS = 2 * 60 * 1000;
+
+function findStoredPrematchAnalysis(fixtureId, body = {}) {
+  const norm = (s) => String(s || '').toLowerCase().trim();
+  const stored = (calibrationStore.matches || []).find((m) => fixtureId != null && String(m.id) === String(fixtureId))
+    || (calibrationStore.matches || []).find((m) => norm(m.home) === norm(body.home) && norm(m.away) === norm(body.away)
+      && (!body.kickoffUTC || !m.kickoffUTC || m.kickoffUTC === body.kickoffUTC));
+  return stored?.analysis ? { analysis: stored.analysis, preparedAt: calibrationStore.calibratedAt || null } : null;
+}
+
+/**
+ * Decide what /api/analyze may do for a fixture whose kickoff has passed.
+ * - pre-match (kickoff in the future): null → normal analysis.
+ * - finished/void: { response } → the locked pre-match analysis, or an explicit
+ *   "no prediction" (never a fresh model run that could see the result).
+ * - live: { status, prematchSnapshot } → in-play analysis, with the locked
+ *   pre-match prediction attached for reference.
+ */
+async function resolveKickoffLock(body, fixtureId, kickoffUTC, now = Date.now()) {
+  let status = String(body.status || 'NS').toUpperCase();
+  const known = fixtureId ? fixtureStatusOverlay.get(String(fixtureId)) : null;
+  let score = body.score ?? null;
+  let minute = body.matchMinutes ?? 0;
+  if (known) {
+    status = known.status;
+    score = known.score ?? score;
+    minute = known.matchMinutes;
+  }
+  if (!isPredictionLocked({ kickoffUTC, status }, now)) return null;
+
+  if (isPrematchStatus(status) && fixtureId && API_KEY && !shouldSkipApiCalls()
+    && now - (kickoffStatusLookups.get(String(fixtureId)) || 0) > KICKOFF_STATUS_LOOKUP_COOLDOWN_MS) {
+    kickoffStatusLookups.set(String(fixtureId), now);
+    if (kickoffStatusLookups.size > 2000) kickoffStatusLookups.delete(kickoffStatusLookups.keys().next().value);
+    try {
+      const entry = statusEntryFromProviderFixture(await getSettlementFixture(fixtureId, { shouldSkipApiCalls, updateQuotaFromHeaders }));
+      if (entry) {
+        updateStatusOverlay(fixtureStatusOverlay, [entry]);
+        status = entry.status; score = entry.score ?? score; minute = entry.matchMinutes;
+      }
+    } catch (err) {
+      console.warn(`[KickoffLock] status lookup failed for ${fixtureId}: ${err.message}`);
+    }
+  }
+
+  const stored = findStoredPrematchAnalysis(fixtureId, body);
+  const prematchSnapshot = stored ? {
+    lockedAt: kickoffUTC || null,
+    preparedAt: stored.preparedAt,
+    analysisVersion: stored.analysis.analysisVersion ?? null,
+    recommendations: stored.analysis.recommendations || [],
+    dailySignal: stored.analysis.dailySignal || null,
+    predictionCore: stored.analysis.predictionCore || null,
+  } : null;
+
+  if (isFinishedStatus(status) || isVoidStatus(status)) {
+    const finalState = { finalStatus: status, finalScore: isFinishedStatus(status) ? score : null };
+    if (stored) {
+      return { response: {
+        ...stored.analysis, ...finalState, locked: true, noPrediction: false, prematchSnapshot,
+        lockReason: 'Match has finished. Showing the prediction that was locked before kickoff.',
+      } };
+    }
+    // No pre-match analysis exists. Run the model with NO evidence and NO result
+    // purely to return a well-formed "no prediction" payload; no API calls are made.
+    const blank = analyzeV9({
+      home: body.home, away: body.away, league: body.league, leagueId: body.leagueId, season: body.season ?? null,
+      kickoffUTC, status: 'NS', matchMinutes: 0, score: null, odds: null, oddsSnapshot: null,
+    });
+    return { response: {
+      ...blank, ...finalState, recommendations: [], locked: true, noPrediction: true, prematchSnapshot: null,
+      lockReason: 'Match has finished and no prediction was made before kickoff, so none is shown.',
+    } };
+  }
+  return { status: isPrematchStatus(status) ? body.status : status, score, minute, prematchSnapshot };
+}
+
 /**
  * POST /api/analyze
  * Full V9 analysis for a match card click.
@@ -3795,9 +3949,24 @@ async function analyzeFixtureRequest(req, res) {
     const homeTeamId = body.homeTeamId;
     const awayTeamId = body.awayTeamId;
     const leagueId   = body.leagueId || 0;
+    const fixtureId  = body.fixtureId || body.id || null;
+    // Evidence cutoff: only matches completed before THIS fixture's kickoff count,
+    // so a match is never analysed using its own result.
+    const kickoffCutoff = body.kickoffUTC || body.fixtureContext?.kickoffUTC || null;
+
+    // ── Step 0: kickoff lock ────────────────────────────────────────────────
+    // The morning schedule can still say NS after kickoff. Resolve the real
+    // status (overlay first, then one cached-by-id provider lookup) before
+    // doing any work. Finished matches return the locked pre-match analysis.
+    const lockResult = await resolveKickoffLock(body, fixtureId, kickoffCutoff);
+    if (lockResult?.response) return res.json(lockResult.response);
+    if (lockResult?.status) {
+      body.status = lockResult.status;
+      if (lockResult.score != null) body.score = lockResult.score;
+      if (lockResult.minute != null) body.matchMinutes = lockResult.minute;
+    }
     const isLive     = body.status === 'LIVE' || ['1H','2H','HT','ET','BT','P'].includes(body.status);
     const matchMins  = body.matchMinutes || 0;
-    const fixtureId  = body.fixtureId || body.id || null;
 
     const hasMetricValue = (v) => finiteNumberOrNull(v) != null;
     const hasAnyMetric = (obj) => hasMetricValue(obj?.home) || hasMetricValue(obj?.away);
@@ -3813,6 +3982,7 @@ async function analyzeFixtureRequest(req, res) {
     // A match click means "give me the full Agent47 evidence desk". We spend calls
     // here intentionally, while retaining the quota guard and analytics-service cache.
     let enriched = { ...body };
+    let coverage = coveragePlan(null);
     // Narrative facts are server-derived, not client-supplied or synthetic inputs.
     enriched.homeRecentFixtures = [];
     enriched.awayRecentFixtures = [];
@@ -3822,43 +3992,36 @@ async function analyzeFixtureRequest(req, res) {
     if (clickEnrichmentEnabled && homeTeamId && awayTeamId) {
       const season = body.season ?? body.fixtureContext?.season ?? null;
       if (!shouldSkipApiCalls()) {
+        // E: ask the provider only for data it actually covers in this league.
+        coverage = coveragePlan(await getLeagueCoverage(leagueId, season, { canLaunch: () => !shouldSkipApiCalls() }));
+        const notCovered = (what) => Promise.resolve({ status: 'NOT_COVERED', reason: `API-Football has no ${what} coverage for this league` });
         const [hRes, aRes, standingsRes, hStatsRes, aStatsRes, hInjRes, aInjRes, h2hRes] = await Promise.allSettled([
-          getTeamForm(homeTeamId, leagueId, season),
-          getTeamForm(awayTeamId, leagueId, season),
-          getStandings({ leagueId, season, homeTeamId, awayTeamId }),
+          getTeamForm(homeTeamId, leagueId, season, { before: kickoffCutoff }),
+          getTeamForm(awayTeamId, leagueId, season, { before: kickoffCutoff }),
+          coverage.standings ? getStandings({ leagueId, season, homeTeamId, awayTeamId }) : notCovered('standings'),
           getTeamStatistics(homeTeamId, leagueId, season),
           getTeamStatistics(awayTeamId, leagueId, season),
-          getTeamInjuries(homeTeamId, leagueId, season, fixtureId),
-          getTeamInjuries(awayTeamId, leagueId, season, fixtureId),
+          coverage.injuries ? getTeamInjuries(homeTeamId, leagueId, season, fixtureId) : notCovered('injuries'),
+          coverage.injuries ? getTeamInjuries(awayTeamId, leagueId, season, fixtureId) : notCovered('injuries'),
           getH2H(homeTeamId, awayTeamId),
         ]);
+        if (!coverage.standings) standingsStatus = { status: 'not_covered', source: 'api-football-standings', reason: 'league_not_covered' };
 
-        if (hRes.status === 'fulfilled' && !hRes.value?.offline && hRes.value?.stats) {
-          const hs = hRes.value.stats;
-          enriched.homeRecentFixtures = hRes.value.matches || [];
-          if (hs.form) enriched.homeForm = hs.form.split('').join('-');
-          enriched.homeSampleSize = Array.isArray(hRes.value.matches) ? hRes.value.matches.length : null;
-          const homeGoalsFor = Number.parseFloat(hs.avgGoalsFor);
-          const homeGoalsAgainst = Number.parseFloat(hs.avgGoalsAgainst);
-          if (Number.isFinite(homeGoalsFor)) enriched.homeGoalsAvgFor = homeGoalsFor;
-          if (Number.isFinite(homeGoalsAgainst)) enriched.homeGoalsAvgAgainst = homeGoalsAgainst;
-          if (hs.goalDrought != null) enriched.homeGoalDrought = hs.goalDrought;
-          if (hs.recentLosses != null) enriched.homeRecentLosses = hs.recentLosses;
-          if (hs.recentOpposition) enriched.homeRecentOpposition = hs.recentOpposition;
-        }
-
-        if (aRes.status === 'fulfilled' && !aRes.value?.offline && aRes.value?.stats) {
-          const as = aRes.value.stats;
-          enriched.awayRecentFixtures = aRes.value.matches || [];
-          if (as.form) enriched.awayForm = as.form.split('').join('-');
-          enriched.awaySampleSize = Array.isArray(aRes.value.matches) ? aRes.value.matches.length : null;
-          const awayGoalsFor = Number.parseFloat(as.avgGoalsFor);
-          const awayGoalsAgainst = Number.parseFloat(as.avgGoalsAgainst);
-          if (Number.isFinite(awayGoalsFor)) enriched.awayGoalsAvgFor = awayGoalsFor;
-          if (Number.isFinite(awayGoalsAgainst)) enriched.awayGoalsAvgAgainst = awayGoalsAgainst;
-          if (as.goalDrought != null) enriched.awayGoalDrought = as.goalDrought;
-          if (as.recentLosses != null) enriched.awayRecentLosses = as.recentLosses;
-          if (as.recentOpposition) enriched.awayRecentOpposition = as.recentOpposition;
+        // Missing evidence stays missing: placeholders ('Unavailable', 0.00 averages
+        // from an empty sample) are never passed to the model as real numbers.
+        for (const [side, settled] of [['home', hRes], ['away', aRes]]) {
+          if (settled.status !== 'fulfilled') continue;
+          const inputs = formResultToModelInputs(settled.value);
+          enriched[`${side}RecentFixtures`] = inputs.recentFixtures;
+          enriched[`${side}Evidence`] = inputs.evidence;
+          if (inputs.sampleSize == null) continue;
+          enriched[`${side}SampleSize`] = inputs.sampleSize;
+          enriched[`${side}Form`] = inputs.form;
+          enriched[`${side}GoalsAvgFor`] = inputs.goalsAvgFor;
+          enriched[`${side}GoalsAvgAgainst`] = inputs.goalsAvgAgainst;
+          if (inputs.goalDrought != null) enriched[`${side}GoalDrought`] = inputs.goalDrought;
+          if (inputs.recentLosses != null) enriched[`${side}RecentLosses`] = inputs.recentLosses;
+          if (inputs.recentOpposition) enriched[`${side}RecentOpposition`] = inputs.recentOpposition;
         }
 
         if (standingsRes.status === 'fulfilled' && standingsRes.value?.status === 'AVAILABLE' && standingsRes.value?.teams) {
@@ -3879,16 +4042,11 @@ async function analyzeFixtureRequest(req, res) {
 
         if (hStatsRes.status === 'fulfilled' && !hStatsRes.value?.offline && hStatsRes.value?.stats) {
           const hs = hStatsRes.value.stats;
-          if (hs.conversionPct != null) enriched.homeConversionPct = hs.conversionPct;
-          if (hs.avgShotsTotal != null) enriched.homeShotsPerGame = hs.avgShotsTotal;
-          if (hs.avgPossession != null) enriched.homePossession = hs.avgPossession;
           if (hs.lateGoalPct != null) enriched.homeLateGoalPct = hs.lateGoalPct;
           enriched.homeSeasonRecord = hs.seasonRecord || null;
         }
         if (aStatsRes.status === 'fulfilled' && !aStatsRes.value?.offline && aStatsRes.value?.stats) {
           const as = aStatsRes.value.stats;
-          if (as.conversionPct != null) enriched.awayConversionPct = as.conversionPct;
-          if (as.avgShotsTotal != null) enriched.awayShotsPerGame = as.avgShotsTotal;
           if (as.lateGoalPct != null) enriched.awayLateGoalPct = as.lateGoalPct;
           enriched.awaySeasonRecord = as.seasonRecord || null;
         }
@@ -3949,21 +4107,25 @@ async function analyzeFixtureRequest(req, res) {
       const ci = calFb.calibratedInputs;
       const requestedSeason = body.season ?? body.fixtureContext?.season ?? null;
       if (ci.source === 'API_FOOTBALL' && requestedSeason != null && ci.season === requestedSeason) {
-        if (!enriched.homeForm) enriched.homeForm = ci.homeForm;
-        if (!enriched.awayForm) enriched.awayForm = ci.awayForm;
-        if (enriched.homeGoalsAvgFor == null) enriched.homeGoalsAvgFor = ci.homeGoalsAvgFor;
-        if (enriched.awayGoalsAvgFor == null) enriched.awayGoalsAvgFor = ci.awayGoalsAvgFor;
-        if (enriched.homeGoalsAvgAgainst == null) enriched.homeGoalsAvgAgainst = ci.homeGoalsAvgAgainst;
-        if (enriched.awayGoalsAvgAgainst == null) enriched.awayGoalsAvgAgainst = ci.awayGoalsAvgAgainst;
-        if (enriched.homeSampleSize == null) enriched.homeSampleSize = ci.homeSampleSize;
-        if (enriched.awaySampleSize == null) enriched.awaySampleSize = ci.awaySampleSize;
+        // Only reuse stored numbers that came from a real (non-empty) sample.
+        for (const side of ['home', 'away']) {
+          if (enriched[`${side}SampleSize`] > 0 || !isUsableStoredGoalInputs(ci, side)) continue;
+          const storedForm = ci[`${side}Form`];
+          if (!enriched[`${side}Form`] && typeof storedForm === 'string' && /^[WDL](-[WDL])*$/.test(storedForm)) enriched[`${side}Form`] = storedForm;
+          enriched[`${side}GoalsAvgFor`] = Number(ci[`${side}GoalsAvgFor`]);
+          enriched[`${side}GoalsAvgAgainst`] = Number(ci[`${side}GoalsAvgAgainst`]);
+          enriched[`${side}SampleSize`] = Number(ci[`${side}SampleSize`]);
+          if (!enriched[`${side}Evidence`] && ci[`${side}Evidence`]) enriched[`${side}Evidence`] = ci[`${side}Evidence`];
+        }
       }
     }
 
     // ── Step 1b: optional on-demand fixture stats ───────────────────────────
     // V10.3 defaults this OFF so Prediction Desk clicks do not spend API-Football
     // quota. The portal-open live refresh remains the normal daytime API trigger.
-    if (clickEnrichmentEnabled && isLive && fixtureId) {
+    if (clickEnrichmentEnabled && isLive && fixtureId && coverage.fixtureStats === false) {
+      directFixtureStatsStatus = { status: 'not_covered', source: 'fixture-statistics', reason: 'league_not_covered' };
+    } else if (clickEnrichmentEnabled && isLive && fixtureId) {
       if (!API_KEY) {
         directFixtureStatsStatus = { status: 'unavailable', source: 'fixture-statistics', reason: 'API_FOOTBALL_KEY_missing' };
       } else if (shouldSkipApiCalls()) {
@@ -4034,6 +4196,9 @@ async function analyzeFixtureRequest(req, res) {
     };
 
     enriched.dataSourceStatus = {
+      coverage: { known: coverage.known, skipped: coverage.skipped },
+      homeEvidence: enriched.homeEvidence || null,
+      awayEvidence: enriched.awayEvidence || null,
       standings: standingsStatus,
       liveStats: isLive ? liveStatsStatus : { status: 'not_applicable', source: 'pre-match' },
       directFixtureStats: isLive ? directFixtureStatsStatus : { status: 'not_applicable', source: 'pre-match' },
@@ -4063,7 +4228,10 @@ async function analyzeFixtureRequest(req, res) {
 
     // Observed cumulative xG stays in enriched.xg; historical per-match averages retain their units.
 
-    if (String(enriched.status || 'NS').toUpperCase() === 'NS' && fixtureId) {
+    if (String(enriched.status || 'NS').toUpperCase() === 'NS' && fixtureId && coverage.odds === false) {
+      enriched.oddsSnapshot = { status: 'UNAVAILABLE', source: 'API_FOOTBALL', reason: 'LEAGUE_ODDS_NOT_COVERED', odds: {} };
+      enriched.odds = null;
+    } else if (String(enriched.status || 'NS').toUpperCase() === 'NS' && fixtureId) {
       enriched.oddsSnapshot = await loadOddsSnapshot(fixtureId);
       enriched.odds = enriched.oddsSnapshot.status === 'AVAILABLE' ? enriched.oddsSnapshot.odds : null;
     } else { enriched.odds = null; enriched.oddsSnapshot = null; }
@@ -4086,6 +4254,7 @@ async function analyzeFixtureRequest(req, res) {
       startNarrativeGeneration(narrativeKey, analysis, enriched);
     }
 
+    if (lockResult?.prematchSnapshot) analysis.prematchSnapshot = lockResult.prematchSnapshot;
     // Critical path ends here: return football analysis without waiting for an LLM.
     res.json(analysis);
   } catch (error) {
@@ -4222,8 +4391,8 @@ async function runCalibration() {
     );
 
     for (const f of candidateFixtures) {
-      if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId, season: f.season });
-      if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId, season: f.season });
+      if (f.homeTeamId) calTeamIdMap.set(f.home.toLowerCase(), { id: f.homeTeamId, leagueId: f.leagueId, season: f.season, kickoffUTC: f.kickoffUTC });
+      if (f.awayTeamId) calTeamIdMap.set(f.away.toLowerCase(), { id: f.awayTeamId, leagueId: f.leagueId, season: f.season, kickoffUTC: f.kickoffUTC });
     }
 
     if (calTeamIdMap.size > 0) {
@@ -4233,23 +4402,36 @@ async function runCalibration() {
         ).values(),
       ].slice(0, teamBudget);
 
-      await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId, season }) => {
+      // Fallback calls come out of what is left after the primary form calls.
+      const spendableAfterPrimary = quotaState.dailyRemaining == null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, quotaState.dailyRemaining - API_DAILY_SOFT_STOP - uniqueTeams.length);
+      let fallbackBudget = Math.min(DAILY_PREP_FALLBACK_CALL_BUDGET, spendableAfterPrimary);
+      let fallbackUsed = 0;
+      const allowFallback = () => {
+        if (fallbackBudget <= 0) return false;
+        fallbackBudget -= 1; fallbackUsed += 1;
+        return true;
+      };
+      await Promise.allSettled(uniqueTeams.map(async ({ id, leagueId, season, kickoffUTC }) => {
         if (season == null) return;
         try {
-          const formRes = await getTeamForm(id, leagueId, season);
-          const stats = formRes?.stats || null;
-          if (!stats || stats.error) return;
+          const formRes = await getTeamForm(id, leagueId, season, { before: kickoffUTC, allowFallback });
+          const inputs = formResultToModelInputs(formRes);
+          if (inputs.sampleSize == null) return;
+          // Empty sample → null averages/form (A): missing stays missing.
           calTeamStats.set(`${id}:${leagueId}:${season}`, {
             source: 'API_FOOTBALL',
             season,
-            form: stats.form || null,
-            avgGoalsFor: Number.isFinite(Number(stats.avgGoalsFor)) ? Number(stats.avgGoalsFor) : null,
-            avgGoalsAgainst: Number.isFinite(Number(stats.avgGoalsAgainst)) ? Number(stats.avgGoalsAgainst) : null,
-            sampleSize: Array.isArray(formRes.matches) ? formRes.matches.length : null,
+            form: inputs.form,
+            avgGoalsFor: inputs.goalsAvgFor,
+            avgGoalsAgainst: inputs.goalsAvgAgainst,
+            sampleSize: inputs.sampleSize,
+            evidence: inputs.evidence,
           });
         } catch (_) {}
       }));
-      console.log(`[DailyPrep] Verified form loaded for ${calTeamStats.size} team contexts (budget ${teamBudget})`);
+      console.log(`[DailyPrep] Verified form loaded for ${calTeamStats.size} team contexts (budget ${teamBudget}, fallback history calls ${fallbackUsed})`);
     }
 
     console.log(`[DailyPrep] ${dailySchedule.length} fixtures listed; ${candidateFixtures.length} selected for deep morning analysis`);
@@ -4373,14 +4555,16 @@ async function runCalibration() {
         gameWeek:          f.context?.gameWeek     ?? matchMeta.gameWeek     ?? null,
         totalGW:           calTotalGW,
         // ── Verified current-season core evidence ───────────────────────────────
-        homeForm: hRealStats?.form ? hRealStats.form.split('').join('-') : null,
-        awayForm: aRealStats?.form ? aRealStats.form.split('').join('-') : null,
+        homeForm: hRealStats?.form ?? null,
+        awayForm: aRealStats?.form ?? null,
         homeGoalsAvgFor: hRealStats?.avgGoalsFor ?? null,
         homeGoalsAvgAgainst: hRealStats?.avgGoalsAgainst ?? null,
         awayGoalsAvgFor: aRealStats?.avgGoalsFor ?? null,
         awayGoalsAvgAgainst: aRealStats?.avgGoalsAgainst ?? null,
         homeSampleSize: hRealStats?.sampleSize ?? null,
         awaySampleSize: aRealStats?.sampleSize ?? null,
+        homeEvidence: hRealStats?.evidence ?? null,
+        awayEvidence: aRealStats?.evidence ?? null,
         // ── Squad quality: real API-Football injuries → integrity, no fake fallback ──
         homeSquadIntegrity: null,
         awaySquadIntegrity: null,
@@ -4427,8 +4611,9 @@ async function runCalibration() {
         xg:         snapshotStats.xg,
         status: matchMeta.status || 'NS',
         matchMinutes: matchMeta.minute || 0,
-        confidence: analysis?.dailySignal?.score ?? 0,
-        decisionProbability: analysis.decisionMetrics?.modelProbability?.value ?? 0,
+        // null = no prediction (never a fake 0%).
+        confidence: analysis?.dailySignal?.score ?? null,
+        decisionProbability: analysis.decisionMetrics?.modelProbability?.value ?? null,
         opportunities: (analysis.recommendations || []).slice(0, 2).map(r => r.selection),
         league: matchMeta.league || 'Unknown',
         leagueId: matchMeta.leagueId || 0,
@@ -4455,6 +4640,8 @@ async function runCalibration() {
         awayGoalsAvgAgainst: matchData.awayGoalsAvgAgainst ?? null,
         homeSampleSize: matchData.homeSampleSize ?? null,
         awaySampleSize: matchData.awaySampleSize ?? null,
+        homeEvidence: matchData.homeEvidence ?? null,
+        awayEvidence: matchData.awayEvidence ?? null,
         homeXgAvg: matchData.homeXgAvg ?? null,
         homeXgaAvg: matchData.homeXgaAvg ?? null,
         awayXgAvg: matchData.awayXgAvg ?? null,
@@ -4643,7 +4830,7 @@ async function runCalibration() {
   if (preparedSchedule.length > 0) {
     upcomingMatches = preparedSchedule;
     setCache('upcomingMatches', preparedSchedule);
-    broadcast({ type: 'UPCOMING_MATCHES', payload: preparedSchedule });
+    broadcast({ type: 'UPCOMING_MATCHES', payload: withFixtureStatuses(preparedSchedule) });
     console.log(`[DailyPrep] Ready: ${preparedSchedule.length} fixtures, ${analyzed.length} analyzed, ${highConfidence.length} 80+ eligible signals`);
   } else {
     console.warn('[DailyPrep] No fixtures prepared — retaining existing upcoming feed');
@@ -4690,10 +4877,10 @@ app.post('/api/calibrate', (req, res) => {
  * Returns the last stored calibration results without re-running.
  */
 app.get('/api/calibrate/results', (req, res) => {
-  const compactMatches = mergeDailySchedule(
+  const compactMatches = withFixtureStatuses(mergeDailySchedule(
     calibrationStore.dailySchedule || [],
     (calibrationStore.matches || []).map((m) => compactAnalyzedMatch(m, true)).filter(Boolean),
-  );
+  ));
   const compactHighConfidence = compactMatches.filter((m) =>
     (m.dailySignal || m.analysis?.dailySignal)?.eligible === true
   );
