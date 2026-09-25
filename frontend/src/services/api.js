@@ -11,10 +11,66 @@ const client = axios.create({
   timeout: 10000,
 });
 
+// ─── ADMIN TOKEN ──────────────────────────────────────────────────────────
+// Write actions (log bet, record played bet, check results) need the owner's admin token
+// once ADMIN_TOKEN is set on the backend. It is entered once when the server asks for it
+// and kept in this browser's localStorage. Never hard-code it here.
+const ADMIN_TOKEN_KEY = 'sportyrabbi.adminToken';
+const ADMIN_TOKEN_ERRORS = new Set(['ADMIN_TOKEN_REQUIRED', 'ADMIN_TOKEN_INVALID']);
+let adminTokenPrompt = null;
+
+export function getAdminToken() {
+  try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+export function setAdminToken(token) {
+  try {
+    if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch { /* storage unavailable */ }
+}
+
+function askForAdminToken(invalid) {
+  // One prompt shared by concurrent requests.
+  if (!adminTokenPrompt) {
+    adminTokenPrompt = Promise.resolve().then(() => {
+      if (typeof window === 'undefined' || typeof window.prompt !== 'function') return '';
+      const message = invalid
+        ? 'The saved SportyRabbi admin token was rejected. Enter the current admin token:'
+        : 'This action needs your SportyRabbi admin token. Enter it once (saved in this browser):';
+      const entered = (window.prompt(message) || '').trim();
+      if (entered) setAdminToken(entered);
+      return entered;
+    }).finally(() => { adminTokenPrompt = null; });
+  }
+  return adminTokenPrompt;
+}
+
+// Attach the saved token to write requests only (reads stay anonymous).
+client.interceptors.request.use((config) => {
+  const method = String(config.method || 'get').toLowerCase();
+  const token = getAdminToken();
+  if (token && method !== 'get' && method !== 'head') {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // Add error interceptor for better debugging
 client.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config;
+    const code = error.response?.data?.code;
+    if (error.response?.status === 401 && code === 'ADMIN_TOKEN_INVALID') setAdminToken('');
+    if (error.response?.status === 401 && ADMIN_TOKEN_ERRORS.has(code) && config && !config._adminTokenRetried) {
+      const token = await askForAdminToken(code === 'ADMIN_TOKEN_INVALID');
+      if (token) {
+        config._adminTokenRetried = true;
+        return client.request(config);
+      }
+    }
     if (error.response) {
       console.error('API Error:', error.response.status, error.response.data);
     } else if (error.request) {
