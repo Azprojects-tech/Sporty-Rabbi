@@ -25,6 +25,7 @@ import { WebSocketServer } from 'ws';
 import cron from 'node-cron';
 import axios from 'axios';
 import { initFirebase, getDb } from './config/firebase.js';
+import { createAdminAuth, applyRoutePolicy, createCorsMiddleware, parseAllowedOrigins } from './middleware/security.js';
 import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence, getPrematchOdds, getPrematchOddsStatus } from './services/analyticsService.js';
 import { buildGroundedAnalystNote } from './services/groundedAnalystService.js';
 import { analyzeV9 } from './services/agent47Service.js';
@@ -75,26 +76,19 @@ const WHITELISTED_LEAGUE_IDS = null; // null = accept all leagues
 
 // ─── MIDDLEWARE ────────────────────────────────────────────────────────────
 
-// Aggressive CORS middleware - override all headers
-app.use((req, res, next) => {
-  // Clear any existing CORS headers that might be set by proxies
-  res.removeHeader('Access-Control-Allow-Origin');
-  
-  // Set permissive CORS headers
-  res.set({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD',
-    'Access-Control-Allow-Headers': 'Accept, Accept-Language, Content-Language, Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-  });
-  
-  // Handle preflight requests immediately
-  if (req.method === 'OPTIONS') {
-    return res.send('OK');
-  }
-  
-  next();
-});
+// CORS: only the SportyRabbi portal (Netlify production + deploy previews) and local dev
+// origins. Override with ALLOWED_ORIGINS (comma-separated). See middleware/security.js.
+const allowedOrigins = parseAllowedOrigins();
+app.use(createCorsMiddleware({ patterns: allowedOrigins }));
+console.log(`[Security] CORS allowed origins: ${allowedOrigins.join(', ')}`);
+
+// Admin token protection for admin/debug and write routes. Registered before every
+// route handler; the classification table lives in ROUTE_POLICY (middleware/security.js).
+const adminAuth = createAdminAuth();
+applyRoutePolicy(app, adminAuth);
+console.log(adminAuth.isConfigured()
+  ? '[Security] ADMIN_TOKEN configured — admin and write routes require the token.'
+  : '[Security] ADMIN_TOKEN not set — admin routes are disabled; portal write routes stay open until it is set.');
 
 app.use(express.json());
 
