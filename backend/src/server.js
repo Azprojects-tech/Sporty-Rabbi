@@ -28,6 +28,9 @@ import { initFirebase, getDb } from './config/firebase.js';
 import { createAdminAuth, applyRoutePolicy, createCorsMiddleware, parseAllowedOrigins } from './middleware/security.js';
 import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence, getPrematchOdds, getPrematchOddsStatus } from './services/analyticsService.js';
 import { buildGroundedAnalystNote } from './services/groundedAnalystService.js';
+import { buildCalibrationSnapshotStats } from './services/calibrationSnapshot.js';
+import { buildNarrativeKey } from './services/narrativeKey.js';
+import { warmAnalyticsCache, getAnalyticsCacheStatus } from './services/analyticsService.js';
 import { analyzeV9 } from './services/agent47Service.js';
 import { sendWhatsApp, sendBettingAlert, sendTestAlert, getActiveAlertChannel, twilioEnabled } from './services/notificationService.js';
 import {
@@ -1069,17 +1072,8 @@ async function fetchUpcomingMatches() {
   }
 }
 
-/**
- * Pure helper: build the possession/shots/xg snapshot for a calibration fixture.
- * Exported so tests can assert no synthetic values are substituted.
- */
-export function buildCalibrationSnapshotStats(f) {
-  return {
-    possession: { home: null, away: null },
-    shots:      { home: null, away: null },
-    xg:         { home: f?.home?.xgAvg ?? null, away: f?.away?.xgAvg ?? null },
-  };
-}
+// buildCalibrationSnapshotStats lives in services/calibrationSnapshot.js (test-safe import).
+export { buildCalibrationSnapshotStats };
 
 // Strip non-primitive values from match object (prevents React errors)
 function sanitizeMatch(match) {
@@ -3003,6 +2997,7 @@ app.get('/api/health', (req, res) => {
       },
       lastUpdatedAt: quotaState.lastUpdatedAt,
     },
+    analyticsCache: getAnalyticsCacheStatus(),
   });
 });
 
@@ -3716,17 +3711,7 @@ const NARRATIVE_CACHE_TTL_MS = Math.max(
   Number(process.env.NARRATIVE_CACHE_TTL_MS || 20 * 60 * 1000),
 );
 
-function buildNarrativeKey(matchData = {}) {
-  const fixtureIdentity = matchData.fixtureId
-    || matchData.id
-    || `${String(matchData.home || '').toLowerCase()}|${String(matchData.away || '').toLowerCase()}|${matchData.season ?? ''}`;
-  const status = String(matchData.status || 'NS').toUpperCase();
-  const score = String(matchData.score || '0-0');
-  const minute = Number(matchData.matchMinutes || 0);
-  const live = status === 'LIVE' || ['1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(status);
-  const minuteBucket = live ? Math.floor(minute / 10) : 0;
-  return Buffer.from(`${fixtureIdentity}|evidence-v106b|${status}|${score}|${minuteBucket}|${Math.floor(Date.now()/60000)}|${matchData.oddsSnapshot?.providerUpdatedAt || ''}`).toString('base64url');
-}
+// buildNarrativeKey: see services/narrativeKey.js (no per-minute component, so the cache can hit).
 
 function readNarrativeCache(key) {
   const cached = narrativeCache.get(key);
@@ -3747,6 +3732,7 @@ function startNarrativeGeneration(key, analysis, matchData) {
     .then((evidence) => buildGroundedAnalystNote(analysis, matchData, evidence))
     .then((narrative) => {
       if (narrative) {
+        if (narrativeCache.size >= 500) narrativeCache.delete(narrativeCache.keys().next().value);
         narrativeCache.set(key, { narrative, timestamp: Date.now() });
       }
       return narrative || null;
@@ -4839,6 +4825,9 @@ server.listen(PORT, async () => {
   console.log(`║  WebSocket    → ws://localhost:${PORT}         ║`);
   console.log('║  API schedule → 05:00 UK + portal-open refresh ║');
   console.log('╚════════════════════════════════════════╝\n');
+
+  // Restore cached API-Football responses (form, standings, coverage…) saved before the restart.
+  warmAnalyticsCache().catch((err) => console.warn('⚠️  Analytics cache warm-up failed:', err.message));
 
   // Pre-load bets from Firestore into memory cache on startup
   const db = getDb();

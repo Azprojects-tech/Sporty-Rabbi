@@ -135,7 +135,7 @@ function parseForm(raw) {
 function scoreMotivation({ homePosition, awayPosition, totalTeams }) {
   if (![homePosition, awayPosition, totalTeams].every(v => typeof v === 'number' && Number.isInteger(v) && v > 0)
     || totalTeams < 2 || homePosition > totalTeams || awayPosition > totalTeams)
-    return { score: null, home: {}, away: {}, mwvIndex: 0, assessment: 'Verified table position and league size unavailable.' };
+    return { score: null, available: false, evidenceStatus: 'MISSING', home: {}, away: {}, mwvIndex: 0, assessment: 'Verified table position and league size unavailable.' };
   const h = 100 * (totalTeams - homePosition) / (totalTeams - 1);
   const a = 100 * (totalTeams - awayPosition) / (totalTeams - 1);
   return { score: Math.round((h+a)/2), home: { rank: homePosition }, away: { rank: awayPosition },
