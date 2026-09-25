@@ -15,7 +15,7 @@ import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
  *   - REST API endpoints
  *   - WebSocket live data stream
  *   - API-Football integration (live matches every 30s)
- *   - Twilio WhatsApp alerts
+ *   - Alerts via Telegram bot (Twilio WhatsApp fallback)
  */
 
 import 'dotenv/config';
@@ -29,7 +29,7 @@ import { createAdminAuth, applyRoutePolicy, createCorsMiddleware, parseAllowedOr
 import { getTeamForm, getH2H, getFixturePreview, getStandings, getTeamStatistics, getTeamInjuries, getAnalystEvidence, getPrematchOdds, getPrematchOddsStatus } from './services/analyticsService.js';
 import { buildGroundedAnalystNote } from './services/groundedAnalystService.js';
 import { analyzeV9 } from './services/agent47Service.js';
-import { sendWhatsApp, sendBettingAlert, twilioEnabled } from './services/notificationService.js';
+import { sendWhatsApp, sendBettingAlert, sendTestAlert, getActiveAlertChannel, twilioEnabled } from './services/notificationService.js';
 import {
   naturalLanguageToMatchData,
   fetchLiveMatchesViaGemini,
@@ -2187,7 +2187,8 @@ async function saveAlert(alertData) {
   // Broadcast to portal
   broadcast({ type: 'NEW_ALERT', payload: decorateAlertFreshness(alertPayload) });
 
-  // Send WhatsApp alert for high-confidence opportunities
+  // Send alert (Telegram if configured, else WhatsApp) for high-confidence opportunities.
+  // notificationService applies the daily cap and duplicate filter.
   if ((alertPayload.confidence || 0) >= alertPayload.standardThreshold) {
     const confStr = alertPayload.confidence ? `${alertPayload.confidence}%` : '–';
     const msg = [
@@ -3009,18 +3010,25 @@ app.get('/api/quota-status', (req, res) => {
   res.json(getQuotaSummary());
 });
 
-// ── WhatsApp test endpoint ─────────────────────────────────────────────────
+// ── Alert test endpoints (admin-only via ROUTE_POLICY) ─────────────────────
+// They test whichever channel is active: Telegram when TELEGRAM_BOT_TOKEN and
+// TELEGRAM_CHAT_ID are set, otherwise Twilio WhatsApp. Test messages count toward
+// the daily alert cap like any other alert.
+app.post('/api/test-alert', async (req, res) => {
+  const result = await sendTestAlert();
+  res.json(result);
+});
+
+// Legacy name kept; now tests the active channel (not only WhatsApp).
 app.post('/api/test-whatsapp', async (req, res) => {
-  const msg = req.body?.message || `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
-  const result = await sendWhatsApp(msg);
-  res.json({ twilioEnabled, ...result });
+  const result = await sendTestAlert(typeof req.body?.message === 'string' && req.body.message.trim() ? req.body.message : undefined);
+  res.json({ twilioEnabled, activeChannel: getActiveAlertChannel(), success: result.ok, ...result });
 });
 
 // GET version — trigger a test alert directly from the browser address bar
 app.get('/api/test-whatsapp', async (req, res) => {
-  const msg = `🎯 SportyRabbi test alert — ${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC. WhatsApp alerts are working! ✅`;
-  const result = await sendWhatsApp(msg);
-  res.json({ twilioEnabled, ...result });
+  const result = await sendTestAlert();
+  res.json({ twilioEnabled, activeChannel: getActiveAlertChannel(), success: result.ok, ...result });
 });
 
 app.get('/api/live', async (req, res) => {

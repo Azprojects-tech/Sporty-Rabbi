@@ -28,8 +28,9 @@ export const ACCESS = Object.freeze({
 // (case-insensitive, optional trailing slash, GET also covers HEAD).
 export const ROUTE_POLICY = Object.freeze([
   // Admin / debug — not used by the portal UI. Always require the token.
-  { method: 'get',   path: '/api/test-whatsapp',        access: ACCESS.ADMIN,    reason: 'Sends a WhatsApp message via Twilio' },
-  { method: 'post',  path: '/api/test-whatsapp',        access: ACCESS.ADMIN,    reason: 'Sends an arbitrary WhatsApp message via Twilio' },
+  { method: 'get',   path: '/api/test-whatsapp',        access: ACCESS.ADMIN,    reason: 'Sends a test alert on the active channel (Telegram or WhatsApp)' },
+  { method: 'post',  path: '/api/test-whatsapp',        access: ACCESS.ADMIN,    reason: 'Sends an arbitrary alert message on the active channel' },
+  { method: 'post',  path: '/api/test-alert',           access: ACCESS.ADMIN,    reason: 'Sends a short test alert on the active channel (Telegram or WhatsApp)' },
   { method: 'post',  path: '/api/quota/reset',          access: ACCESS.ADMIN,    reason: 'Clears the API-Football quota guard' },
   { method: 'post',  path: '/api/calibrate',            access: ACCESS.ADMIN,    reason: 'Starts a full daily preparation scan (API quota)' },
   { method: 'all',   path: '/api/debug',                access: ACCESS.ADMIN,    reason: 'Debug routes spend API-Football quota', prefix: true },

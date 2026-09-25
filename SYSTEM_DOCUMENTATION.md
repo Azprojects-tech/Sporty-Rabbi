@@ -433,7 +433,8 @@ Computed separately from V9 inputs and displayed as an in-play overlay:
 | GET | `/api/search?q=` | NL search → Groq/Gemini → V9 analysis |
 | POST | `/api/quota/reset` | Manually clear quota-guard pause |
 | GET | `/api/debug/live-raw` | Raw API-Football live fixture debug sample |
-| GET | `/api/test-whatsapp` | Test WhatsApp alert |
+| GET | `/api/test-whatsapp` | Test alert on the active channel (admin token) |
+| POST | `/api/test-alert` | Send a short test alert on the active channel (Telegram or WhatsApp); returns `{ channel, ok, error }` (admin token) |
 
 ---
 
