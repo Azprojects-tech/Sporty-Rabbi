@@ -85,7 +85,15 @@ export default function App() {
  const handleUpcomingMatches = (p) => {
  setAllMatches(prev => {
  const IN_PLAY = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
- const liveOnly = prev.filter(m => IN_PLAY.has(m.status) || m._calibrated);
+ const incomingById = new Map((p || []).map(m => [String(m.id), m]));
+ // Kept entries (live feed + calibrated) still take the server's latest
+ // status/score/minute, so a morning "NS" row turns live/FT during the day.
+ const liveOnly = prev.filter(m => IN_PLAY.has(m.status) || m._calibrated).map(m => {
+ const next = incomingById.get(String(m.id));
+ if (!next || m._source === 'live') return m;
+ return { ...m, status: next.status ?? m.status, score: next.score ?? m.score, matchMinutes: next.matchMinutes ?? m.matchMinutes,
+ predictionLocked: next.predictionLocked ?? m.predictionLocked, statusUpdatedAt: next.statusUpdatedAt ?? m.statusUpdatedAt };
+ });
  const liveIds = new Set(liveOnly.map(m => m.id));
  return [...liveOnly, ...(p || []).filter(m => !liveIds.has(m.id)).map(m => ({ ...m, _source: 'upcoming' }))];
  });
@@ -482,7 +490,7 @@ export default function App() {
  display: 'flex', gap: 0, borderBottom: '1px solid #1e2535',
  background: '#0a0d15', flexShrink: 0,
  }}>
- {[['slips', 'V8 Bet Slips'], ['logger', 'Bet Logger']].map(([id, label]) => (
+ {[['slips', 'Bet Slips'], ['logger', 'Bet Logger']].map(([id, label]) => (
  <button
  key={id}
  onClick={() => setBetTab(id)}
@@ -515,7 +523,7 @@ export default function App() {
  display: 'flex', alignItems: 'center', gap: 12,
  }}>
  <span style={{ fontSize: 12, color: '#8b9ab3', fontWeight: 600 }}>
- {filter === 'high' ? ' 80%+ Signal Candidates' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
+ {filter === 'high' ? ' Daily 80+ Pick Candidates' : filter === 'live' ? ' Live Now' : ' Today\'s Matches'}
  </span>
  <span style={{ fontSize: 11, color: '#4a5568' }}>
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}

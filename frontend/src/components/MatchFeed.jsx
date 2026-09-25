@@ -11,28 +11,37 @@ const LEAGUE_FLAGS = {
   71: '🇧🇷', 128: '🇦🇷', 239: '🇨🇴',
 };
 
+const PICK_SCORE_TITLE = 'Pick score out of 100 (model probability of the top pick blended with evidence reliability). It is not a win chance.';
+
 function ConfBadge({ score }) {
-  if (score >= 80) return (
-    <span style={{
+  // null = the model made no prediction for this match; never show a fake 0%.
+  if (score == null || !Number.isFinite(Number(score))) return (
+    <span title="No prediction: the model did not have enough verified evidence for this match." style={{ fontSize: 10, color: '#4a5568', flexShrink: 0, textAlign: 'right', whiteSpace: 'nowrap' }}>
+      No prediction
+    </span>
+  );
+  const value = Math.round(Number(score));
+  if (value >= 80) return (
+    <span title={PICK_SCORE_TITLE} style={{
       background: '#1c1200', border: '1px solid #78350f', borderRadius: 4,
       padding: '2px 8px', fontSize: 10, fontWeight: 800, color: '#f59e0b',
       flexShrink: 0,
     }}>
-      {score}% 🔥
+      {value}/100 🔥
     </span>
   );
-  if (score >= 70) return (
-    <span style={{
+  if (value >= 70) return (
+    <span title={PICK_SCORE_TITLE} style={{
       background: '#001f0e', border: '1px solid #006833', borderRadius: 4,
       padding: '2px 8px', fontSize: 10, fontWeight: 700, color: '#00b859',
       flexShrink: 0,
     }}>
-      {score}%
+      {value}/100
     </span>
   );
   return (
-    <span style={{ fontSize: 10, color: '#4a5568', minWidth: 34, flexShrink: 0, textAlign: 'right' }}>
-      {score}%
+    <span title={PICK_SCORE_TITLE} style={{ fontSize: 10, color: '#4a5568', minWidth: 34, flexShrink: 0, textAlign: 'right' }}>
+      {value}/100
     </span>
   );
 }
@@ -151,9 +160,9 @@ function MatchRow({ match, isSelected, onSelect }) {
       </div>
 
       {/* Confidence badge — shown only when analysis has meaningful confidence context */}
-      {(isLive || match.status === 'FT' || (match.confidence || 0) >= 55) && (
+      {(isLive || match.status === 'FT' || (match.confidence ?? 0) >= 55) && (
         <div style={{ marginLeft: 12 }}>
-          <ConfBadge score={match.confidence || 0} />
+          <ConfBadge score={match.confidence ?? null} />
         </div>
       )}
 

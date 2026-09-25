@@ -20,6 +20,30 @@ function ResultBadge({ result }) {
   );
 }
 
+// Probabilities are stored unrounded (e.g. 63.48291); show one decimal.
+function pct(value) {
+  const n = Number(value);
+  return value == null || !Number.isFinite(n) ? '—' : `${Math.round(n * 10) / 10}%`;
+}
+
+function naira(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const sign = n < 0 ? '-' : n > 0 ? '+' : '';
+  return `${sign}₦${Math.abs(n).toLocaleString('en-GB', { maximumFractionDigits: 2 })}`;
+}
+
+/** Profit/loss for a settled bet with a recorded stake and price; null otherwise. */
+export function betProfit(b) {
+  const stake = Number(b?.stake);
+  const odds = Number(b?.odds);
+  if (!(stake > 0) || !(odds > 1)) return null;
+  const r = String(b?.result || '').toLowerCase();
+  if (r === 'won') return stake * (odds - 1);
+  if (r === 'lost') return -stake;
+  return null;
+}
+
 function Metric({ label, value }) {
   return (
     <div style={{ background: '#0a0d15', border: '1px solid #1e2535', borderRadius: 8, padding: '11px 13px' }}>
@@ -62,7 +86,7 @@ function SportyRecord({ predictions, summary }) {
                 padding: '6px 0', borderBottom: i < (p.markets || []).length - 1 ? '1px solid #131826' : 'none',
               }}>
                 <span style={{ flex: 1, fontSize: 11, color: '#cbd5e1', fontWeight: 700 }}>{m.selection}</span>
-                <span style={{ fontSize: 10, color: '#8b9ab3' }}>{m.modelProbability ?? m.confidence ?? '—'}%</span>
+                <span style={{ fontSize: 10, color: '#8b9ab3' }}>{pct(m.modelProbability ?? m.confidence)}</span>
                 <ResultBadge result={m.result} />
               </div>
             ))}
@@ -82,12 +106,19 @@ function MyBets({ bets }) {
     () => (bets || []).filter((b) => b?.source === 'USER_PLAYED'),
     [bets]
   );
+  const real = played.filter((b) => b.paper !== true);
+  const realProfit = real.map(betProfit).filter((v) => v != null);
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginBottom: 14 }}>
         <Metric label="Selections played" value={played.length} />
         <Metric label="Won" value={played.filter((b) => b.result === 'won').length} />
         <Metric label="Lost" value={played.filter((b) => b.result === 'lost').length} />
+        <Metric label="Real profit/loss" value={realProfit.length ? naira(realProfit.reduce((a, v) => a + v, 0)) : '—'} />
+        <Metric label="Practice bets" value={played.length - real.length} />
+      </div>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 10 }}>
+        Profit/loss counts real-money selections with a recorded stake and SportyBet odds. Practice bets and older records without a stake are listed but not counted.
       </div>
 
       {played.length === 0 ? (
@@ -104,11 +135,16 @@ function MyBets({ bets }) {
             <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 700 }}>{b.home} vs {b.away}</div>
             <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{b.selection}</div>
           </div>
-          <span style={{ fontSize: 10, color: '#8b9ab3' }}>{b.modelProbability ?? b.confidence ?? '—'}%</span>
+          <span style={{ fontSize: 10, color: '#8b9ab3' }}>{pct(b.modelProbability ?? b.confidence)}</span>
+          {b.paper === true && <span style={{ fontSize: 9, fontWeight: 800, color: '#fbbf24', border: '1px solid #78350f55', borderRadius: 4, padding: '1px 5px' }}>PRACTICE</span>}
+          <span style={{ fontSize: 10, color: '#8b9ab3' }}>
+            {Number(b.stake) > 0 ? `Stake ₦${Number(b.stake).toLocaleString('en-GB')}` : 'Stake not recorded'}
+            {betProfit(b) != null && <small style={{ display: 'block', color: betProfit(b) >= 0 ? '#00b859' : '#ef4444' }}>P/L {naira(betProfit(b))}</small>}
+          </span>
           <span style={{ fontSize: 10, color: '#8b9ab3' }}>
             System odds: {b.systemOdds?.price ? `${b.systemOdds.price.toFixed(2)} · ${b.systemOdds.bookmaker?.name}` : 'Unavailable'}
             {b.systemOdds?.providerUpdatedAt && <small style={{ display: 'block' }}>Quote: {new Date(b.systemOdds.providerUpdatedAt).toLocaleString()}{b.systemOdds.status === 'EXPIRED' ? ' · expired when recorded' : ''}</small>}
-            {b.odds > 1 && <small style={{ display: 'block' }}>Taken odds: {b.odds}</small>}
+            {b.odds > 1 && <small style={{ display: 'block' }}>{b.bookmaker || 'SportyBet'} odds taken: {Number(b.odds).toFixed(2)}</small>}
           </span>
           {b.finalScore && <span style={{ fontSize: 10, color: '#8b9ab3' }}>FT {b.finalScore}</span>}
           <ResultBadge result={b.result} />

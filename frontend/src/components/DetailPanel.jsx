@@ -26,6 +26,15 @@ const PARAMS = [
   { key: 'p14_lifecycle',     label: 'Lifecycle',    weight: '2%',  icon: 'LFC' },
 ];
 
+const PICK_SCORE_HELP = 'Pick score (0-100) blends the model probability of the top pick with how reliable the evidence is. It is NOT the chance of winning — see "Model P" for that.';
+const DECISION_LABELS = { BET: 'PRICE OK', NEEDS_PRICE: 'NEEDS PRICE', WATCH_LIVE: 'WATCH', NO_BET: 'NO BET' };
+const QUALITY_TEXT = { MEASURED: 'Measured', LIMITED: 'Limited sample', ESTIMATED: 'Estimated', UNAVAILABLE: 'Unavailable' };
+
+function roundPct(v) {
+  if (v == null || !Number.isFinite(Number(v))) return null;
+  return Math.round(Number(v) * 10) / 10;
+}
+
 function scoreColor(s) {
   return s >= 70 ? '#00b859' : s >= 55 ? '#fbbf24' : '#ef4444';
 }
@@ -105,8 +114,11 @@ function DataSnapshot({ analysis, match }) {
   const hasShots = hasMetricValue(match?.shots?.home) || hasMetricValue(match?.shots?.away);
   const hasXg = hasMetricValue(match?.xg?.home) || hasMetricValue(match?.xg?.away);
   const hasLiveStats = hasPossession || hasShots || hasXg;
+  const evidence = analysis?.predictionCore?.dataQuality?.evidence || {};
+  const homeEvidence = evidence.home || dataSourceStatus?.homeEvidence || null;
+  const awayEvidence = evidence.away || dataSourceStatus?.awayEvidence || null;
 
-  if (!homeOpp && !awayOpp && !hasLiveStats && !hasTableContext && !dataSourceStatus) return null;
+  if (!homeOpp && !awayOpp && !hasLiveStats && !hasTableContext && !dataSourceStatus && !homeEvidence && !awayEvidence) return null;
 
   return (
     <div style={{
@@ -128,6 +140,16 @@ function DataSnapshot({ analysis, match }) {
               Live stats note: {String(dataSourceStatus.directFixtureStats.reason).replace(/_/g, ' ')}
             </div>
           )}
+        </div>
+      )}
+      {(homeEvidence || awayEvidence) && (
+        <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+          <div style={{ fontSize: 9, color: '#4a5568' }}>Goal-rate evidence (games before kickoff)</div>
+          {[[match?.home, homeEvidence], [match?.away, awayEvidence]].map(([team, ev]) => (
+            <div key={team} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>
+              <strong>{team}:</strong> {ev ? `${QUALITY_TEXT[ev.quality] || ev.quality} — ${ev.note || ''}` : 'Unavailable'}
+            </div>
+          ))}
         </div>
       )}
       <div style={{ background: '#0f1117', border: '1px solid #1e2535', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
@@ -311,6 +333,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   const [expandedParam, setExpandedParam] = useState(null);
   const [playedBusyKey, setPlayedBusyKey] = useState(null);
   const [playedMessage, setPlayedMessage] = useState('');
+  const [playedFormKey, setPlayedFormKey] = useState(null);
+  const [playedStake, setPlayedStake] = useState('');
+  const [playedOdds, setPlayedOdds] = useState('');
+  const [playedPaper, setPlayedPaper] = useState(false);
+  const [showUnavailableParams, setShowUnavailableParams] = useState(false);
   const panelScrollRef = useRef(null);
 
   useEffect(() => {
@@ -412,13 +439,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         season:           match.season ?? null,
         homePossession:   (match.possession?.home != null && Number.isFinite(Number(match.possession.home))) ? Number(match.possession.home) : null,
         hasLiveXg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) || (match.xg?.away != null && Number.isFinite(Number(match.xg.away))),
-        // Return null when team-specific xG is unknown — never substitute a league average as a team observation.
-        homeXgAvg:        (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : null,
-        awayXgAvg:        (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : null,
-        homeXgaAvg:       (match.xg?.away != null && Number.isFinite(Number(match.xg.away))) ? Number(match.xg.away) : null,
-        awayXgaAvg:       (match.xg?.home != null && Number.isFinite(Number(match.xg.home))) ? Number(match.xg.home) : null,
-        homeShotsPerGame: (match.shots?.home != null && Number.isFinite(Number(match.shots.home))) ? Number(match.shots.home) : null,
-        awayShotsPerGame: (match.shots?.away != null && Number.isFinite(Number(match.shots.away))) ? Number(match.shots.away) : null,
+        // In-match xG/shots are sent above as live observations only. They are NOT
+        // historical per-game averages, so homeXgAvg/…ShotsPerGame are left to the server.
         matchType:        match.matchType || 'League',
         homeCards: { yellow: match.cards?.home?.yellow || 0, red: match.cards?.home?.red || 0 },
         awayCards: { yellow: match.cards?.away?.yellow || 0, red: match.cards?.away?.red || 0 },
@@ -471,7 +493,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   const {
     parameters: P = {}, poisson,
     recommendations = [], bookieEdges = [],
-    overallScore = 0, tier = 4, tierName = '',
+    overallScore = null,
   } = analysis || {};
   const evidenceDesk = analysis?.narrative?.evidencePanels;
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
@@ -483,12 +505,22 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   const decisionStatusObj = decisionMetrics?.decisionStatus || {};
   const signalStrength = decisionMetrics?.signalStrength || {};
   const outcomeProbabilities = decisionMetrics?.outcomeProbabilities || {};
-  const modelSignalScore = signalStrength?.score ?? overallScore;
+  const modelSignalScore = signalStrength?.score ?? overallScore ?? null;
   const selectedOutcomeProbability = outcomeProbabilities?.selectedOutcomeProbability;
-  const modelProbabilityValue = modelProbability?.value ?? null;
-  const dataCompletenessScore = dataCompleteness?.score ?? null;
-  const dataCompletenessLabel = dataCompleteness?.label || (dataCompletenessScore == null ? 'Unknown' : dataCompletenessScore >= 80 ? 'High' : dataCompletenessScore >= 60 ? 'Medium' : 'Low');
-  const recommendationConfidenceScore = recommendationConfidence?.score ?? null;
+  const modelProbabilityValue = roundPct(modelProbability?.value);
+  // "Data" is sample-adjusted: 4/4 inputs from 2 games is not "100%".
+  const dataCompletenessScore = dataCompleteness?.displayScore ?? dataCompleteness?.score ?? null;
+  const dataCompletenessLabel = dataCompleteness?.displayLabel || dataCompleteness?.label || (dataCompletenessScore == null ? 'Unknown' : dataCompletenessScore >= 80 ? 'High' : dataCompletenessScore >= 60 ? 'Medium' : 'Low');
+  const dataSampleText = dataCompleteness?.sampleText || null;
+  const coreReady = analysis?.predictionCore?.coreReady !== false;
+  const missingInputs = analysis?.predictionCore?.dataQuality?.missing || [];
+  // A pick score is only meaningful when a market actually has a model probability.
+  const hasPick = modelSignalScore != null && modelProbabilityValue != null && !analysis?.noPrediction;
+  const noPickReason = !coreReady || analysis?.noPrediction
+    ? `No prediction${missingInputs.length ? ` — missing: ${missingInputs.join(', ')}` : ''}`
+    : 'No pick — no market passed the thresholds';
+  const versionLabel = String(analysis?.analysisVersion || 'Model').split('-')[0];
+  const recommendationConfidenceScore = recommendationConfidence?.score != null ? Math.round(recommendationConfidence.score) : null;
   const recommendationConfidenceLabel = recommendationConfidence?.label || (recommendationConfidenceScore == null ? 'Unknown' : recommendationConfidenceScore >= 75 ? 'Strong' : recommendationConfidenceScore >= 60 ? 'Moderate' : 'Weak');
   const decisionStatus = decisionStatusObj?.status || 'INSUFFICIENT_DATA';
   const decisionStatusStyle = statusPillStyle(decisionStatus);
@@ -509,9 +541,23 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
     && String(b?.selection || '').toLowerCase() === String(r?.selection || '').toLowerCase()
   );
 
+  function openPlayedForm(r) {
+    const key = `${match?.id}|${r.marketKey}|${r.selection}`;
+    setPlayedMessage('');
+    setPlayedFormKey(playedFormKey === key ? null : key);
+    setPlayedStake('');
+    const shownOdds = analysis?.oddsSnapshot?.odds?.[r.marketKey];
+    setPlayedOdds(Number.isFinite(Number(shownOdds)) ? String(shownOdds) : '');
+    setPlayedPaper(false);
+  }
+
   async function handlePlayedRecommendation(r) {
     if (!r?.marketKey || isAlreadyPlayed(r)) return;
     const key = `${match?.id}|${r.marketKey}|${r.selection}`;
+    const stake = Number(playedStake);
+    const odds = Number(playedOdds);
+    if (!Number.isFinite(stake) || stake <= 0) { setPlayedMessage('Enter the stake you placed (₦).'); return; }
+    if (!Number.isFinite(odds) || odds <= 1) { setPlayedMessage('Enter the SportyBet odds you got (e.g. 1.85).'); return; }
     setPlayedBusyKey(key);
     setPlayedMessage('');
     try {
@@ -534,8 +580,13 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         analysisVersion: analysis?.analysisVersion || null,
         analysisTimestamp: analysis?.analysisTimestamp || null,
         displayedOdds: analysis?.oddsSnapshot || null,
+        stake,
+        odds,
+        bookmaker: 'SportyBet',
+        paper: playedPaper,
       });
-      setPlayedMessage(`Recorded: ${r.selection}`);
+      setPlayedMessage(`Recorded: ${r.selection}${playedPaper ? ' (practice)' : ''}`);
+      setPlayedFormKey(null);
     } catch (err) {
       setPlayedMessage(err.response?.data?.error || 'Could not record this selection.');
     } finally {
@@ -555,19 +606,24 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
               {match.home} <span style={{ color: '#4a5568', fontWeight: 400 }}>vs</span> {match.away}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
-                V9
+              <span title={analysis?.analysisVersion || ''} style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
+                {versionLabel}
               </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: TIER_COLORS[tier] }}>
-                T{tier} &middot; {tierName}
-              </span>
-              <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title="Model signal strength: how coherent the evidence is. Not match outcome probability.">
-                Signal {modelSignalScore}%
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Model probability for the selected recommendation market.">
-                Model P {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'}
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Data completeness from resolved input coverage.">
+              {hasPick ? (
+                <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title={PICK_SCORE_HELP}>
+                  Pick score {Math.round(modelSignalScore)}/100
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8' }} title="The model does not make a pick unless a market has a probability and passes the thresholds.">
+                  {noPickReason}
+                </span>
+              )}
+              {hasPick && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Model probability for the top pick's market.">
+                  Model P {modelProbabilityValue}%
+                </span>
+              )}
+              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title={`Required inputs present, scaled down when the game sample is small.${dataSampleText ? ` ${dataSampleText}.` : ''}`}>
                 Data {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataCompletenessLabel ? ` (${dataCompletenessLabel})` : ''}
               </span>
               <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Evidence quality score from available historical inputs.">
@@ -577,7 +633,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                 {decisionStatus.replace('_', ' ')}
               </span>
               <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Outcome probability (1X2) from Poisson. This is not model signal strength.">
-                1X2 {selectedOutcomeProbability != null ? `${selectedOutcomeProbability}%` : 'Unavailable'}
+                1X2 {selectedOutcomeProbability != null ? `${roundPct(selectedOutcomeProbability)}%` : 'Unavailable'}
               </span>
               <span style={{
                 fontSize: 10,
@@ -603,6 +659,23 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         </div>
       </div>
 
+
+      {(analysis?.locked || analysis?.noPrediction || analysis?.prematchSnapshot) && (
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid #1e2535', background: '#0f1117', flexShrink: 0 }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: '#fbbf24', letterSpacing: '1px', marginBottom: 4 }}>
+            {analysis?.locked ? 'LOCKED AT KICKOFF' : 'PRE-MATCH PICK (LOCKED AT KICKOFF)'}
+          </div>
+          {analysis?.lockReason && <div style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>{analysis.lockReason}</div>}
+          {analysis?.finalScore && <div style={{ fontSize: 11, color: '#8b9ab3', marginTop: 4 }}>Final score: {analysis.finalScore}</div>}
+          {!analysis?.locked && analysis?.prematchSnapshot && (
+            <div style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>
+              {analysis.prematchSnapshot.recommendations?.find(r => r.marketKey)?.selection
+                ? `Before kickoff the pick was: ${analysis.prematchSnapshot.recommendations.find(r => r.marketKey).selection}`
+                : 'No pick was made before kickoff.'}
+            </div>
+          )}
+        </div>
+      )}
 
       {goalFestView(match, [match?.goalFest, analysis?.goalFest]) && (() => {
         const signal = goalFestView(match, [match?.goalFest, analysis?.goalFest]);
@@ -640,7 +713,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
           </div>
           <div style={{ fontSize: 10, color: '#8b9ab3', marginBottom: 8, lineHeight: 1.5 }}>
             Model probability, evidence quality and price decision.
-            Signal: {modelSignalScore}/100 | Model P: {modelProbabilityValue != null ? `${modelProbabilityValue}%` : 'Unavailable'} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'} | Evidence: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}
+            {hasPick ? `Pick score: ${Math.round(modelSignalScore)}/100 (not a win chance) | Model P: ${modelProbabilityValue}%` : noPickReason} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataSampleText ? ` (${dataSampleText})` : ''} | Evidence: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}
           </div>
           {decisionStatusObj?.reason && (
             <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8 }}>
@@ -649,9 +722,9 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
           )}
           {outcomeProbabilities?.available && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Home {outcomeProbabilities.homeWin}%</span>
-              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Draw {outcomeProbabilities.draw}%</span>
-              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Away {outcomeProbabilities.awayWin}%</span>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Home {roundPct(outcomeProbabilities.homeWin)}%</span>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Draw {roundPct(outcomeProbabilities.draw)}%</span>
+              <span style={{ fontSize: 10, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 7px' }}>Away {roundPct(outcomeProbabilities.awayWin)}%</span>
             </div>
           )}
           {analysis?.oddsSnapshot?.status === 'AVAILABLE' && (
@@ -660,7 +733,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             </div>
           )}
           {playedMessage && (
-            <div style={{ fontSize: 10, color: playedMessage.startsWith('Recorded:') ? '#00b859' : '#fbbf24', marginBottom: 7 }}>
+            <div style={{ fontSize: 10, color: playedMessage.startsWith('Recorded:') ? '#00b859' : '#fbbf24', marginBottom: 7 }} role="status">
               {playedMessage}
             </div>
           )}
@@ -685,11 +758,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                     border: `1px solid ${TIER_COLORS[r.tier]}44`,
                     borderRadius: 3, padding: '2px 6px', letterSpacing: '0.5px',
                   }}>
-                    TIER {r.tier}
+                    {DECISION_LABELS[r.decisionState] || (r.marketKey ? 'MODEL PICK' : 'NO PICK')}
                   </span>
                   <span style={{ fontSize: 9, color: '#4a5568' }}>&middot;</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: scoreColor(r.confidence) }}>
-                    {r.modelProbability == null ? 'Probability unavailable' : `${r.confidence}% model probability`}
+                    {r.modelProbability == null ? 'Probability unavailable' : `${roundPct(r.modelProbability)}% model probability`}
                   </span>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 800, color: '#e2e8f0', marginBottom: 5, lineHeight: 1.3 }}>
@@ -706,7 +779,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                 )}
                 {r.marketKey && !String(r.marketKey).startsWith('next_goal_') && r.marketKey !== 'no_more_goal' && (
                   <button
-                    onClick={() => handlePlayedRecommendation(r)}
+                    onClick={() => openPlayedForm(r)}
                     disabled={isAlreadyPlayed(r) || playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`}
                     style={{
                       marginTop: 8,
@@ -726,6 +799,31 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                         ? 'RECORDING...'
                         : 'I PLAYED THIS'}
                   </button>
+                )}
+                {playedFormKey === `${match?.id}|${r.marketKey}|${r.selection}` && !isAlreadyPlayed(r) && (
+                  <form
+                    onSubmit={(e) => { e.preventDefault(); handlePlayedRecommendation(r); }}
+                    style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
+                  >
+                    <label style={{ fontSize: 10, color: '#8b9ab3' }}>
+                      Stake (₦)
+                      <input type="number" min="1" step="any" required value={playedStake} onChange={(e) => setPlayedStake(e.target.value)}
+                        style={{ display: 'block', width: 90, marginTop: 2, background: '#0a0d15', border: '1px solid #2d3748', borderRadius: 4, color: '#e2e8f0', padding: '4px 6px', fontSize: 11 }} />
+                    </label>
+                    <label style={{ fontSize: 10, color: '#8b9ab3' }}>
+                      SportyBet odds
+                      <input type="number" min="1.01" step="0.01" required value={playedOdds} onChange={(e) => setPlayedOdds(e.target.value)}
+                        style={{ display: 'block', width: 80, marginTop: 2, background: '#0a0d15', border: '1px solid #2d3748', borderRadius: 4, color: '#e2e8f0', padding: '4px 6px', fontSize: 11 }} />
+                    </label>
+                    <label style={{ fontSize: 10, color: '#8b9ab3', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input type="checkbox" checked={playedPaper} onChange={(e) => setPlayedPaper(e.target.checked)} />
+                      Practice (no real money)
+                    </label>
+                    <button type="submit" disabled={playedBusyKey != null}
+                      style={{ border: '1px solid #006833', background: '#001f0e', color: '#00b859', borderRadius: 6, padding: '6px 9px', fontSize: 10, fontWeight: 800, cursor: 'pointer' }}>
+                      SAVE
+                    </button>
+                  </form>
                 )}
                 {r.evidence && (
                   <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #1e253555' }}>
@@ -821,7 +919,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             <div style={{ fontSize: 10, color: '#4a5568', marginBottom: 8 }}>
               Tap a parameter to see detail
             </div>
-            {PARAMS.map(({ key, label, weight, icon }) => {
+            {PARAMS.filter(({ key }) => P[key]?.score != null).map(({ key, label, icon }) => {
               const p = P[key] || {};
               const isExpanded = expandedParam === key;
               const hasDetail = true;
@@ -866,6 +964,30 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                 </div>
               );
             })}
+            {PARAMS.filter(({ key }) => P[key]?.score != null).length === 0 && (
+              <p style={{ fontSize: 11, color: '#8b9ab3' }}>No parameter could be scored for this match.</p>
+            )}
+            {(() => {
+              const unavailable = PARAMS.filter(({ key }) => P[key]?.score == null);
+              if (!unavailable.length) return null;
+              return (
+                <div style={{ marginTop: 10, borderTop: '1px solid #1e2535', paddingTop: 8 }}>
+                  <button type="button" onClick={() => setShowUnavailableParams(v => !v)} aria-expanded={showUnavailableParams}
+                    style={{ background: 'none', border: 'none', color: '#8b9ab3', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
+                    Not available for this match ({unavailable.length}) {showUnavailableParams ? '[^]' : '[v]'}
+                  </button>
+                  {showUnavailableParams && unavailable.map(({ key, label }) => {
+                    const p = P[key] || {};
+                    const reason = Array.isArray(p.assessment) ? p.assessment.filter(Boolean).join('. ') : (p.assessment || p.reason || 'The data provider does not supply this input.');
+                    return (
+                      <div key={key} style={{ fontSize: 10, color: '#64748b', lineHeight: 1.5, marginTop: 6 }}>
+                        <strong style={{ color: '#8b9ab3' }}>{label}:</strong> {String(reason).slice(0, 160)}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {(evidenceDesk?.panels || []).map(item => <EvidenceCard key={item.id} item={item} />)}
           </div>
         )}
@@ -876,7 +998,9 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             {!poisson || poisson.insufficientData ? (
               <div style={{ padding: '32px 0', textAlign: 'center' }}>
                 <p style={{ fontSize: 13, color: '#4a5568', marginBottom: 8 }}>Poisson view unavailable for this fixture.</p>
-                <p style={{ fontSize: 11, color: '#374151' }}>Model inputs are incomplete right now. Stats refresh should restore this section.</p>
+                <p style={{ fontSize: 11, color: '#374151' }}>
+                  {missingInputs.length ? `Missing: ${missingInputs.join(', ')}.` : 'Model inputs are incomplete for this fixture.'}
+                </p>
               </div>
             ) : (<>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>

@@ -12,12 +12,17 @@ export function BetLogger() {
     confidence: '',
     closingOdds: '',
     leagueName: '',
+    paper: false,
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
+    const { name, value, type, checked } = e.target;
+    if (type === 'checkbox') {
+      setFormData((prev) => ({ ...prev, [name]: checked }));
+      return;
+    }
     const numericFields = ['odds', 'stake', 'confidence', 'closingOdds'];
     setFormData((prev) => ({
       ...prev,
@@ -27,11 +32,14 @@ export function BetLogger() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Stake and the SportyBet price are what make a bet record useful for P&L.
+    if (!(Number(formData.stake) > 0)) { setMessage('❌ Enter the stake you placed (₦).'); return; }
+    if (!(Number(formData.odds) > 1)) { setMessage('❌ Enter the SportyBet odds (greater than 1.00).'); return; }
     setLoading(true);
 
     try {
-      await apiService.logBet(formData);
-      setMessage('✓ Bet logged!');
+      await apiService.logBet({ ...formData, bookmaker: 'SportyBet' });
+      setMessage(formData.paper ? '✓ Practice bet logged (not counted in real profit/loss).' : '✓ Bet logged!');
       setFormData({
         matchName: '',
         betType: 'home_win',
@@ -41,13 +49,14 @@ export function BetLogger() {
         confidence: '',
         closingOdds: '',
         leagueName: '',
+        paper: false,
       });
       setTimeout(() => {
         setShowForm(false);
         setMessage('');
       }, 2000);
     } catch (error) {
-      setMessage('❌ ' + error.message);
+      setMessage('❌ ' + (error.response?.data?.error || error.message));
     } finally {
       setLoading(false);
     }
@@ -109,8 +118,10 @@ export function BetLogger() {
             <input
               type="number"
               name="odds"
-              placeholder="Odds"
+              placeholder="SportyBet odds"
+              aria-label="SportyBet odds"
               step="0.01"
+              min="1.01"
               value={formData.odds}
               onChange={handleChange}
               className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
@@ -120,7 +131,9 @@ export function BetLogger() {
               type="number"
               name="stake"
               placeholder="Stake (₦)"
+              aria-label="Stake in naira"
               step="0.01"
+              min="1"
               value={formData.stake}
               onChange={handleChange}
               className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
@@ -149,6 +162,11 @@ export function BetLogger() {
             onChange={handleChange}
             className="bg-gray-700 border border-gray-600 rounded px-3 py-2 w-full text-sm"
           />
+
+          <label className="text-sm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" name="paper" checked={formData.paper} onChange={handleChange} />
+            Practice bet (no real money — kept out of real profit/loss)
+          </label>
 
           {message && <p className={`text-sm ${message.includes('✓') ? 'text-green-400' : 'text-red-400'}`}>{message}</p>}
 
