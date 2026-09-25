@@ -1,5 +1,7 @@
 import { completedFixtureHistory } from '../../../shared/completedFixtureHistory.js';
 import { createPrematchOddsService } from './prematchOddsService.js';
+import { createPersistentCache } from './persistentCache.js';
+import { getDb } from '../config/firebase.js';
 /**
  * Team & H2H Analytics Service
  * Fetches historical data for informed betting decisions
@@ -123,9 +125,27 @@ function offlineFallback(type, ...ids) {
   };
 }
 
-// Cache to avoid excessive API calls
-const statsCache = new Map();
+// Cache to avoid excessive API calls.
+// Map-compatible, but form/standings/team-stats/H2H/coverage entries are mirrored
+// to Firestore so a Railway restart or redeploy does not throw away paid calls.
 const CACHE_TTL = 3600000; // 1 hour
+const statsCache = createPersistentCache({
+  ttlMs: CACHE_TTL,
+  getDb,
+  collection: 'apiCache',
+  persistPrefixes: ['form', 'teamFixtures', 'standings', 'teamStats', 'h2h', 'coverage', 'leagueCoverage'],
+});
+
+/** Load unexpired cached API-Football responses from Firestore (call once at startup). */
+export async function warmAnalyticsCache() {
+  const loaded = await statsCache.warm();
+  if (loaded > 0) console.log(`🔥 Analytics cache: restored ${loaded} cached API-Football responses from Firestore`);
+  return loaded;
+}
+
+export function getAnalyticsCacheStatus() {
+  return statsCache.status();
+}
 
 function cacheKey(type, ...args) {
   return `${type}:${args.join(':')}`;

@@ -9,7 +9,7 @@ import {
   getTopExecutableRecommendation,
 } from '../../shared/marketKeys.js';
 import { getStandings } from '../src/services/analyticsService.js';
-import { buildCalibrationSnapshotStats } from '../src/server.js';
+import { buildCalibrationSnapshotStats } from '../src/services/calibrationSnapshot.js';
 
 test('empty input fails closed with NO_BET and no 1X2 availability', () => {
   const result = analyzeV9({});
@@ -33,13 +33,16 @@ test('recommendation market parser rejects NO_BET and unknown selections', () =>
 });
 
 test('getTopExecutableRecommendation skips NO_BET and finds executable market', () => {
+  // Only priced selections (decisionState BET) are executable; alerts must never
+  // fire for a market that failed the price check.
   const match = {
     home: 'Alpha FC',
     away: 'Beta FC',
     analysis: {
       recommendations: [
         { type: 'NO_BET', selection: 'No Bet', confidence: 51 },
-        { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: 68 },
+        { type: 'GOALS_ONLY', selection: 'Under 2.5 Goals', confidence: 61, probability01: 0.61, decisionState: 'NEEDS_PRICE' },
+        { type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', confidence: 68, probability01: 0.68, decisionState: 'BET' },
       ],
     },
   };
@@ -48,6 +51,14 @@ test('getTopExecutableRecommendation skips NO_BET and finds executable market', 
   assert.ok(top);
   assert.equal(top.marketKey, MARKET.OVER_25);
   assert.equal(top.probability, 68);
+});
+
+test('getTopExecutableRecommendation returns null when nothing passed the price check', () => {
+  const match = {
+    home: 'Alpha FC', away: 'Beta FC',
+    analysis: { recommendations: [{ type: 'GOALS_ONLY', selection: 'Over 2.5 Goals', probability01: 0.7, decisionState: 'NEEDS_PRICE' }] },
+  };
+  assert.equal(getTopExecutableRecommendation(match), null);
 });
 
 test('unknown market key and invalid odds return no projection path', () => {
