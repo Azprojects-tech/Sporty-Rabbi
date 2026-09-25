@@ -200,7 +200,8 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
   let reliability = 15;
   reliability += Math.round(coreCoverage * 35);
   reliability += exactSeason ? 10 : 0;
-  reliability += Math.min(minimumSample, 10) * 3;
+  // Effective sample (fallback games count at reduced weight) can be fractional.
+  reliability += Math.round(Math.min(minimumSample, 10) * 3);
   reliability += sampleAdequate && homeForm.sample >= 3 && awayForm.sample >= 3 ? 5 : 0;
   reliability = clamp(reliability, 0, 95);
 
@@ -238,6 +239,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
         homeSampleSize: homeSample,
         awaySampleSize: awaySample,
         missing,
+        evidence: { home: matchData.homeEvidence ?? null, away: matchData.awayEvidence ?? null },
       },
       poisson: emptyPoisson(`Core evidence incomplete: ${missing.join(', ')}`),
       teamEdge: {
@@ -367,6 +369,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
       homeSampleSize: homeSample,
       awaySampleSize: awaySample,
       missing: [],
+      evidence: { home: matchData.homeEvidence ?? null, away: matchData.awayEvidence ?? null },
     },
     poisson: poissonModel,
     teamEdge,

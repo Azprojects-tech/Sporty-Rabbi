@@ -13,6 +13,8 @@ import { getDb } from '../config/firebase.js';
 
 import axios from 'axios';
 import { summarizeLateGoals } from './groundedAnalystService.js';
+import { buildTeamEvidence, compactFixtureRows, MIN_COMPETITION_SAMPLE } from '../../../shared/teamEvidence.js';
+import { parseLeagueCoverage } from '../../../shared/leagueCoverage.js';
 
 const API_BASE = 'https://v3.football.api-sports.io';
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -251,129 +253,73 @@ async function getSquadPositionMap(teamId) {
   }
 }
 
+const TEAM_FIXTURES_TTL_MS = 6 * 3600000;
+const FORM_FALLBACK_ENABLED = String(process.env.ENABLE_FORM_FALLBACK ?? 'true').toLowerCase() !== 'false';
+
+// Cached compact rows of completed fixtures (key prefix 'teamFixtures' — the old
+// 'form' entries had a different shape and are simply no longer read).
+async function getTeamFixtureRows(key, params) {
+  const cached = getCache(key);
+  if (Array.isArray(cached)) return cached;
+  const response = await singleFlightGet('/fixtures', { params });
+  if (response.data?.errors && Object.keys(response.data.errors).length) throw new Error('Fixture history unavailable');
+  const rows = compactFixtureRows(response.data?.response);
+  // 6-hour TTL (same timestamp-shift convention as standings/team statistics).
+  statsCache.set(key, { data: rows, timestamp: Date.now() - (CACHE_TTL - TEAM_FIXTURES_TTL_MS) });
+  return rows;
+}
+
 /**
- * Get team's last 10 matches within a specific season and calculate form stats.
- * When season is supplied, results are filtered to that season only.
+ * Team form and goal rates for the model.
+ *
+ * - Primary: last 10 completed games in the fixture's competition and season.
+ * - Only games that finished before `before` (the fixture kickoff) count.
+ * - If fewer than 5 primary games exist and `allowFallback` is true, ONE extra
+ *   call fetches the team's last 20 games in any competition; those (and last
+ *   season's games) are added at half weight and the result is labelled ESTIMATED.
+ * - No games → averages and form are null (never 0 / 'Unavailable').
  */
-export async function getTeamForm(teamId, league = null, season = null) {
+export async function getTeamForm(teamId, league = null, season = null, { before = null, allowFallback = true } = {}) {
   if (!API_AVAILABLE) return offlineFallback('teamForm', teamId, league);
   try {
-    const key = cacheKey('form', teamId, league, season ?? '');
-    const cached = getCache(key);
-    if (cached) {
-      // Reject a cached entry if it was for a different season.
-      if (season != null && cached.season !== season) statsCache.delete(key);
-      else return cached;
-    }
     const params = { team: teamId, last: 10 };
     if (league) params.league = league;
     // Filter to the exact fixture season — prevents cross-season form contamination.
     if (season != null) params.season = season;
+    const primaryRows = await getTeamFixtureRows(cacheKey('teamFixtures', teamId, league ?? '', season ?? ''), params);
 
-    const response = await singleFlightGet('/fixtures', { params });
-    const matches = completedFixtureHistory(response.data.response, { teamId, leagueId:league || null, season });
-    // Season is not available in a form-only fetch; do not guess from current date.
-    const standings = null;
-
-    if (matches.length === 0) {
-      return {
-        teamId,
-        matches: [],
-        stats: {
-          wins: 0,
-          draws: 0,
-          losses: 0,
-          goalsFor: 0,
-          goalsAgainst: 0,
-          avgGoalsFor: 0,
-          avgGoalsAgainst: 0,
-          form: 'Unavailable',
-          goalDrought: 0,
-          recentLosses: 0,
-        },
-      };
-    }
-
-    // Calculate stats
-    let wins = 0, draws = 0, losses = 0;
-    let goalsFor = 0, goalsAgainst = 0;
-    const formStr = [];
-
-    matches.forEach((match) => {
-      const isHome = match.teams.home.id === teamId;
-      const homeGoals = match.goals.home || 0;
-      const awayGoals = match.goals.away || 0;
-
-      const forGoals = isHome ? homeGoals : awayGoals;
-      const againstGoals = isHome ? awayGoals : homeGoals;
-
-      goalsFor += forGoals;
-      goalsAgainst += againstGoals;
-
-      if (forGoals > againstGoals) {
-        wins++;
-        formStr.push('W');
-      } else if (forGoals === againstGoals) {
-        draws++;
-        formStr.push('D');
+    const cutoff = before ?? Date.now();
+    let fallbackRows = [];
+    let fallbackStatus = 'not_needed';
+    const primaryBeforeKickoff = buildTeamEvidence({ teamId, leagueId: league || null, season, before: cutoff, primaryRows });
+    if (primaryBeforeKickoff.evidence.competitionSeason < MIN_COMPETITION_SAMPLE) {
+      // allowFallback may be a budget callback (daily prep) or a boolean.
+      const fallbackAllowed = typeof allowFallback === 'function' ? allowFallback() : Boolean(allowFallback);
+      if (FORM_FALLBACK_ENABLED && fallbackAllowed) {
+        try {
+          fallbackRows = await getTeamFixtureRows(cacheKey('teamFixtures', teamId, 'all'), { team: teamId, last: 20 });
+          fallbackStatus = 'used';
+        } catch (err) {
+          fallbackStatus = 'unavailable';
+          console.warn(`[TeamForm] fallback history unavailable for team ${teamId}: ${err.message}`);
+        }
       } else {
-        losses++;
-        formStr.push('L');
+        fallbackStatus = 'skipped';
       }
-    });
-
-    // Consecutive recent losses — i=0 is the most recent fixture
-    // (API-Football returns fixtures newest-first for last: N queries)
-    let recentLosses = 0;
-    for (let i = 0; i < formStr.length; i++) {
-      if (formStr[i] === 'L') recentLosses++; else break;
     }
 
-    // Consecutive recent goalless games
-    let goalDrought = 0;
-    for (let i = 0; i < matches.length; i++) {
-      const isHomeTeam = matches[i].teams.home.id === teamId;
-      const teamGoals  = isHomeTeam ? (matches[i].goals.home || 0) : (matches[i].goals.away || 0);
-      if (teamGoals === 0) goalDrought++; else break;
-    }
-
-    const result = {
+    const built = fallbackRows.length
+      ? buildTeamEvidence({ teamId, leagueId: league || null, season, before: cutoff, primaryRows, fallbackRows })
+      : primaryBeforeKickoff;
+    const first = built.matches[0];
+    return {
       teamId,
-      teamName: matches[0].teams.home.id === teamId 
-        ? matches[0].teams.home.name 
-        : matches[0].teams.away.name,
-      matches: matches.map((m) => ({
-        id: m.fixture.id,
-        homeTeamId: m.teams.home.id,
-        awayTeamId: m.teams.away.id,
-        leagueId: m.league.id,
-        season: m.league.season,
-        date: m.fixture.date,
-        home: m.teams.home.name,
-        away: m.teams.away.name,
-        homeGoals: m.goals.home,
-        awayGoals: m.goals.away,
-        status: m.fixture.status,
-      })),
-      stats: {
-        wins,
-        draws,
-        losses,
-        goalsFor,
-        goalsAgainst,
-        avgGoalsFor: (goalsFor / matches.length).toFixed(2),
-        avgGoalsAgainst: (goalsAgainst / matches.length).toFixed(2),
-        form: formStr.join(''), // Last 10 matches (full L10 for V9 engine)
-        winRate: ((wins / matches.length) * 100).toFixed(1),
-        goalDrought,
-        recentLosses,
-        recentOpposition: summarizeRecentOpposition(teamId, matches, standings),
-      },
+      teamName: first ? (String(first.homeTeamId) === String(teamId) ? first.home : first.away) : null,
+      matches: built.matches,
+      stats: built.stats,
+      evidence: { ...built.evidence, fallbackStatus },
       season: season ?? null,
     };
-
-    setCache(key, result);
-    return result;
   } catch (error) {
     console.error('❌ Error fetching team form:', error.message);
     return {
@@ -381,6 +327,43 @@ export async function getTeamForm(teamId, league = null, season = null) {
       matches: [],
       stats: { error: 'Could not fetch data' },
     };
+  }
+}
+
+const LEAGUE_COVERAGE_TTL_MS = 24 * 3600000;
+
+/**
+ * Provider coverage flags for a league/season (standings, injuries, odds,
+ * fixture statistics). One /leagues?current=true call per day covers every
+ * league; a season that is not the current one falls back to one cached
+ * /leagues?id= call. Returns null when unknown (callers then allow the call).
+ */
+export async function getLeagueCoverage(leagueId, season = null, { canLaunch = () => true } = {}) {
+  if (!API_AVAILABLE || !leagueId) return null;
+  try {
+    const currentKey = cacheKey('coverage', 'current');
+    let current = getCache(currentKey);
+    if (!current && canLaunch()) {
+      const response = await singleFlightGet('/leagues', { params: { current: 'true' } }, canLaunch);
+      current = parseLeagueCoverage(response.data?.response);
+      if (Object.keys(current).length) {
+        statsCache.set(currentKey, { data: current, timestamp: Date.now() - (CACHE_TTL - LEAGUE_COVERAGE_TTL_MS) });
+      }
+    }
+    const hit = current?.[String(leagueId)];
+    if (hit && (season == null || String(hit.season) === String(season))) return hit;
+
+    const leagueKey = cacheKey('leagueCoverage', leagueId, season ?? '');
+    const cached = getCache(leagueKey);
+    if (cached) return cached.coverage;
+    if (!canLaunch()) return null;
+    const response = await singleFlightGet('/leagues', { params: { id: leagueId } }, canLaunch);
+    const coverage = parseLeagueCoverage(response.data?.response, { preferSeason: season })[String(leagueId)] || null;
+    statsCache.set(leagueKey, { data: { coverage }, timestamp: Date.now() - (CACHE_TTL - LEAGUE_COVERAGE_TTL_MS) });
+    return coverage;
+  } catch (err) {
+    console.warn(`[Coverage] league ${leagueId} coverage unavailable: ${err.message}`);
+    return null;
   }
 }
 
@@ -614,19 +597,10 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     const s = response.data.response;
     if (!s) return offlineFallback('teamStats', teamId, leagueId);
 
+    // /teams/statistics carries goals, results and minute buckets — it has NO
+    // shots or possession fields, so none are derived here (they were always null).
     const played        = s.fixtures?.played?.total    ?? null;
     const goalsFor      = s.goals?.for?.total?.total    ?? null;
-    const shotsTotal    = s.shots?.total?.total          ?? null;
-    const shotsOn       = s.shots?.on?.total             ?? null;
-    const possessionRaw = s.ball_possession ?? null;
-
-    const avgShotsTotal = (played != null && played > 0 && shotsTotal != null)
-      ? +(shotsTotal / played).toFixed(1) : null;
-    const avgShotsOn    = (played != null && played > 0 && shotsOn != null)
-      ? +(shotsOn / played).toFixed(1) : null;
-    const conversionPct = (shotsOn != null && shotsOn > 0 && goalsFor != null)
-      ? +((goalsFor / shotsOn) * 100).toFixed(1) : null;
-    const avgPossession = possessionRaw ? parseFloat(possessionRaw) : null;
 
     // Late-goal % — only compute when the minute-bucket structure AND goal count are present.
     const goalsByMinute = s.goals?.for?.minute ?? null;
@@ -636,7 +610,7 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
 
     const result = {
       teamId, leagueId,
-      stats: { avgShotsTotal, avgShotsOn, conversionPct, avgPossession, played, lateGoalPct,
+      stats: { played, lateGoalPct,
         seasonRecord: { played, wins: s.fixtures?.wins?.total ?? null, draws: s.fixtures?.draws?.total ?? null,
           losses: s.fixtures?.loses?.total ?? null } },
     };
