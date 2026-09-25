@@ -48,7 +48,7 @@ SportyRabbi/
 │   │       ├── geminiService.js       ← Gemini/Groq bridge, calibration, match narrative
 │   │       ├── analyticsService.js    ← Team form / H2H / standings (API-Football, cached)
 │   │       ├── liveAnalyticsService.js← In-play next-goal + momentum
-│   │       └── notificationService.js ← Twilio WhatsApp
+│   │       └── notificationService.js ← Alerts: Telegram bot (Twilio WhatsApp fallback)
 │   ├── firebase-service-account.json  ← Firestore credentials (NOT committed)
 │   └── package.json
 ├── frontend/

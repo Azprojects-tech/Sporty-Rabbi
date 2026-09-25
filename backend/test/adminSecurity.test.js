@@ -30,6 +30,7 @@ async function startApp({ token, allowedOrigins } = {}) {
   const ok = (req, res) => res.json({ ok: true, path: req.path });
   app.get('/api/test-whatsapp', ok);
   app.post('/api/test-whatsapp', ok);
+  app.post('/api/test-alert', ok);
   app.post('/api/quota/reset', ok);
   app.post('/api/calibrate', ok);
   app.get('/api/calibrate/results', ok);
@@ -60,6 +61,8 @@ const ADMIN_CASES = [
   ['GET', '/api/test-whatsapp'],
   ['HEAD', '/api/test-whatsapp'],
   ['POST', '/api/test-whatsapp'],
+  ['POST', '/api/test-alert'],
+  ['POST', '/API/Test-Alert/'],
   ['GET', '/API/Test-WhatsApp/'], // Express routing is case-insensitive and ignores a trailing slash
   ['POST', '/api/quota/reset'],
   ['POST', '/api/calibrate'],
