@@ -4,6 +4,8 @@ import { observedNumber } from '../../../shared/forecastMath.js';
 function marketKey(bet, value) {
   if (Number(bet.id) === 1 && bet.name === 'Match Winner') return { Home: 'home_win', Draw: 'draw', Away: 'away_win' }[value] || null;
   if (Number(bet.id) === 8 && bet.name === 'Both Teams Score' && value === 'Yes') return 'btts';
+  // "No" is kept only so the bookmaker margin can be removed from the BTTS price.
+  if (Number(bet.id) === 8 && bet.name === 'Both Teams Score' && value === 'No') return 'btts_no';
   if (Number(bet.id) === 5 && bet.name === 'Goals Over/Under') {
     const m = String(value).match(/^(Over|Under) ([0-4]\.5)$/);
     return m ? `${m[1].toLowerCase()}${m[2].replace('.', '')}` : null;
@@ -11,7 +13,7 @@ function marketKey(bet, value) {
   return null;
 }
 
-const aliases = { home_win: 'homeWin', away_win: 'awayWin' };
+const aliases = { home_win: 'homeWin', away_win: 'awayWin', btts_no: 'bttsNo' };
 export function normalizePrematchOdds(payload, fixtureId, { now = Date.now(), maxAgeMs = 4 * 3600000, bookmakerId = null } = {}) {
   const empty = reason => ({ status: 'UNAVAILABLE', source: 'API_FOOTBALL', fixtureId: Number(fixtureId), reason, odds: {}, offers: [] });
   if (payload?.errors && Object.keys(payload.errors).length) return empty('PROVIDER_ERROR');

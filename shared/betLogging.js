@@ -45,7 +45,7 @@ export function summarizePaperBets(paper = []) {
   const won = settled.filter((b) => b.result === 'won').length;
   let netProfit = 0;
   for (const b of settled) {
-    const stake = Number(b.stake), odds = Number(b.odds);
+    const stake = Number(b.stake), odds = betSettlementOdds(b);
     if (!(stake > 0) || !(odds > 1)) continue;
     netProfit += b.result === 'won' ? stake * (odds - 1) : -stake;
   }
@@ -57,4 +57,102 @@ export function summarizePaperBets(paper = []) {
     winRate: settled.length ? +((won / settled.length) * 100).toFixed(1) : null,
     netProfit: Math.round(netProfit),
   };
+}
+
+// ─── Doubles (V10.8) ─────────────────────────────────────────────────────────
+// A double is ONE bet slip with two legs. Old single records have no
+// `slipType` and keep working exactly as before.
+export const SLIP_SINGLE = 'single';
+export const SLIP_DOUBLE = 'double';
+/** Fixture statuses where SportyBet-style rules void a leg instead of settling it. */
+export const VOID_FIXTURE_STATUSES = new Set(['CANC', 'ABD', 'AWD', 'WO']);
+
+export function isDoubleSlip(bet) {
+  return bet?.slipType === SLIP_DOUBLE && Array.isArray(bet?.legs);
+}
+
+/** Odds that decide the payout: a double reduced by a void leg pays at `effectiveOdds`. */
+export function betSettlementOdds(bet) {
+  const eff = Number(bet?.effectiveOdds);
+  if (Number.isFinite(eff) && eff > 1) return eff;
+  return Number(bet?.odds);
+}
+
+/** Profit/loss in Naira for a settled slip; null when it cannot be computed yet. */
+export function slipProfit(bet) {
+  const stake = Number(bet?.stake);
+  const odds = betSettlementOdds(bet);
+  const r = String(bet?.result || '').toLowerCase();
+  if (!(stake > 0)) return null;
+  if (r === 'void') return 0;
+  if (!(odds > 1)) return null;
+  if (r === 'won') return stake * (odds - 1);
+  if (r === 'lost') return -stake;
+  return null;
+}
+
+function optionalOdds(value) {
+  if (value == null || value === '') return { ok: true, value: null };
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 1 || n > MAX_ODDS) return { ok: false };
+  return { ok: true, value: Math.round(n * 1000) / 1000 };
+}
+
+/**
+ * Validate a double from the "I played this" form.
+ * `isSettleable(marketKey)` is injected so this file stays dependency-free.
+ */
+export function validateDoubleSlip(body = {}, { isSettleable = () => true } = {}) {
+  const legsIn = Array.isArray(body?.legs) ? body.legs : [];
+  if (legsIn.length !== 2) return { ok: false, error: 'A double needs exactly two picks.' };
+  const legs = [];
+  for (const [i, leg] of legsIn.entries()) {
+    const label = i === 0 ? 'first pick' : 'second pick';
+    if (!leg?.matchId || !leg?.selection || !leg?.marketKey) return { ok: false, error: `The ${label} is missing its match or selection.` };
+    if (!isSettleable(String(leg.marketKey))) return { ok: false, error: `The ${label} is in a market the app cannot settle yet.` };
+    const odds = optionalOdds(leg.odds);
+    if (!odds.ok) return { ok: false, error: `The ${label}'s own odds must be a decimal number above 1.00 (or left empty).` };
+    legs.push({ ...leg, matchId: leg.matchId, marketKey: String(leg.marketKey), selection: String(leg.selection), odds: odds.value });
+  }
+  if (String(legs[0].matchId) === String(legs[1].matchId)) {
+    return { ok: false, error: 'Pick the second leg from a different match.' };
+  }
+  const base = validateBetStakeAndOdds({ ...body, odds: body?.combinedOdds ?? body?.odds });
+  if (!base.ok) {
+    return { ok: false, error: base.error.startsWith('SportyBet odds')
+      ? 'Combined SportyBet odds are required: enter the total odds shown on your slip (greater than 1.00).'
+      : base.error };
+  }
+  return { ok: true, legs, combinedOdds: base.odds, stake: base.stake, paper: base.paper, bookmaker: base.bookmaker };
+}
+
+/**
+ * Settle a double from its legs.
+ *  - any leg lost            → lost
+ *  - both legs won           → won at the combined odds
+ *  - both legs void          → void (stake returned)
+ *  - one void, other won     → a single on the other leg: at that leg's odds if
+ *                              known, else combined ÷ void leg's odds if known,
+ *                              else "review" (needs a manual check)
+ *  - otherwise               → pending
+ */
+export function settleDoubleSlip(legs = [], combinedOdds) {
+  const results = legs.map((l) => String(l?.result || 'pending').toLowerCase());
+  if (results.includes('lost')) return { result: 'lost', effectiveOdds: null, needsReview: false };
+  if (results.includes('pending') || results.length !== 2) return { result: 'pending', effectiveOdds: null, needsReview: false };
+  if (results.every((r) => r === 'won')) return { result: 'won', effectiveOdds: Number(combinedOdds) || null, needsReview: false };
+  if (results.every((r) => r === 'void')) return { result: 'void', effectiveOdds: null, needsReview: false };
+  const voidIdx = results.indexOf('void');
+  const other = legs[1 - voidIdx];
+  const voided = legs[voidIdx];
+  const otherOdds = Number(other?.odds);
+  if (otherOdds > 1) return { result: 'won', effectiveOdds: otherOdds, needsReview: false, reducedToSingle: true };
+  const voidOdds = Number(voided?.odds);
+  const combined = Number(combinedOdds);
+  if (voidOdds > 1 && combined > 1) {
+    const eff = Math.round((combined / voidOdds) * 1000) / 1000;
+    if (eff > 1) return { result: 'won', effectiveOdds: eff, needsReview: false, reducedToSingle: true };
+  }
+  return { result: 'review', effectiveOdds: null, needsReview: true,
+    note: 'One leg was void and the other leg won, but the leg odds were not recorded. Check the payout on SportyBet.' };
 }

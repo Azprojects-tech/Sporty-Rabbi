@@ -8,7 +8,9 @@ import { evaluateForecasts } from '../../shared/forecastEvaluation.js';
 import { FORECAST_VERSION } from '../../shared/forecastMath.js';
 import { eligibleTicketCandidates, chooseCombination, MIN_COMBINED_PROBABILITY } from './services/ticketSelectionService.js';
 import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
-import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds } from '../../shared/betLogging.js';
+import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDoubleSlip, settleDoubleSlip, isDoubleSlip, betSettlementOdds, SLIP_DOUBLE } from '../../shared/betLogging.js';
+import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
+import { createPickCalibrationService } from './services/pickCalibrationService.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -175,6 +177,18 @@ function runCalibrationSafely(trigger = 'manual') {
 
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
+
+// V10.8: "corrected chance" map, rebuilt daily from SportyRabbi's own settled picks.
+const pickCalibration = createPickCalibrationService({
+  getDb,
+  windowDays: Math.max(30, Number(process.env.CALIBRATION_WINDOW_DAYS) || 120),
+});
+function calibrationContext(source = {}) {
+  return { leagueId: source.leagueId, leagueCountry: source.leagueCountry || source.country, matchType: source.matchType };
+}
+function withCorrectedChances(analysis, source = {}) {
+  return withPriceChecks(analysis, pickCalibration.getMap(), calibrationContext(source));
+}
 
 // ─── WEBSOCKET SERVER ──────────────────────────────────────────────────────
 
@@ -1853,7 +1867,9 @@ let lastScheduleStatusRefreshAt = 0;
 let scheduleStatusRefreshInFlight = null;
 
 function withFixtureStatuses(matches) {
-  return applyStatusOverlay(matches, fixtureStatusOverlay);
+  // Every feed copy also carries the corrected chance / price check per pick.
+  return applyStatusOverlay(matches, fixtureStatusOverlay)
+    .map((m) => (m?.analysis?.recommendations ? { ...m, analysis: withCorrectedChances(m.analysis, m) } : m));
 }
 
 async function refreshScheduleStatuses(reason = 'portal-active') {
@@ -2108,6 +2124,12 @@ cron.schedule('0 5 * * *', () => {
     .catch((err) => console.error('[DailyPrep] Scheduled preparation failed:', err.message));
 }, { timezone: DAILY_PREP_TIMEZONE });
 
+// Corrected-chance map: rebuilt after the morning settlement run.
+cron.schedule('30 6 * * *', () => {
+  pickCalibration.rebuild('daily-06:30-uk')
+    .catch((err) => console.error('[Calibration] Daily rebuild failed:', err.message));
+}, { timezone: DAILY_PREP_TIMEZONE });
+
 const LIVE_INTELLIGENCE_INTERVAL_HOURS = toNumberWithMin(
   process.env.LIVE_INTELLIGENCE_INTERVAL_HOURS,
   2,
@@ -2352,7 +2374,8 @@ function clamp(value, min, max) {
 
 function settledBetProfit(bet) {
   const stake = Number(bet.stake || 0);
-  const odds = Number(bet.odds || 0);
+  // A double reduced to a single by a void leg pays at its effective odds.
+  const odds = Number(betSettlementOdds(bet) || 0);
   const explicitProfit = Number(bet.profit);
   const payout = Number(bet.payout || bet.returnAmount || 0);
 
@@ -2780,7 +2803,25 @@ async function settleRecentUserPlayedBets(matchId, homeGoals, awayGoals, settled
   const db = getDb();
   let settled = 0;
   for (const bet of bets) {
-    if (bet?.source !== 'USER_PLAYED' || String(bet.matchId) !== String(matchId) || bet.result !== 'pending') continue;
+    if (bet?.source === 'USER_PLAYED' && isDoubleSlip(bet) && bet.result === 'pending'
+      && bet.legs.some((l) => String(l.matchId) === String(matchId) && (l.result || 'pending') === 'pending')) {
+      const legs = bet.legs.map((l) => {
+        if (String(l.matchId) !== String(matchId) || (l.result || 'pending') !== 'pending') return l;
+        const legResult = settleMarketPrediction(l.marketKey, homeGoals, awayGoals);
+        return legResult ? { ...l, result: legResult, finalScore: `${homeGoals}-${awayGoals}`, settledAt } : l;
+      });
+      const slip = settleDoubleSlip(legs, bet.odds);
+      const update = { legs, result: slip.result, updatedAt: settledAt };
+      if (slip.result !== 'pending') Object.assign(update, { settledAt, effectiveOdds: slip.effectiveOdds ?? null, needsReview: slip.needsReview === true, ...(slip.note ? { reviewNote: slip.note } : {}) });
+      try {
+        if (db && bet.firestoreId) await db.collection('bets').doc(bet.firestoreId).update(update);
+        Object.assign(bet, update);
+        if (slip.result !== 'pending') settled++;
+        broadcast({ type: 'BET_UPDATED', payload: bet });
+      } catch (err) { console.warn('[MyBets] Double settlement will retry:', err.message); }
+      continue;
+    }
+    if (bet?.source !== 'USER_PLAYED' || isDoubleSlip(bet) || String(bet.matchId) !== String(matchId) || bet.result !== 'pending') continue;
     const result = settleMarketPrediction(bet.marketKey, homeGoals, awayGoals);
     if (!result) continue;
     const update = { result, finalScore: `${homeGoals}-${awayGoals}`, settledAt, updatedAt: settledAt };
@@ -2947,7 +2988,100 @@ app.post('/api/predictions/settle', async (req, res) => {
 });
 
 // Exact user selection. This is deliberately separate from SportyRabbi's own ledger.
+// A price check stored with the bet, so later analysis can compare the corrected
+// chance and minimum odds shown at the time with what actually happened.
+function priceCheckAtLogging(leg = {}) {
+  const check = buildPriceCheck(
+    { marketKey: leg.marketKey, modelProbability: finiteNumberOrNull(leg.modelProbability ?? leg.confidence) },
+    { calibration: pickCalibration.getMap(), oddsSnapshot: leg.displayedOdds || null, context: calibrationContext(leg) },
+  );
+  if (!check) return null;
+  return {
+    statedChance: check.statedChance,
+    correctedChance: check.correctedChance,
+    minimumOdds: check.minimumOdds,
+    fairMarketChance: check.fairMarketChance,
+    overrated: check.overrated,
+    calibrationBuiltAt: check.calibrationBuiltAt,
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+async function recordPlayedDouble(req, res) {
+  const parsed = validateDoubleSlip(req.body, { isSettleable: isSettleableMarket });
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const legKey = (l) => [String(l.matchId), l.marketKey, String(l.selection).trim().toLowerCase()].join('|');
+  const sourceKey = 'double|' + parsed.legs.map(legKey).sort().join('||');
+  const duplicate = bets.find((b) => b.source === 'USER_PLAYED' && b.sourceKey === sourceKey);
+  if (duplicate) return res.json({ success: true, duplicate: true, bet: duplicate });
+
+  const now = new Date().toISOString();
+  const legs = parsed.legs.map((l) => ({
+    matchId: l.matchId,
+    predictionId: l.predictionId || null,
+    home: String(l.home || ''),
+    away: String(l.away || ''),
+    league: String(l.league || 'Unknown'),
+    leagueId: finiteNumberOrNull(l.leagueId) ?? 0,
+    leagueCountry: String(l.leagueCountry || ''),
+    kickoffUTC: l.kickoffUTC || null,
+    marketKey: l.marketKey,
+    selection: l.selection,
+    modelProbability: finiteNumberOrNull(l.modelProbability ?? l.confidence),
+    odds: l.odds,
+    systemOdds: captureDisplayedOdds(l.displayedOdds, l.matchId, l.marketKey),
+    priceCheckAtLogging: priceCheckAtLogging(l),
+    result: 'pending',
+    finalScore: null,
+  }));
+  const bet = {
+    id: Date.now(),
+    source: 'USER_PLAYED',
+    slipType: SLIP_DOUBLE,
+    sourceKey,
+    legs,
+    legMatchIds: legs.map((l) => String(l.matchId)),
+    matchId: null,
+    home: legs.map((l) => l.home).join(' / '),
+    away: legs.map((l) => l.away).join(' / '),
+    matchName: legs.map((l) => `${l.home} vs ${l.away}`).join(' + '),
+    selection: legs.map((l) => l.selection).join(' + '),
+    marketKey: 'double',
+    betType: 'DOUBLE',
+    kickoffUTC: legs.map((l) => l.kickoffUTC).filter(Boolean).sort().pop() || null,
+    odds: parsed.combinedOdds,
+    stake: parsed.stake,
+    bookmaker: parsed.bookmaker,
+    paper: parsed.paper,
+    result: 'pending',
+    finalScore: null,
+    settledAt: null,
+    createdAt: now,
+  };
+  const db = getDb();
+  if (!db) return res.status(503).json({ error: 'Bet recording storage is unavailable. Please retry.' });
+  try {
+    const ref = db.collection('bets').doc('played_' + createHash('sha256').update(sourceKey).digest('hex'));
+    try { await ref.create(bet); }
+    catch (err) {
+      if (err.code !== 6 && err.code !== 'already-exists') throw err;
+      const saved = await ref.get();
+      return res.json({ success: true, duplicate: true, bet: { ...saved.data(), firestoreId: ref.id } });
+    }
+    bet.firestoreId = ref.id;
+  } catch (err) {
+    console.warn('[MyBets] Firestore double save failed:', err.message);
+    return res.status(503).json({ error: 'Could not save your double. Please retry.' });
+  }
+  bets.unshift(bet);
+  if (bets.length > 500) bets.pop();
+  recomputePostMatchCalibrationFromBets(bets);
+  broadcast({ type: 'BET_LOGGED', payload: bet });
+  return res.status(201).json({ success: true, bet });
+}
+
 app.post('/api/bets/played', async (req, res) => {
+  if (req.body?.slipType === SLIP_DOUBLE) return recordPlayedDouble(req, res);
   const marketKey = String(req.body?.marketKey || '');
   if (!isSettleableMarket(marketKey)) {
     return res.status(400).json({ error: 'This market is not score-settleable yet.' });
@@ -3002,6 +3136,8 @@ app.post('/api/bets/played', async (req, res) => {
     analysisVersion: req.body.analysisVersion || null,
     analysisTimestamp: req.body.analysisTimestamp || null,
     systemOdds: captureDisplayedOdds(req.body.displayedOdds, req.body.matchId, marketKey),
+    priceCheckAtLogging: priceCheckAtLogging({ ...req.body, marketKey }),
+    slipType: 'single',
     odds: betInputs.odds,
     stake: betInputs.stake,
     bookmaker: betInputs.bookmaker,
@@ -3515,6 +3651,17 @@ app.get('/api/stats/mode', async (req, res) => {
   });
 });
 
+// Corrected-chance map: stated vs actual win rate per market (read-only).
+app.get('/api/calibration', (req, res) => {
+  const map = pickCalibration.getMap();
+  if (!map) return res.json({ available: false, message: 'The corrected-chance table has not been built yet.' });
+  res.json({ available: true, ...map });
+});
+app.post('/api/calibration/rebuild', async (req, res) => {
+  try { res.json(await pickCalibration.rebuild('manual-api')); }
+  catch (err) { res.status(500).json({ error: 'Rebuild failed', detail: err.message }); }
+});
+
 app.get('/api/stats/calibration-hook', (req, res) => {
   res.json({
     updatedAt: postMatchCalibrationStore.updatedAt,
@@ -3967,7 +4114,7 @@ async function analyzeFixtureRequest(req, res) {
     // status (overlay first, then one cached-by-id provider lookup) before
     // doing any work. Finished matches return the locked pre-match analysis.
     const lockResult = await resolveKickoffLock(body, fixtureId, kickoffCutoff);
-    if (lockResult?.response) return res.json(lockResult.response);
+    if (lockResult?.response) return res.json(withCorrectedChances(lockResult.response, body));
     if (lockResult?.status) {
       body.status = lockResult.status;
       if (lockResult.score != null) body.score = lockResult.score;
@@ -4264,7 +4411,7 @@ async function analyzeFixtureRequest(req, res) {
 
     if (lockResult?.prematchSnapshot) analysis.prematchSnapshot = lockResult.prematchSnapshot;
     // Critical path ends here: return football analysis without waiting for an LLM.
-    res.json(analysis);
+    res.json(withCorrectedChances(analysis, enriched));
   } catch (error) {
     console.error('V10 analysis error:', error.message);
     res.status(500).json({ error: 'Analysis failed', detail: error.message });
@@ -5037,6 +5184,12 @@ server.listen(PORT, async () => {
 
   // Restore cached API-Football responses (form, standings, coverage…) saved before the restart.
   warmAnalyticsCache().catch((err) => console.warn('⚠️  Analytics cache warm-up failed:', err.message));
+
+  // Corrected-chance map: load the saved copy now; rebuild in the background if older than a day.
+  pickCalibration.loadStored()
+    .then(() => setTimeout(() => pickCalibration.refreshIfStale('boot')
+      .catch((err) => console.warn('⚠️  Calibration rebuild failed:', err.message)), 90_000))
+    .catch(() => {});
 
   // Pre-load bets from Firestore into memory cache on startup
   const db = getDb();

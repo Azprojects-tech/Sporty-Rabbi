@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiService } from '../services/api';
+import { slipProfit } from '../../../shared/betLogging.js';
 
 function ResultBadge({ result }) {
   const r = String(result || 'pending').toLowerCase();
   const won = r === 'won';
   const lost = r === 'lost';
+  const other = r === 'void' ? 'VOID' : r === 'review' ? 'CHECK MANUALLY' : null;
   return (
     <span style={{
       fontSize: 10,
@@ -15,7 +17,7 @@ function ResultBadge({ result }) {
       background: won ? '#001f0e' : lost ? '#1a0000' : '#131826',
       border: '1px solid ' + (won ? '#00683355' : lost ? '#7f1d1d55' : '#1e2535'),
     }}>
-      {won ? 'CORRECT' : lost ? 'WRONG' : 'PENDING'}
+      {won ? 'CORRECT' : lost ? 'WRONG' : other || 'PENDING'}
     </span>
   );
 }
@@ -34,14 +36,27 @@ function naira(value) {
 }
 
 /** Profit/loss for a settled bet with a recorded stake and price; null otherwise. */
+// Doubles pay stake × combined odds (or the reduced odds after a void leg).
 export function betProfit(b) {
-  const stake = Number(b?.stake);
-  const odds = Number(b?.odds);
-  if (!(stake > 0) || !(odds > 1)) return null;
-  const r = String(b?.result || '').toLowerCase();
-  if (r === 'won') return stake * (odds - 1);
-  if (r === 'lost') return -stake;
-  return null;
+  return slipProfit(b);
+}
+
+function DoubleLegs({ legs = [] }) {
+  return (
+    <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      {legs.map((l, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, color: '#94a3b8' }}>
+          <span style={{ color: '#64748b' }}>Leg {i + 1}</span>
+          <span style={{ color: '#cbd5e1' }}>{l.home} vs {l.away}</span>
+          <span>· {l.selection}</span>
+          {Number(l.odds) > 1 && <span>@ {Number(l.odds).toFixed(2)}</span>}
+          {l.priceCheckAtLogging?.correctedChance != null && <span>· corrected {pct(l.priceCheckAtLogging.correctedChance)}</span>}
+          {l.finalScore && <span>· FT {l.finalScore}</span>}
+          <ResultBadge result={l.result} />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function Metric({ label, value }) {
@@ -111,7 +126,7 @@ function MyBets({ bets }) {
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginBottom: 14 }}>
-        <Metric label="Selections played" value={played.length} />
+        <Metric label="Bets played" value={played.length} />
         <Metric label="Won" value={played.filter((b) => b.result === 'won').length} />
         <Metric label="Lost" value={played.filter((b) => b.result === 'lost').length} />
         <Metric label="Real profit/loss" value={realProfit.length ? naira(realProfit.reduce((a, v) => a + v, 0)) : '—'} />
@@ -131,21 +146,39 @@ function MyBets({ bets }) {
           padding: '10px 12px', border: '1px solid #1e2535', borderRadius: 8,
           background: '#0a0d15', marginBottom: 8,
         }}>
-          <div style={{ minWidth: 170, flex: 1 }}>
-            <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 700 }}>{b.home} vs {b.away}</div>
-            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{b.selection}</div>
-          </div>
-          <span style={{ fontSize: 10, color: '#8b9ab3' }}>{pct(b.modelProbability ?? b.confidence)}</span>
+          {b.slipType === 'double' && Array.isArray(b.legs) ? (
+            <div style={{ minWidth: 170, flex: 1 }}>
+              <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 700 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, color: '#a78bfa', border: '1px solid #7c3aed55', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>DOUBLE</span>
+                Combined odds {Number(b.odds).toFixed(2)}
+                {Number(b.effectiveOdds) > 1 && Number(b.effectiveOdds) !== Number(b.odds) && <span style={{ fontSize: 10, color: '#fbbf24' }}> · paid as a single at {Number(b.effectiveOdds).toFixed(2)} (one leg void)</span>}
+              </div>
+              <DoubleLegs legs={b.legs} />
+              {b.needsReview && <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 3 }}>{b.reviewNote || 'Check this slip on SportyBet.'}</div>}
+            </div>
+          ) : (
+            <>
+              <div style={{ minWidth: 170, flex: 1 }}>
+                <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 700 }}>{b.home} vs {b.away}</div>
+                <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{b.selection}</div>
+              </div>
+              <span style={{ fontSize: 10, color: '#8b9ab3' }}>
+                {pct(b.modelProbability ?? b.confidence)}
+                {b.priceCheckAtLogging?.correctedChance != null && <small style={{ display: 'block' }}>Corrected {pct(b.priceCheckAtLogging.correctedChance)}</small>}
+                {b.priceCheckAtLogging?.minimumOdds != null && <small style={{ display: 'block' }}>Min odds then {b.priceCheckAtLogging.minimumOdds.toFixed(2)}</small>}
+              </span>
+            </>
+          )}
           {b.paper === true && <span style={{ fontSize: 9, fontWeight: 800, color: '#fbbf24', border: '1px solid #78350f55', borderRadius: 4, padding: '1px 5px' }}>PRACTICE</span>}
           <span style={{ fontSize: 10, color: '#8b9ab3' }}>
             {Number(b.stake) > 0 ? `Stake ₦${Number(b.stake).toLocaleString('en-GB')}` : 'Stake not recorded'}
             {betProfit(b) != null && <small style={{ display: 'block', color: betProfit(b) >= 0 ? '#00b859' : '#ef4444' }}>P/L {naira(betProfit(b))}</small>}
           </span>
-          <span style={{ fontSize: 10, color: '#8b9ab3' }}>
+          {b.slipType !== 'double' && <span style={{ fontSize: 10, color: '#8b9ab3' }}>
             System odds: {b.systemOdds?.price ? `${b.systemOdds.price.toFixed(2)} · ${b.systemOdds.bookmaker?.name}` : 'Unavailable'}
             {b.systemOdds?.providerUpdatedAt && <small style={{ display: 'block' }}>Quote: {new Date(b.systemOdds.providerUpdatedAt).toLocaleString()}{b.systemOdds.status === 'EXPIRED' ? ' · expired when recorded' : ''}</small>}
             {b.odds > 1 && <small style={{ display: 'block' }}>{b.bookmaker || 'SportyBet'} odds taken: {Number(b.odds).toFixed(2)}</small>}
-          </span>
+          </span>}
           {b.finalScore && <span style={{ fontSize: 10, color: '#8b9ab3' }}>FT {b.finalScore}</span>}
           <ResultBadge result={b.result} />
         </div>

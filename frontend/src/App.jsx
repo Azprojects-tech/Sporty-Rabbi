@@ -274,6 +274,25 @@ export default function App() {
  }
  }, [allMatches, selectedMatch?.id]);
 
+ // Today's not-yet-started picks, offered as the second leg of a double.
+ const playablePicks = (() => {
+ const out = [];
+ const now = Date.now();
+ for (const m of allMatches) {
+ if (m.status && m.status !== 'NS' && m.status !== 'TBD') continue;
+ const ko = Date.parse(m.kickoffUTC || '');
+ if (Number.isFinite(ko) && ko <= now) continue;
+ for (const r of m.analysis?.recommendations || []) {
+ if (!r?.marketKey || String(r.marketKey).startsWith('next_goal_') || r.marketKey === 'no_more_goal') continue;
+ if (r.modelProbability == null) continue;
+ const selection = typeof r.selection === 'object' ? (r.selection?.label || r.selection?.name || '') : String(r.selection || '');
+ if (!selection) continue;
+ out.push({ key: `${m.id}|${r.marketKey}|${selection}`, match: m, rec: { ...r, selection } });
+ }
+ }
+ return out.sort((a, b) => String(a.match.kickoffUTC || '').localeCompare(String(b.match.kickoffUTC || '')));
+ })();
+
  const leagueCounts = (() => {
  const counts = {};
  for (const m of allMatches) {
@@ -546,6 +565,7 @@ export default function App() {
  match={selectedMatch}
  analysis={selectedAnalysis}
  bets={bets}
+ otherPicks={playablePicks}
  onClose={() => { setSelectedMatch(null); setSelectedAnalysis(null); }}
  />
  )}

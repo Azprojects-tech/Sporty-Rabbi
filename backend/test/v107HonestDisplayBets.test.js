@@ -8,7 +8,8 @@ import { analyzeV9 } from '../src/services/agent47Service.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const server = read('../src/server.js');
-const panel = read('../../frontend/src/components/DetailPanel.jsx');
+// The "I played this" form moved into PlayedBetForm.jsx in V10.8; check both files.
+const panel = read('../../frontend/src/components/DetailPanel.jsx') + read('../../frontend/src/components/PlayedBetForm.jsx');
 const feed = read('../../frontend/src/components/MatchFeed.jsx');
 const cards = read('../../frontend/src/components/MatchComponents.jsx');
 const app = read('../../frontend/src/App.jsx');
