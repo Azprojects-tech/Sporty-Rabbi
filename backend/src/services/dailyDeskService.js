@@ -1,5 +1,6 @@
+import { discoverOpportunities } from '../../../shared/opportunityDiscovery.js';
 import { createHash } from 'node:crypto';
-import { buildDailyDesk, dayUK, formatDailyDesk } from '../../../shared/dailyDesk.js';
+import { buildDailyDesk, deskCard, dayUK, formatDailyDesk } from '../../../shared/dailyDesk.js';
 import { liveSnapshot, liveChange, formatLiveDesk } from '../../../shared/liveDesk.js';
 import { settleMarketPrediction } from '../../../shared/predictionLedger.js';
 import { finalScoreFromProviderFixture } from '../../../shared/forecastMath.js';
@@ -100,6 +101,11 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
             .sort((a,b)=>(b.analysis?.dailySignal?.score||0)-(a.analysis?.dailySignal?.score||0)).slice(0,limit*2);
           if(canCall())await loadPrices(candidates);
           const desk=buildDailyDesk(candidates,getCalibration(),{now:now(),limit,predictCorners});
+          // Discovery searches the entire prepared schedule, not merely the daily shortlist.
+          // No extra bookmaker or corners API requests are made for the wider scan.
+          const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
+            .map(m=>deskCard(m,getCalibration())).filter(Boolean);
+          desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
           if(desk.cards.length){
             // Keep stored historical inputs for live recomputation, independent of the browser.
             state.desk=desk;await store.save(day,state);
