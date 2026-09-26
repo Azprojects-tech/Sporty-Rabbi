@@ -157,7 +157,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           // Discovery searches the entire prepared schedule, not merely the daily shortlist.
           // No extra bookmaker or corners API requests are made for the wider scan.
           const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
-            .map(m=>deskCard(m,getCalibration())).filter(Boolean);
+            .map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
           desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
           if(desk.cards.length || desk.opportunities.length){
             // Keep stored historical inputs for live recomputation, independent of the browser.
