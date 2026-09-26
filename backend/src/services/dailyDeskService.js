@@ -106,7 +106,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
             .map(m=>deskCard(m,getCalibration())).filter(Boolean);
           desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
-          if(desk.cards.length){
+          if(desk.cards.length || desk.opportunities.length){
             // Keep stored historical inputs for live recomputation, independent of the browser.
             state.desk=desk;await store.save(day,state);
           }
