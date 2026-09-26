@@ -1,6 +1,8 @@
 // Research-led opportunity discovery. Suggestions are not betting instructions.
 // Uses the existing Daily Desk probabilities; never fabricates missing markets or prices.
 export const DISCOVERY_MARKETS = Object.freeze([
+  { key:'team_win', title:'Dominant-team wins', minimum:.72, minimumLegs:3 },
+  { key:'btts', title:'Both-teams-scoring cluster', minimum:.68, minimumLegs:3 },
   { key:'over25', title:'Goal festival', minimum:.68, minimumLegs:3 },
   { key:'home_win', title:'Home-win cluster', minimum:.72, minimumLegs:3 },
   { key:'away_win', title:'Away-win cluster', minimum:.72, minimumLegs:3 },
@@ -29,7 +31,7 @@ export function discoverOpportunities(cards, {now=Date.now(), maxLegs=6, maxSugg
     for(let count=spec.minimumLegs;count<=chosen.length;count++){
       const legs=chosen.slice(0,count).map(({card:c,market:m})=>({
         fixtureId:c.id,match:`${c.home} v ${c.away}`,league:c.league,kickoffUTC:c.kickoffUTC,
-        marketKey:spec.key,selection:m.selection,probability:round(m.probability),
+        marketKey:spec.key==='team_win'?(m.selection===c.home+' win'?'home_win':'away_win'):spec.key,selection:m.selection,probability:round(m.probability),
         odds:Number.isFinite(m.odds)&&m.odds>1?m.odds:null,
         priceStatus:Number.isFinite(m.odds)&&m.odds>1&&Date.parse(c.quoteExpiresAt)>now?'REFERENCE_PRICE':'UNAVAILABLE',
       }));
