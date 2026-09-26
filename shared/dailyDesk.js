@@ -36,7 +36,7 @@ export function buildDailyDesk(matches, calibration, { now=Date.now(), limit=6, 
       || b.best.probability-a.best.probability || Date.parse(a.kickoffUTC)-Date.parse(b.kickoffUTC)).slice(0,limit);
   return {dateUK:dayUK(now),generatedAt:new Date(now).toISOString(),cards,
     combinations:[2,3].map(target=>targetCombination(cards,target,now)),
-    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration,predictCorners(m))).filter(Boolean),{now})};
+    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration)).filter(Boolean),{now})};
 }
 export function targetCombination(cards,target,now=Date.now()) {
   const eligible=cards.filter(c=>c.status==='NS' && Date.parse(c.kickoffUTC)>now && Date.parse(c.quoteExpiresAt)>now
