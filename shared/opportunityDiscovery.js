@@ -33,6 +33,7 @@ export function discoverOpportunities(cards, {now=Date.now(), maxLegs=6, maxSugg
         fixtureId:c.id,match:`${c.home} v ${c.away}`,league:c.league,kickoffUTC:c.kickoffUTC,
         marketKey:spec.key==='team_win'?(m.selection===c.home+' win'?'home_win':'away_win'):spec.key,selection:m.selection,probability:round(m.probability),
         odds:Number.isFinite(m.odds)&&m.odds>1?m.odds:null,
+        researchEvidence:c.contextSummary||'Historical inputs unavailable',
         priceStatus:Number.isFinite(m.odds)&&m.odds>1&&Date.parse(c.quoteExpiresAt)>now?'REFERENCE_PRICE':'UNAVAILABLE',
       }));
       const joint=legs.reduce((v,l)=>v*l.probability/100,1);
