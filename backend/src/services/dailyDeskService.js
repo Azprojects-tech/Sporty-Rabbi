@@ -23,6 +23,7 @@ export function createDeskStore(getDb) {
       catch(e){if(e.code===6||e.code==='already-exists')return false;throw e;}
     },
     async updateEvent(key,patch) {await getDb().collection('deskEvents').doc(key).update(clean(patch));},
+    async cornerOutcome(id,key){const db=getDb();if(!db)return null;const d=await db.collection('cornersPredictions').doc('corners_'+id).get();const x=d.exists?d.data():null;return x?.result==='settled'?(x.results?.[key]||null):x?.result==='unsettled'?'unsettled':null;},
     async pendingPlayed() {const db=getDb();if(!db)return [];const s=await db.collection('playedOpportunities').where('result','==','pending').limit(40).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
     async updatePlayed(key,patch) {await getDb().collection('playedOpportunities').doc(key).update(clean(patch));},
     async pending() {const s=await getDb().collection('deskEvents').where('result','==','pending').limit(60).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
@@ -62,6 +63,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           const id=String(leg.fixtureId);
           if(outcomes[id] || now()-Date.parse(leg.kickoffUTC)<3*3600000)continue;
           if(now()-Date.parse(leg.kickoffUTC)>7*86400000){outcomes[id]='unsettled';continue;}
+          if(leg.marketKey?.startsWith('corners_')){const result=await store.cornerOutcome?.(id,leg.marketKey);if(result)outcomes[id]=result;continue;}
           if(!finals.has(id)){
             if(checked>=2)continue;
             const last=state.settlementChecks?.[id]||0;if(now()-last<30*60000)continue;
@@ -111,6 +113,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
         if(leg.result && leg.result!=='pending'){next.push(leg);continue;}
         if(now()-Date.parse(leg.kickoffUTC)<3*3600000){next.push(leg);continue;}
         const id=String(leg.matchId);
+        if(leg.marketKey?.startsWith('corners_')){const result=await store.cornerOutcome?.(id,leg.marketKey);next.push(result?{...leg,result}:leg);continue;}
         if(!finals.has(id)){
           if(checked>=2){next.push(leg);continue;}
           const last=state.settlementChecks?.[id]||0;if(now()-last<30*60000){next.push(leg);continue;}
