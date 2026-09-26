@@ -4,14 +4,17 @@ const pct=n=>Number.isFinite(n)?`${n.toFixed(1)}%`:'Unavailable';
 const panel={padding:18,border:'1px solid #253047',borderRadius:12,background:'#101725',marginBottom:14};
 export default function DailyDesk({onOpenMatch,onBrowse}){
  const [data,setData]=useState(null),[error,setError]=useState(''),[played,setPlayed]=useState([]);
+ const [testStatus,setTestStatus]=useState('');
+ const sendTest=async()=>{setTestStatus('Sending test...');try{const r=await apiService.client.post('/test-alert');setTestStatus(r.data?.success===false?'Telegram test failed':'Telegram test request accepted');}catch(e){setTestStatus(e.response?.data?.error||'Test request failed');}};
  const [playing,setPlaying]=useState(null),[stake,setStake]=useState(''),[odds,setOdds]=useState(''),[paper,setPaper]=useState(false),[playMessage,setPlayMessage]=useState(''),[saving,setSaving]=useState(false);
  const recordPlay=async o=>{setSaving(true);setPlayMessage('');try{const requestId=globalThis.crypto?.randomUUID?.()||String(Date.now())+'-'+Math.random().toString(36).slice(2);await apiService.client.post('/opportunities/played',{opportunityId:o.id,clientRequestId:requestId,stake:Number(stake),odds:Number(odds),paper,bookmaker:'SportyBet'});setPlayMessage('Recorded. Your actual odds and stake have been saved.');setPlaying(null);setStake('');setOdds('');load();}catch(e){setPlayMessage(e.response?.data?.error||'Could not save. Please retry.');}finally{setSaving(false);}};
  const load=async()=>{try{const [desk,bets]=await Promise.all([apiService.client.get('/daily-desk'),apiService.client.get('/opportunities/played').catch(()=>({data:{bets:[]}}))]);setData(desk.data);setPlayed(bets.data.bets||[]);setError('');}catch{setError('Could not refresh the shortlist.');}};
  useEffect(()=>{load();const id=setInterval(load,60000);return()=>clearInterval(id);},[]);
  return <main style={{flex:1,minWidth:0,overflowY:'auto',padding:18,color:'#e2e8f0'}}>
   <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:12,marginBottom:18}}><h2 style={{margin:0}}>Daily picks</h2>
-   <button onClick={load}>Refresh</button><button onClick={onBrowse}>All matches</button></div>
+   <button onClick={load}>Refresh</button><button onClick={onBrowse}>All matches</button><button onClick={sendTest}>Send Telegram test</button></div>
   <p>{data?.enabled?'Telegram follows this shortlist, even when you close the portal.':'Daily monitoring is not enabled.'}</p>
+  {testStatus&&<p role="status">{testStatus}</p>}
   {error&&<p role="alert">{error}</p>}
   {!data?.desk&&<p>The shortlist will appear after daily preparation and the next monitoring check.</p>}
   {data?.desk&&<p style={{color:'#94a3b8'}}>Prepared {new Date(data.desk.generatedAt).toLocaleString('en-GB',{timeZone:'Europe/London'})} UK · Pre-match forecasts</p>}
