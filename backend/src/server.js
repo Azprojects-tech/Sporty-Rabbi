@@ -12,6 +12,8 @@ import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDo
 import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
 import { buildSimpleCard, compactMarketProbabilities } from '../../shared/simpleCard.js';
 import { createPickCalibrationService } from './services/pickCalibrationService.js';
+import { createCornersService } from './services/cornersService.js';
+import { correctedChance } from '../../shared/pickCalibration.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -184,6 +186,25 @@ const pickCalibration = createPickCalibrationService({
   getDb,
   windowDays: Math.max(30, Number(process.env.CALIBRATION_WINDOW_DAYS) || 120),
 });
+// V10.10: corners from football-data.co.uk (no API-Football quota).
+const cornersService = createCornersService({
+  getDb,
+  fetchText: async (url) => (await axios.get(url, { responseType: 'text', timeout: 20000, maxRedirects: 5 })).data,
+});
+/** Corners prediction for the card, with the corrected chance applied to the main line. */
+function cornersForCard(m) {
+  const p = cornersService.predict(m);
+  if (p.status !== 'AVAILABLE') return { status: 'NO_PREDICTION', reason: p.reason };
+  const chance = correctedChance(pickCalibration.getMap(), p.marketKey, p.stated, calibrationContext(m)) ?? p.stated;
+  return { status: 'AVAILABLE', line: p.line, chance, stated: p.stated, expectedTotal: p.expectedTotal, lines: p.lines };
+}
+async function refreshCorners(trigger) {
+  await cornersService.refresh();
+  const settled = await cornersService.settlePending().catch((err) => ({ error: err.message }));
+  const recordedCount = await cornersService.recordPredictions(upcomingMatches || []);
+  console.log(`[Corners] ${trigger}: recorded ${recordedCount}, settlement ${JSON.stringify(settled)}`);
+}
+
 function calibrationContext(source = {}) {
   return { leagueId: source.leagueId, leagueCountry: source.leagueCountry || source.country, matchType: source.matchType };
 }
@@ -1891,7 +1912,7 @@ function withFixtureStatuses(matches) {
   // Every feed copy also carries the corrected chance / price check per pick.
   return applyStatusOverlay(matches, fixtureStatusOverlay)
     .map((m) => (m?.analysis?.recommendations
-      ? { ...m, analysis: withCorrectedChances(m.analysis, m), simpleCard: buildSimpleCard(m, pickCalibration.getMap()) }
+      ? { ...m, analysis: withCorrectedChances(m.analysis, m), simpleCard: buildSimpleCard(m, pickCalibration.getMap()), corners: cornersForCard(m) }
       : m));
 }
 
@@ -2145,6 +2166,11 @@ cron.schedule('0 5 * * *', () => {
   runCalibrationSafely('daily-05:00-uk')
     .then(() => settlePredictionLedger('post-daily-prep'))
     .catch((err) => console.error('[DailyPrep] Scheduled preparation failed:', err.message));
+}, { timezone: DAILY_PREP_TIMEZONE });
+
+// Corners: after the morning preparation, refresh results files, settle, record today's predictions.
+cron.schedule('15 6 * * *', () => {
+  refreshCorners('daily-06:15-uk').catch((err) => console.error('[Corners] Daily refresh failed:', err.message));
 }, { timezone: DAILY_PREP_TIMEZONE });
 
 // Corrected-chance map: rebuilt after the morning settlement run.
@@ -3685,6 +3711,9 @@ app.post('/api/calibration/rebuild', async (req, res) => {
   catch (err) { res.status(500).json({ error: 'Rebuild failed', detail: err.message }); }
 });
 
+// Corners coverage (read-only).
+app.get('/api/corners/status', (req, res) => res.json(cornersService.status()));
+
 app.get('/api/stats/calibration-hook', (req, res) => {
   res.json({
     updatedAt: postMatchCalibrationStore.updatedAt,
@@ -5213,6 +5242,9 @@ server.listen(PORT, async () => {
     .then(() => setTimeout(() => pickCalibration.refreshIfStale('boot')
       .catch((err) => console.warn('⚠️  Calibration rebuild failed:', err.message)), 90_000))
     .catch(() => {});
+
+  // Corners models: download results files shortly after start (then daily at 06:15).
+  setTimeout(() => refreshCorners('boot').catch((err) => console.warn('⚠️  Corners refresh failed:', err.message)), 30_000);
 
   // Pre-load bets from Firestore into memory cache on startup
   const db = getDb();

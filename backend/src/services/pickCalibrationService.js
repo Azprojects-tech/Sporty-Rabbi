@@ -1,4 +1,5 @@
 import { buildCalibrationMap, extractSettledPicks } from '../../../shared/pickCalibration.js';
+import { CORNERS_COLLECTION, cornersDocsForCalibration } from './cornersService.js';
 
 /**
  * Keeps the "corrected chance" map fresh.
@@ -63,6 +64,11 @@ export function createPickCalibrationService({
       if (snap.docs.length < pageSize) break;
       last = snap.docs[snap.docs.length - 1];
     }
+    // Settled corners predictions live in their own (small) collection.
+    try {
+      const corners = await db.collection(CORNERS_COLLECTION).where('result', '==', 'settled').get();
+      docs.push(...cornersDocsForCalibration(corners.docs.map((d) => d.data())));
+    } catch (err) { log.warn?.('[Calibration] Corners history unavailable:', err.message); }
     return docs;
   }
 

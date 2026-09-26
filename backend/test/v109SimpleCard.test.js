@@ -99,7 +99,6 @@ test('simple view is the default; technical list stays behind Details', () => {
   assert.match(app, /viewMode === 'simple' \?[\s\S]{0,80}<SimpleView/);
   assert.match(app, /<MatchFeed/); // technical list kept
   assert.match(view, /No prediction/);
-  assert.match(view, /Coming soon/);
   assert.match(view, /Build my double/);
   assert.match(view, /\(estimate\)/);
   assert.match(view, /I played this/);

@@ -46,11 +46,11 @@ export function GameCard({ match, onDetails }) {
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13, padding: '3px 0' }}>
         <span style={{ color: '#8b9ab3' }}>Corners</span>
-        {corners?.chance != null
-          ? <strong style={{ color: '#e2e8f0' }}>Over {corners.line}: {pct(corners.chance)}</strong>
-          : corners?.status === 'NO_PREDICTION'
-            ? <span style={{ color: '#64748b' }}>No prediction</span>
-            : <span style={{ color: '#64748b' }}>Coming soon</span>}
+        {corners?.status === 'AVAILABLE' && corners.chance != null
+          ? <strong style={{ color: '#e2e8f0' }} title={corners.expectedTotal != null ? `About ${corners.expectedTotal} corners expected in total` : undefined}>
+              Over {corners.line}: {pct(corners.chance)}
+            </strong>
+          : <span style={{ color: '#64748b' }}>No prediction</span>}
       </div>
       <button onClick={() => onDetails?.(match)} style={{ ...btn, alignSelf: 'flex-start', marginTop: 6, background: '#131826', borderColor: '#2d3748', color: '#8b9ab3' }}>
         Details
