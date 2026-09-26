@@ -38,6 +38,7 @@ const round1 = (v) => Math.round(v * 10) / 10;
 
 export function marketFamily(marketKey) {
   const k = String(marketKey || '');
+  if (k.startsWith('corners_over')) return 'corners';
   if (k === MARKET.HOME_WIN || k === MARKET.AWAY_WIN || k === MARKET.DRAW) return 'result';
   if (k.startsWith('over')) return 'overs';
   if (k.startsWith('under')) return 'unders';
