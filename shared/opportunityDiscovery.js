@@ -5,6 +5,7 @@ export const DISCOVERY_MARKETS = Object.freeze([
   { key:'home_win', title:'Home-win cluster', minimum:.72, minimumLegs:3 },
   { key:'away_win', title:'Away-win cluster', minimum:.72, minimumLegs:3 },
   { key:'over15', title:'Goal consistency', minimum:.78, minimumLegs:3 },
+  { key:'corners_over85', title:'Corners cluster', minimum:.65, minimumLegs:3 },
 ]);
 const round=(v,n=1)=>Number(v.toFixed(n));
 export function discoverOpportunities(cards, {now=Date.now(), maxLegs=6, maxSuggestions=12, markets=DISCOVERY_MARKETS}={}) {
