@@ -8,8 +8,9 @@ import { evaluateForecasts } from '../../shared/forecastEvaluation.js';
 import { FORECAST_VERSION } from '../../shared/forecastMath.js';
 import { eligibleTicketCandidates, chooseCombination, MIN_COMBINED_PROBABILITY } from './services/ticketSelectionService.js';
 import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
-import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDoubleSlip, settleDoubleSlip, isDoubleSlip, betSettlementOdds, SLIP_DOUBLE } from '../../shared/betLogging.js';
+import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDoubleSlip, settleDoubleSlip, isDoubleSlip, betSettlementOdds, SLIP_DOUBLE, SLIP_TREBLE } from '../../shared/betLogging.js';
 import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
+import { buildSimpleCard, compactMarketProbabilities } from '../../shared/simpleCard.js';
 import { createPickCalibrationService } from './services/pickCalibrationService.js';
 /**
  * 🐰 SportyRabbi Backend Server
@@ -622,7 +623,27 @@ function compactDailyAnalysis(analysis) {
     dailySignal: analysis.dailySignal ?? null,
     recommendations,
     odds: analysis.odds ?? null,
+    // V10.9: a few market chances for the simple game card (0–1, compact).
+    marketProbabilities: compactMarketProbabilities(analysis),
   };
+}
+
+// A schedule saved before V10.9 has no market chances for the simple card.
+// Fill them once from today's prediction ledger (modelState), in batched reads.
+async function backfillCardProbabilities(matches = []) {
+  const db = getDb();
+  if (!db) return 0;
+  const missing = matches.filter((m) => m?.analysis && !m.analysis.marketProbabilities && m.predictionId);
+  let filled = 0;
+  for (const group of chunkArray(missing, 300)) {
+    const snaps = await db.getAll(...group.map((m) => db.collection('predictions').doc(String(m.predictionId))));
+    snaps.forEach((snap, i) => {
+      const probs = snap.exists ? compactMarketProbabilities({ marketProbabilities: snap.data()?.modelState?.marketProbabilities }) : null;
+      if (probs) { group[i].analysis.marketProbabilities = probs; filled++; }
+    });
+  }
+  if (filled) console.log(`[SimpleCard] Filled market chances for ${filled} of ${missing.length} restored fixtures`);
+  return filled;
 }
 
 function compactAnalyzedMatch(match, includeCompactAnalysis = false) {
@@ -1869,7 +1890,9 @@ let scheduleStatusRefreshInFlight = null;
 function withFixtureStatuses(matches) {
   // Every feed copy also carries the corrected chance / price check per pick.
   return applyStatusOverlay(matches, fixtureStatusOverlay)
-    .map((m) => (m?.analysis?.recommendations ? { ...m, analysis: withCorrectedChances(m.analysis, m) } : m));
+    .map((m) => (m?.analysis?.recommendations
+      ? { ...m, analysis: withCorrectedChances(m.analysis, m), simpleCard: buildSimpleCard(m, pickCalibration.getMap()) }
+      : m));
 }
 
 async function refreshScheduleStatuses(reason = 'portal-active') {
@@ -3011,7 +3034,7 @@ async function recordPlayedDouble(req, res) {
   const parsed = validateDoubleSlip(req.body, { isSettleable: isSettleableMarket });
   if (!parsed.ok) return res.status(400).json({ error: parsed.error });
   const legKey = (l) => [String(l.matchId), l.marketKey, String(l.selection).trim().toLowerCase()].join('|');
-  const sourceKey = 'double|' + parsed.legs.map(legKey).sort().join('||');
+  const sourceKey = `${parsed.slipType}|` + parsed.legs.map(legKey).sort().join('||');
   const duplicate = bets.find((b) => b.source === 'USER_PLAYED' && b.sourceKey === sourceKey);
   if (duplicate) return res.json({ success: true, duplicate: true, bet: duplicate });
 
@@ -3037,7 +3060,7 @@ async function recordPlayedDouble(req, res) {
   const bet = {
     id: Date.now(),
     source: 'USER_PLAYED',
-    slipType: SLIP_DOUBLE,
+    slipType: parsed.slipType,
     sourceKey,
     legs,
     legMatchIds: legs.map((l) => String(l.matchId)),
@@ -3046,8 +3069,8 @@ async function recordPlayedDouble(req, res) {
     away: legs.map((l) => l.away).join(' / '),
     matchName: legs.map((l) => `${l.home} vs ${l.away}`).join(' + '),
     selection: legs.map((l) => l.selection).join(' + '),
-    marketKey: 'double',
-    betType: 'DOUBLE',
+    marketKey: parsed.slipType,
+    betType: parsed.slipType.toUpperCase(),
     kickoffUTC: legs.map((l) => l.kickoffUTC).filter(Boolean).sort().pop() || null,
     odds: parsed.combinedOdds,
     stake: parsed.stake,
@@ -3081,7 +3104,7 @@ async function recordPlayedDouble(req, res) {
 }
 
 app.post('/api/bets/played', async (req, res) => {
-  if (req.body?.slipType === SLIP_DOUBLE) return recordPlayedDouble(req, res);
+  if (req.body?.slipType === SLIP_DOUBLE || req.body?.slipType === SLIP_TREBLE) return recordPlayedDouble(req, res);
   const marketKey = String(req.body?.marketKey || '');
   if (!isSettleableMarket(marketKey)) {
     return res.status(400).json({ error: 'This market is not score-settleable yet.' });
@@ -5243,6 +5266,7 @@ server.listen(PORT, async () => {
             };
             upcomingMatches = restoredSchedule;
             setCache('upcomingMatches', upcomingMatches);
+            backfillCardProbabilities(restoredAnalyzed).catch((err) => console.warn('[SimpleCard] Backfill skipped:', err.message));
             console.log(`🔥 Restored today's chunked daily preparation: ${upcomingMatches.length} fixtures, ${restoredAnalyzed.length} analyzed summaries`);
           } else {
             console.warn('[DailyPrep] Stored metadata found but schedule chunks were empty; startup catch-up will rebuild the day.');

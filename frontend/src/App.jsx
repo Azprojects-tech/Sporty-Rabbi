@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { connectWebSocket, disconnectWebSocket, on, off, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
+import SimpleView from './components/SimpleView';
 import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
@@ -31,6 +32,11 @@ function mergeLiveIntoMatches(prev, incoming = []) {
 
 export default function App() {
  const [allMatches, setAllMatches] = useState([]);
+ // 'simple' (default): plain game cards + Build my double. 'details': the technical list.
+ const [viewMode, setViewMode] = useState(() => {
+ try { return localStorage.getItem('sportyrabbi.viewMode') || 'simple'; } catch { return 'simple'; }
+ });
+ const chooseView = (mode) => { setViewMode(mode); try { localStorage.setItem('sportyrabbi.viewMode', mode); } catch { /* ignore */ } };
  const [filter, setFilter] = useState('all');
  const [selectedLeague, setSelectedLeague] = useState(null);
  const [selectedMatch, setSelectedMatch] = useState(null);
@@ -548,14 +554,26 @@ export default function App() {
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}
  </span>
  {loading && <span style={{ fontSize: 11, color: '#4a5568', marginLeft: 4 }}>Loading...</span>}
+ <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+ {[['simple', 'Simple'], ['details', 'Details']].map(([mode, text]) => (
+ <button key={mode} onClick={() => chooseView(mode)} style={{
+ border: '1px solid ' + (viewMode === mode ? '#006833' : '#1e2535'), background: viewMode === mode ? '#001f0e' : 'transparent',
+ color: viewMode === mode ? '#00b859' : '#8b9ab3', borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+ }}>{text}</button>
+ ))}
+ </span>
  </div>
 
+ {viewMode === 'simple' ? (
+ <SimpleView matches={displayedMatches} allMatches={allMatches} onDetails={handleSelectMatch} />
+ ) : (
  <MatchFeed
  matches={displayedMatches}
  selectedMatch={selectedMatch}
  onSelectMatch={handleSelectMatch}
  onRefresh={handleManualLiveRefresh}
  />
+ )}
  </div>
  )}
 

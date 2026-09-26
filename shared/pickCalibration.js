@@ -143,14 +143,16 @@ export function fitCurve(picks, { bandWidth = BAND_WIDTH, priorPicks = BAND_PRIO
   return xs.map((x, i) => ({ x: round1(x), y: round1(fitted[i]), n: ordered[i].n }));
 }
 
-/** Apply a curve. Outside the fitted range the nearest band's shift is kept. */
+/** Apply a curve. Above the fitted range the top band's shift is kept; below it, its ratio. */
 export function applyCurve(knots, statedPct) {
   const p = finiteNumberOrNull(statedPct);
   if (p == null) return null;
   if (!Array.isArray(knots) || !knots.length) return p;
   const first = knots[0];
   const last = knots[knots.length - 1];
-  if (p <= first.x) return clamp(p + (first.y - first.x), 0.5, 99.5);
+  // Below the lowest band there is little history: scale proportionally so a
+  // small stated chance stays small (an additive shift could push it to ~0).
+  if (p <= first.x) return clamp(first.x > 0 ? p * (first.y / first.x) : p, 0.5, 99.5);
   if (p >= last.x) return clamp(p + (last.y - last.x), 0.5, 99.5);
   for (let i = 1; i < knots.length; i++) {
     const a = knots[i - 1];

@@ -79,11 +79,11 @@ test('league and internationals adjustments apply only with enough picks', () =>
   assert.ok(correctedChance(map, 'over15', 75, { leagueId: 999, leagueCountry: 'World' }) < correctedChance(map, 'over15', 75, { leagueId: 999 }));
 });
 
-test('applyCurve interpolates between bands and keeps the edge shift outside them', () => {
+test('applyCurve interpolates between bands, keeps the top shift above and the ratio below', () => {
   const knots = [{ x: 60, y: 50 }, { x: 80, y: 60 }];
   assert.equal(applyCurve(knots, 70), 55);
   assert.equal(applyCurve(knots, 90), 70);
-  assert.equal(applyCurve(knots, 50), 40);
+  assert.equal(+applyCurve(knots, 48).toFixed(1), 40); // below range: proportional (48 × 50/60)
 });
 
 test('ledger extraction: V10 only, no win-call rows, no after-kickoff or repeat predictions', () => {
@@ -272,7 +272,7 @@ test('server wires corrected chance into analysis, feed, bet logging and a daily
   assert.match(server, /function withFixtureStatuses[\s\S]{0,300}withCorrectedChances/);
   assert.match(server, /priceCheckAtLogging: priceCheckAtLogging\(/);
   assert.match(server, /cron\.schedule\('30 6 \* \* \*'[\s\S]{0,120}pickCalibration\.rebuild/);
-  assert.match(server, /slipType === SLIP_DOUBLE\) return recordPlayedDouble/);
+  assert.match(server, /SLIP_TREBLE\) return recordPlayedDouble/);
   assert.ok(ROUTE_POLICY.some((r) => r.path === '/api/calibration/rebuild' && r.access === 'admin'));
 });
 

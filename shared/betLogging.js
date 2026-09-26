@@ -64,12 +64,16 @@ export function summarizePaperBets(paper = []) {
 // `slipType` and keep working exactly as before.
 export const SLIP_SINGLE = 'single';
 export const SLIP_DOUBLE = 'double';
+export const SLIP_TREBLE = 'treble'; // V10.9: 3-leg slips from "Build my double"
+const LEGS_FOR = { [SLIP_DOUBLE]: 2, [SLIP_TREBLE]: 3 };
 /** Fixture statuses where SportyBet-style rules void a leg instead of settling it. */
 export const VOID_FIXTURE_STATUSES = new Set(['CANC', 'ABD', 'AWD', 'WO']);
 
+/** True for any multi-leg slip (double or treble). */
 export function isDoubleSlip(bet) {
-  return bet?.slipType === SLIP_DOUBLE && Array.isArray(bet?.legs);
+  return (bet?.slipType === SLIP_DOUBLE || bet?.slipType === SLIP_TREBLE) && Array.isArray(bet?.legs);
 }
+export const isMultiSlip = isDoubleSlip;
 
 /** Odds that decide the payout: a double reduced by a void leg pays at `effectiveOdds`. */
 export function betSettlementOdds(bet) {
@@ -104,18 +108,21 @@ function optionalOdds(value) {
  */
 export function validateDoubleSlip(body = {}, { isSettleable = () => true } = {}) {
   const legsIn = Array.isArray(body?.legs) ? body.legs : [];
-  if (legsIn.length !== 2) return { ok: false, error: 'A double needs exactly two picks.' };
+  const slipType = body?.slipType === SLIP_TREBLE ? SLIP_TREBLE : SLIP_DOUBLE;
+  if (legsIn.length !== LEGS_FOR[slipType]) {
+    return { ok: false, error: slipType === SLIP_TREBLE ? 'A treble needs exactly three picks.' : 'A double needs exactly two picks.' };
+  }
   const legs = [];
   for (const [i, leg] of legsIn.entries()) {
-    const label = i === 0 ? 'first pick' : 'second pick';
+    const label = ['first pick', 'second pick', 'third pick'][i];
     if (!leg?.matchId || !leg?.selection || !leg?.marketKey) return { ok: false, error: `The ${label} is missing its match or selection.` };
     if (!isSettleable(String(leg.marketKey))) return { ok: false, error: `The ${label} is in a market the app cannot settle yet.` };
     const odds = optionalOdds(leg.odds);
     if (!odds.ok) return { ok: false, error: `The ${label}'s own odds must be a decimal number above 1.00 (or left empty).` };
     legs.push({ ...leg, matchId: leg.matchId, marketKey: String(leg.marketKey), selection: String(leg.selection), odds: odds.value });
   }
-  if (String(legs[0].matchId) === String(legs[1].matchId)) {
-    return { ok: false, error: 'Pick the second leg from a different match.' };
+  if (new Set(legs.map((l) => String(l.matchId))).size !== legs.length) {
+    return { ok: false, error: 'Each pick must come from a different match.' };
   }
   const base = validateBetStakeAndOdds({ ...body, odds: body?.combinedOdds ?? body?.odds });
   if (!base.ok) {
@@ -123,7 +130,7 @@ export function validateDoubleSlip(body = {}, { isSettleable = () => true } = {}
       ? 'Combined SportyBet odds are required: enter the total odds shown on your slip (greater than 1.00).'
       : base.error };
   }
-  return { ok: true, legs, combinedOdds: base.odds, stake: base.stake, paper: base.paper, bookmaker: base.bookmaker };
+  return { ok: true, slipType, legs, combinedOdds: base.odds, stake: base.stake, paper: base.paper, bookmaker: base.bookmaker };
 }
 
 /**
@@ -139,20 +146,21 @@ export function validateDoubleSlip(body = {}, { isSettleable = () => true } = {}
 export function settleDoubleSlip(legs = [], combinedOdds) {
   const results = legs.map((l) => String(l?.result || 'pending').toLowerCase());
   if (results.includes('lost')) return { result: 'lost', effectiveOdds: null, needsReview: false };
-  if (results.includes('pending') || results.length !== 2) return { result: 'pending', effectiveOdds: null, needsReview: false };
+  if (results.includes('pending') || results.length < 2) return { result: 'pending', effectiveOdds: null, needsReview: false };
   if (results.every((r) => r === 'won')) return { result: 'won', effectiveOdds: Number(combinedOdds) || null, needsReview: false };
   if (results.every((r) => r === 'void')) return { result: 'void', effectiveOdds: null, needsReview: false };
-  const voidIdx = results.indexOf('void');
-  const other = legs[1 - voidIdx];
-  const voided = legs[voidIdx];
-  const otherOdds = Number(other?.odds);
-  if (otherOdds > 1) return { result: 'won', effectiveOdds: otherOdds, needsReview: false, reducedToSingle: true };
-  const voidOdds = Number(voided?.odds);
+  // Some legs void, the rest won: pay on the legs that stood.
+  const stood = legs.filter((_, i) => results[i] === 'won');
+  const voided = legs.filter((_, i) => results[i] === 'void');
+  const product = (arr) => arr.reduce((acc, l) => acc * Number(l?.odds), 1);
+  if (stood.every((l) => Number(l?.odds) > 1)) {
+    return { result: 'won', effectiveOdds: Math.round(product(stood) * 1000) / 1000, needsReview: false, reducedToSingle: stood.length === 1 };
+  }
   const combined = Number(combinedOdds);
-  if (voidOdds > 1 && combined > 1) {
-    const eff = Math.round((combined / voidOdds) * 1000) / 1000;
-    if (eff > 1) return { result: 'won', effectiveOdds: eff, needsReview: false, reducedToSingle: true };
+  if (voided.every((l) => Number(l?.odds) > 1) && combined > 1) {
+    const eff = Math.round((combined / product(voided)) * 1000) / 1000;
+    if (eff > 1) return { result: 'won', effectiveOdds: eff, needsReview: false, reducedToSingle: stood.length === 1 };
   }
   return { result: 'review', effectiveOdds: null, needsReview: true,
-    note: 'One leg was void and the other leg won, but the leg odds were not recorded. Check the payout on SportyBet.' };
+    note: 'A leg was void and the others won, but the leg odds were not recorded. Check the payout on SportyBet.' };
 }
