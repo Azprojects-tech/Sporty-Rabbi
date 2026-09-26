@@ -1,3 +1,4 @@
+import { discoverOpportunities } from './opportunityDiscovery.js';
 import { withPriceChecks } from './pickCalibration.js';
 import { combinationProbabilityFloor } from '../backend/src/services/ticketSelectionService.js';
 
@@ -34,7 +35,8 @@ export function buildDailyDesk(matches, calibration, { now=Date.now(), limit=6, 
     .sort((a,b)=>(a.best.decision==='BET'?0:1)-(b.best.decision==='BET'?0:1)
       || b.best.probability-a.best.probability || Date.parse(a.kickoffUTC)-Date.parse(b.kickoffUTC)).slice(0,limit);
   return {dateUK:dayUK(now),generatedAt:new Date(now).toISOString(),cards,
-    combinations:[2,3].map(target=>targetCombination(cards,target,now))};
+    combinations:[2,3].map(target=>targetCombination(cards,target,now)),
+    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration,predictCorners(m))).filter(Boolean),{now})};
 }
 export function targetCombination(cards,target,now=Date.now()) {
   const eligible=cards.filter(c=>c.status==='NS' && Date.parse(c.kickoffUTC)>now && Date.parse(c.quoteExpiresAt)>now
