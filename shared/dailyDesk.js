@@ -18,6 +18,8 @@ export function deskCard(match, calibration, corners = null) {
     probability:r.modelProbability,rawProbability:r.rawModelProbability,basis:r.probabilitySource,
     decision:r.decisionState,odds:r.value.offeredOdds,minimumOdds:r.priceCheck.minimumOdds,
     expectedValue:r.value.expectedValue,calibrationBuiltAt:r.priceCheck.calibrationBuiltAt}));
+  const wins=markets.filter(m=>m.marketKey==='home_win'||m.marketKey==='away_win').sort((a,b)=>b.probability-a.probability);
+  if(wins.length)markets.push({...wins[0],marketKey:'team_win'});
   if(corners?.status==='AVAILABLE' && Number.isFinite(corners.lines?.corners_over85)) markets.push({marketKey:'corners_over85',selection:'Over 8.5 corners',probability:corners.lines.corners_over85,rawProbability:corners.lines.corners_over85,basis:'CORNERS_HISTORICAL_MODEL',decision:'RESEARCH_ONLY',odds:null,minimumOdds:null});
   return {id:match.id,home:match.home,away:match.away,homeTeamId:match.homeTeamId??null,awayTeamId:match.awayTeamId??null,
     league:match.league??'',leagueId:match.leagueId??null,kickoffUTC:match.kickoffUTC,status:match.status,
