@@ -2086,6 +2086,28 @@ async function runDailyDesk() {
   return deskRunInFlight;
 }
 setInterval(() => runDailyDesk().catch(err => console.warn('[DailyDesk] Timer:', err.message)), 5 * 60000);
+// User-confirmed opportunity slips are distinct from model suggestions.
+app.post('/api/opportunities/played', async (req,res)=>{
+  try{
+    const desk=(await dailyDesk.view()).desk;
+    const opportunity=desk?.opportunities?.find(o=>o.id===req.body?.opportunityId);
+    if(!opportunity)return res.status(404).json({error:'This opportunity is not in today\'s saved shortlist.'});
+    if(opportunity.legs.some(l=>Date.parse(l.kickoffUTC)<=Date.now()))return res.status(400).json({error:'At least one fixture has kicked off.'});
+    const validated=validateBetStakeAndOdds(req.body);
+    if(!validated.ok)return res.status(400).json({error:validated.error});
+    const db=getDb();if(!db)return res.status(503).json({error:'Recording storage unavailable.'});
+    const id=createHash('sha256').update(opportunity.id+'|'+String(req.body?.clientRequestId||'')).digest('hex');
+    if(!req.body?.clientRequestId || String(req.body.clientRequestId).length>120)return res.status(400).json({error:'A unique submission ID is required.'});
+    const bet={id,source:'USER_PLAYED',slipType:'opportunity',sourceOpportunityId:opportunity.id,
+      legs:opportunity.legs.map(l=>({matchId:l.fixtureId,kickoffUTC:l.kickoffUTC,marketKey:l.marketKey,selection:l.selection,probability:l.probability,result:'pending'})),
+      odds:validated.odds,stake:validated.stake,bookmaker:validated.bookmaker,paper:validated.paper,
+      modelCombinedProbability:opportunity.combinedProbability,matchName:opportunity.title,selection:opportunity.legs.map(l=>l.selection).join(' + '),
+      result:'pending',createdAt:new Date().toISOString()};
+    const ref=db.collection('playedOpportunities').doc(id);
+    try{await ref.create(bet);}catch(e){if(e.code!==6&&e.code!=='already-exists')throw e;return res.json({success:true,duplicate:true,id});}
+    return res.status(201).json({success:true,id});
+  }catch(e){console.warn('[OpportunityPlayed]',e.message);return res.status(503).json({error:'Could not record this opportunity.'});}
+});
 app.get('/api/daily-desk', async (req, res) => {
   try { res.json({ enabled: DAILY_DESK_ENABLED, ...(await dailyDesk.view()) }); }
   catch { res.status(503).json({ error: 'Daily shortlist temporarily unavailable' }); }
