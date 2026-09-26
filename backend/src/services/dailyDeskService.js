@@ -1,5 +1,6 @@
+import { discoverOpportunities } from '../../../shared/opportunityDiscovery.js';
 import { createHash } from 'node:crypto';
-import { buildDailyDesk, dayUK, formatDailyDesk } from '../../../shared/dailyDesk.js';
+import { buildDailyDesk, deskCard, dayUK, formatDailyDesk } from '../../../shared/dailyDesk.js';
 import { liveSnapshot, liveChange, formatLiveDesk } from '../../../shared/liveDesk.js';
 import { settleMarketPrediction } from '../../../shared/predictionLedger.js';
 import { finalScoreFromProviderFixture } from '../../../shared/forecastMath.js';
@@ -22,6 +23,9 @@ export function createDeskStore(getDb) {
       catch(e){if(e.code===6||e.code==='already-exists')return false;throw e;}
     },
     async updateEvent(key,patch) {await getDb().collection('deskEvents').doc(key).update(clean(patch));},
+    async cornerOutcome(id,key){const db=getDb();if(!db)return null;const d=await db.collection('cornersPredictions').doc('corners_'+id).get();const x=d.exists?d.data():null;return x?.result==='settled'?(x.results?.[key]||null):x?.result==='unsettled'?'unsettled':null;},
+    async pendingPlayed() {const db=getDb();if(!db)return [];const s=await db.collection('playedOpportunities').where('result','==','pending').limit(40).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
+    async updatePlayed(key,patch) {await getDb().collection('playedOpportunities').doc(key).update(clean(patch));},
     async pending() {const s=await getDb().collection('deskEvents').where('result','==','pending').limit(60).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
   };
 }
@@ -52,6 +56,31 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
   async function settle(){
     const pending=await store.pending();let checked=0;const finals=new Map();
     for(const event of pending){
+      if(event.type==='OPPORTUNITY_SUGGESTION'){
+        const legs=event.opportunity?.legs||[];
+        const outcomes={...(event.outcomes||{})};
+        for(const leg of legs){
+          const id=String(leg.fixtureId);
+          if(outcomes[id] || now()-Date.parse(leg.kickoffUTC)<3*3600000)continue;
+          if(now()-Date.parse(leg.kickoffUTC)>7*86400000){outcomes[id]='unsettled';continue;}
+          if(leg.marketKey?.startsWith('corners_')){const result=await store.cornerOutcome?.(id,leg.marketKey);if(result)outcomes[id]=result;continue;}
+          if(!finals.has(id)){
+            if(checked>=2)continue;
+            const last=state.settlementChecks?.[id]||0;if(now()-last<30*60000)continue;
+            checked++;(state.settlementChecks||={})[id]=now();
+            finals.set(id,await call(readFinal,leg.fixtureId));
+          }
+          const fixture=finals.get(id);if(!fixture)continue;
+          if(['CANC','ABD','AWD','WO'].includes(fixture.fixture?.status?.short)){outcomes[id]='void';continue;}
+          const score=finalScoreFromProviderFixture(fixture);if(!score)continue;
+          outcomes[id]=settleMarketPrediction(leg.marketKey,score.home,score.away)||'unsettled';
+        }
+        const results=legs.map(l=>outcomes[String(l.fixtureId)]);
+        const complete=results.every(Boolean);
+        const result=complete?(results.includes('lost')?'lost':results.includes('unsettled')?'unsettled':results.every(v=>v==='void')?'void':'won'):'pending';
+        await store.updateEvent(event.key,{outcomes,result,...(complete?{settledAt:new Date(now()).toISOString()}: {})});
+        continue;
+      }
       if(now()-Date.parse(event.kickoffUTC)<3*3600000)continue;
       if(now()-Date.parse(event.kickoffUTC)>7*86400000){await store.updateEvent(event.key,{result:'unsettled',settledAt:new Date(now()).toISOString()});continue;}
       if(!event.fixtureId || !Number.isFinite(Date.parse(event.kickoffUTC)))continue;
@@ -73,6 +102,34 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
         const result=settleMarketPrediction(k,final.home,final.away);if(result)outcomes[k]=result;
       }
       await store.updateEvent(event.key,{result:'settled',outcomes,finalScore:`${final.home}-${final.away}`,settledAt:new Date(now()).toISOString()});
+    }
+  }
+  async function settlePlayed(){
+    if(!store.pendingPlayed || !store.updatePlayed)return;
+    const pending=await store.pendingPlayed();let checked=0;const finals=new Map();
+    for(const bet of pending){
+      const legs=bet.legs||[],next=[];
+      for(const leg of legs){
+        if(leg.result && leg.result!=='pending'){next.push(leg);continue;}
+        if(now()-Date.parse(leg.kickoffUTC)<3*3600000){next.push(leg);continue;}
+        const id=String(leg.matchId);
+        if(leg.marketKey?.startsWith('corners_')){const result=await store.cornerOutcome?.(id,leg.marketKey);next.push(result?{...leg,result}:leg);continue;}
+        if(!finals.has(id)){
+          if(checked>=2){next.push(leg);continue;}
+          const last=state.settlementChecks?.[id]||0;if(now()-last<30*60000){next.push(leg);continue;}
+          checked++;(state.settlementChecks||={})[id]=now();finals.set(id,await call(readFinal,leg.matchId));
+        }
+        const fixture=finals.get(id);
+        if(!fixture){next.push(leg);continue;}
+        if(['CANC','ABD','AWD','WO'].includes(fixture.fixture?.status?.short)){next.push({...leg,result:'void'});continue;}
+        const score=finalScoreFromProviderFixture(fixture);
+        next.push(score?{...leg,result:settleMarketPrediction(leg.marketKey,score.home,score.away)||'pending',finalScore:`${score.home}-${score.away}`}:leg);
+      }
+      const results=next.map(l=>l.result||'pending');
+      const complete=results.length===legs.length&&results.every(v=>v!=='pending');
+      const result=complete?(results.includes('lost')?'lost':results.every(v=>v==='void')?'void':results.includes('unsettled')?'review':'won'):'pending';
+      const profit=result==='won'?Number(bet.stake)*(Number(bet.odds)-1):result==='lost'?-Number(bet.stake):result==='void'?0:null;
+      await store.updatePlayed(bet.key,{legs:next,result,profit,...(complete?{settledAt:new Date(now()).toISOString()}: {})});
     }
   }
   async function tick(){
@@ -100,7 +157,12 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
             .sort((a,b)=>(b.analysis?.dailySignal?.score||0)-(a.analysis?.dailySignal?.score||0)).slice(0,limit*2);
           if(canCall())await loadPrices(candidates);
           const desk=buildDailyDesk(candidates,getCalibration(),{now:now(),limit,predictCorners});
-          if(desk.cards.length){
+          // Discovery searches the entire prepared schedule, not merely the daily shortlist.
+          // No extra bookmaker or corners API requests are made for the wider scan.
+          const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
+            .map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
+          desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
+          if(desk.cards.length || desk.opportunities.length){
             // Keep stored historical inputs for live recomputation, independent of the browser.
             state.desk=desk;await store.save(day,state);
           }
@@ -110,6 +172,9 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
             await store.createEvent(hash(`${day}|prematch|${card.id}`),{type:'DAILY_PICK',fixtureId:card.id,kickoffUTC:card.kickoffUTC,
               createdAt:new Date(now()).toISOString(),result:'pending',card,
               probabilities:Object.fromEntries(card.markets.map(m=>[m.marketKey,m.probability/100]))});
+          }
+          for(const opportunity of state.desk.opportunities||[]){
+            await store.createEvent(hash(`${day}|opportunity|${opportunity.id}`),{type:'OPPORTUNITY_SUGGESTION',result:'pending',kickoffUTC:opportunity.legs[0]?.kickoffUTC,createdAt:new Date(now()).toISOString(),opportunity});
           }
           await record(hash(`${day}|digest`),{type:'DAILY_DIGEST',result:'not_applicable'},formatDailyDesk(state.desk));
           state.dailyAttempted=true;
@@ -136,6 +201,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           }
         }
         await settle();
+        await settlePlayed();
         state.lastCompletedAt=new Date(now()).toISOString();
         return {ok:true};
       }catch(e){log.warn?.('[DailyDesk] Tick incomplete:',e.message);return {ok:false};}

@@ -1,3 +1,4 @@
+import { discoverOpportunities } from './opportunityDiscovery.js';
 import { withPriceChecks } from './pickCalibration.js';
 import { combinationProbabilityFloor } from '../backend/src/services/ticketSelectionService.js';
 
@@ -17,6 +18,9 @@ export function deskCard(match, calibration, corners = null) {
     probability:r.modelProbability,rawProbability:r.rawModelProbability,basis:r.probabilitySource,
     decision:r.decisionState,odds:r.value.offeredOdds,minimumOdds:r.priceCheck.minimumOdds,
     expectedValue:r.value.expectedValue,calibrationBuiltAt:r.priceCheck.calibrationBuiltAt}));
+  const wins=markets.filter(m=>m.marketKey==='home_win'||m.marketKey==='away_win').sort((a,b)=>b.probability-a.probability);
+  if(wins.length)markets.push({...wins[0],marketKey:'team_win'});
+  if(corners?.status==='AVAILABLE' && Number.isFinite(corners.lines?.corners_over85)) markets.push({marketKey:'corners_over85',selection:'Over 8.5 corners',probability:corners.lines.corners_over85,rawProbability:corners.lines.corners_over85,basis:'CORNERS_HISTORICAL_MODEL',decision:'RESEARCH_ONLY',odds:null,minimumOdds:null});
   return {id:match.id,home:match.home,away:match.away,homeTeamId:match.homeTeamId??null,awayTeamId:match.awayTeamId??null,
     league:match.league??'',leagueId:match.leagueId??null,kickoffUTC:match.kickoffUTC,status:match.status,
     evidence:core.reliability,analysisVersion:match.analysis.analysisVersion,markets,
@@ -34,7 +38,8 @@ export function buildDailyDesk(matches, calibration, { now=Date.now(), limit=6, 
     .sort((a,b)=>(a.best.decision==='BET'?0:1)-(b.best.decision==='BET'?0:1)
       || b.best.probability-a.best.probability || Date.parse(a.kickoffUTC)-Date.parse(b.kickoffUTC)).slice(0,limit);
   return {dateUK:dayUK(now),generatedAt:new Date(now).toISOString(),cards,
-    combinations:[2,3].map(target=>targetCombination(cards,target,now))};
+    combinations:[2,3].map(target=>targetCombination(cards,target,now)),
+    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration,predictCorners(m))).filter(Boolean),{now})};
 }
 export function targetCombination(cards,target,now=Date.now()) {
   const eligible=cards.filter(c=>c.status==='NS' && Date.parse(c.kickoffUTC)>now && Date.parse(c.quoteExpiresAt)>now
@@ -75,5 +80,10 @@ export function formatDailyDesk(desk) {
   if(!desk.cards.length)lines.push('No qualifying games in the prepared schedule.');
   for(const combo of desk.combinations)lines.push(combo.available?`\nTarget ${combo.target}.0: ${combo.legs.map(l=>`${l.match}: ${l.selection}`).join(' + ')}\nTotal odds ${combo.odds} · Combined probability floor ${combo.probabilityFloor}%`:`\nTarget ${combo.target}.0: no qualifying combination.`);
   lines.push('\nReference prices are timestamped in the portal. Live updates follow this shortlist.');
+  if(desk.opportunities?.length){
+    lines.push('\nOpportunity discovery · exploratory combinations');
+    for(const o of desk.opportunities.slice(0,5))lines.push(`${o.title}: ${o.legs.map(l=>l.match+' '+l.selection).join(' + ')}\nEstimated joint chance ${o.combinedProbability}% · Fair odds ${o.fairOdds} · ${o.combinedReferenceOdds?'Reference odds '+o.combinedReferenceOdds:'Bookmaker price unavailable'}`);
+    lines.push('Suggestions only; joint estimates assume independent fixtures. Check current prices and decide for yourself.');
+  }
   return lines.join('\n');
 }
