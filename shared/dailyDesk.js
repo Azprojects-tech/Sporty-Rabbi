@@ -78,7 +78,7 @@ export function formatDailyDesk(desk) {
   for(const combo of desk.combinations)lines.push(combo.available?`\nTarget ${combo.target}.0: ${combo.legs.map(l=>`${l.match}: ${l.selection}`).join(' + ')}\nTotal odds ${combo.odds} · Combined probability floor ${combo.probabilityFloor}%`:`\nTarget ${combo.target}.0: no qualifying combination.`);
   lines.push('\nReference prices are timestamped in the portal. Live updates follow this shortlist.');
   if(desk.opportunities?.length){
-    lines.push('\\nOpportunity discovery · exploratory combinations');
+    lines.push('\nOpportunity discovery · exploratory combinations');
     for(const o of desk.opportunities.slice(0,5))lines.push(`${o.title}: ${o.legs.map(l=>l.match+' '+l.selection).join(' + ')}\\nEstimated joint chance ${o.combinedProbability}% · Fair odds ${o.fairOdds} · ${o.combinedReferenceOdds?'Reference odds '+o.combinedReferenceOdds:'Bookmaker price unavailable'}`);
     lines.push('Suggestions only; joint estimates assume independent fixtures. Check current prices and decide for yourself.');
   }
