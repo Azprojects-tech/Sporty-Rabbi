@@ -117,6 +117,9 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
               createdAt:new Date(now()).toISOString(),result:'pending',card,
               probabilities:Object.fromEntries(card.markets.map(m=>[m.marketKey,m.probability/100]))});
           }
+          for(const opportunity of state.desk.opportunities||[]){
+            await store.createEvent(hash(`${day}|opportunity|${opportunity.id}`),{type:'OPPORTUNITY_SUGGESTION',result:'not_applicable',createdAt:new Date(now()).toISOString(),opportunity});
+          }
           await record(hash(`${day}|digest`),{type:'DAILY_DIGEST',result:'not_applicable'},formatDailyDesk(state.desk));
           state.dailyAttempted=true;
         }
