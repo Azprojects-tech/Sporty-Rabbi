@@ -57,7 +57,7 @@ test('the real server slip builder applies the floor in every mode and stays wit
   const store={matches};
   const context=vm.createContext({BANKROLL:250000,calibrationStore:store,MIN_COMBINED_PROBABILITY:.512,
     eligibleTicketCandidates:ms=>eligibleTicketCandidates(ms,now),chooseCombination,detectCompetitionContext,getCompetitionRiskPolicy,
-    getPrematchOddsStatus:()=>({enabled:true})});
+    withCorrectedChances:a=>a, getPrematchOddsStatus:()=>({enabled:true})});
   vm.runInContext(section('const SLIP_MODES =','const postMatchCalibrationStore =')+
     section('function applyModeAllocation(','function oddsForSelection(')+
     section('function generateBetSlips(','// ─── REST API ENDPOINTS'),context);

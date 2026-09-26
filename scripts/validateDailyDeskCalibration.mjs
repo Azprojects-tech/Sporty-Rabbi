@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import {extractSettledPicks} from '../shared/pickCalibration.js';
+import {validateCalibration} from '../shared/calibrationValidation.js';
+import {FORECAST_VERSION} from '../shared/forecastMath.js';
+const [input,output]=process.argv.slice(2);
+if(!input)throw Error('Usage: node scripts/validateDailyDeskCalibration.mjs ledger.json [result.json]');
+const data=JSON.parse(fs.readFileSync(input,'utf8'));
+const picks=extractSettledPicks(Array.isArray(data)?data:data.predictions);
+const map=validateCalibration(picks,{version:FORECAST_VERSION});
+const result={records:(data.predictions||data).length,extracted:picks.length,training:map.totalPicks,validation:map.validation};
+if(output)fs.writeFileSync(output,JSON.stringify(result,null,2));
+console.log(JSON.stringify(result,null,2));

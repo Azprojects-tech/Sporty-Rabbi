@@ -1,3 +1,4 @@
+import DailyDesk from './components/DailyDesk';
 import React, { useState, useEffect } from 'react';
 import { connectWebSocket, disconnectWebSocket, on, off, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
@@ -30,6 +31,7 @@ function mergeLiveIntoMatches(prev, incoming = []) {
 }
 
 export default function App() {
+ const [showDesk,setShowDesk]=useState(true);
  const [allMatches, setAllMatches] = useState([]);
  const [filter, setFilter] = useState('all');
  const [selectedLeague, setSelectedLeague] = useState(null);
@@ -422,9 +424,10 @@ export default function App() {
  </form>
 
  {/* Right side */}
+ <button onClick={() => {setShowDesk(true);setShowRecord(false);setShowBets(false);setShowAlerts(false);setSelectedMatch(null);}} style={{background:'#123822',color:'#4ade80',border:'1px solid #267449',borderRadius:7,padding:'7px 10px'}}>Daily picks</button>
  <div className="sporty-navigation" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
  <button
- onClick={() => { setShowRecord(v => !v); setShowBets(false); setShowAlerts(false); setSelectedMatch(null); }}
+ onClick={() => { setShowDesk(false); setShowRecord(v => !v); setShowBets(false); setShowAlerts(false); setSelectedMatch(null); }}
  style={{
  background: showRecord ? '#001f0e' : 'transparent',
  border: '1px solid ' + (showRecord ? '#006833' : '#1e2535'),
@@ -436,7 +439,7 @@ export default function App() {
  </button>
 
  <button
- onClick={() => { setShowBets(v => !v); setShowAlerts(false); setShowRecord(false); setSelectedMatch(null); }}
+ onClick={() => { setShowDesk(false); setShowBets(v => !v); setShowAlerts(false); setShowRecord(false); setSelectedMatch(null); }}
  style={{
  background: showBets ? '#2d1b69' : 'transparent',
  border: '1px solid ' + (showBets ? '#7c3aed' : '#1e2535'),
@@ -448,7 +451,7 @@ export default function App() {
  </button>
 
  <button
- onClick={() => { setShowAlerts(v => !v); setShowBets(false); setShowRecord(false); setSelectedMatch(null); }}
+ onClick={() => { setShowDesk(false); setShowAlerts(v => !v); setShowBets(false); setShowRecord(false); setSelectedMatch(null); }}
  style={{
  background: showAlerts ? '#1a1200' : 'transparent',
  border: '1px solid ' + (showAlerts ? '#f59e0b' : '#1e2535'),
@@ -478,7 +481,7 @@ export default function App() {
  <div className="sporty-body" style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: 'hidden' }}>
 
  {/* LEFT SIDEBAR — always mounted, mobile turns it into a drawer overlay */}
- {!showBets && !showAlerts && !showRecord && (
+ {!showDesk && !showBets && !showAlerts && !showRecord && (
  <Sidebar
  filter={filter}
  setFilter={setFilter}
@@ -496,7 +499,7 @@ export default function App() {
  )}
 
  {/* TRACK RECORD / ALERTS / BET TOOLS */}
- {showRecord ? (
+ {showDesk ? (<DailyDesk onBrowse={() => setShowDesk(false)} onOpenMatch={id => { const m=allMatches.find(m=>String(m.id)===String(id)); if(m) {setShowDesk(false);handleSelectMatch(m);} }} />) : showRecord ? (
  <PerformanceHub bets={bets} />
  ) : showAlerts ? (
  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -560,7 +563,7 @@ export default function App() {
  )}
 
  {/* RIGHT DETAIL PANEL */}
- {selectedMatch && !showBets && !showAlerts && !showRecord && (
+ {selectedMatch && !showDesk && !showBets && !showAlerts && !showRecord && (
  <DetailPanel
  match={selectedMatch}
  analysis={selectedAnalysis}

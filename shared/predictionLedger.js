@@ -68,7 +68,7 @@ export function buildPredictionMarkets(match = {}) {
     });
     if (!isSettleableMarket(marketKey)) continue;
 
-    const probability = finiteNumberOrNull(rec?.modelProbability ?? rec?.confidence);
+    const probability = finiteNumberOrNull(rec?.rawModelProbability ?? rec?.modelProbability ?? rec?.confidence);
     if (probability == null) continue;
 
     const selection = String(rec?.selection || rec?.label || marketKey);
@@ -80,7 +80,10 @@ export function buildPredictionMarkets(match = {}) {
       marketKey,
       selection,
       modelProbability: probability,
-      probability01: rec.probability01 ?? probability / 100,
+      probability01: probability / 100,
+      decisionProbability: rec.modelProbability ?? probability,
+      probabilityBasis: rec.probabilitySource ?? null,
+      calibrationBuiltAt: rec.priceCheck?.calibrationBuiltAt ?? null,
       offeredOdds: rec.value?.offeredOdds ?? null,
       oddsSnapshot: match.oddsSnapshot ?? match.analysis?.oddsSnapshot ?? null,
       confidence: finiteNumberOrNull(rec?.confidence) ?? probability,

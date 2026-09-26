@@ -1,3 +1,7 @@
+import { createDailyDeskService, createDeskStore } from './services/dailyDeskService.js';
+import { createCornersService } from './services/cornersService.js';
+import { dayUK } from '../../shared/dailyDesk.js';
+import { requestFootballLive } from './services/analyticsService.js';
 import { phaseBlendCountRate } from '../../shared/liveEvidenceRates.js';
 import { refreshLiveForecast } from './services/liveForecastRefreshService.js';
 import { createHash } from 'node:crypto';
@@ -184,7 +188,7 @@ const pickCalibration = createPickCalibrationService({
   windowDays: Math.max(30, Number(process.env.CALIBRATION_WINDOW_DAYS) || 120),
 });
 function calibrationContext(source = {}) {
-  return { leagueId: source.leagueId, leagueCountry: source.leagueCountry || source.country, matchType: source.matchType };
+  return { id: source.id ?? source.matchId, status: source.status, analysisVersion: source.analysisVersion, leagueId: source.leagueId, leagueCountry: source.leagueCountry || source.country, matchType: source.matchType };
 }
 function withCorrectedChances(analysis, source = {}) {
   return withPriceChecks(analysis, pickCalibration.getMap(), calibrationContext(source));
@@ -722,7 +726,7 @@ console.log(`
 `);
 
 async function fetchLiveMatches() {
-  if (!API_KEY) {
+  if (!API_KEY || process.env.API_FOOTBALL_OFFLINE_MODE === 'true') {
     console.warn('⚠️  API_FOOTBALL_KEY not set - skipping live data. Set it in .env');
     return [];
   }
@@ -738,14 +742,7 @@ async function fetchLiveMatches() {
     
     // API-Football v3: use `live=all` to get every currently in-play fixture globally.
     // Do NOT use `status=LIVE` — that is a status code filter, not the live-feed param.
-    const response = await axios.get(`${API_BASE}/fixtures`, {
-      params: { 
-        live: 'all',
-        timezone: 'UTC'
-      },
-      headers: { 'x-apisports-key': API_KEY },
-      timeout: 5000,
-    });
+    const response = await requestFootballLive('/fixtures', { live: 'all', timezone: 'UTC' }, () => !shouldSkipApiCalls());
     updateQuotaFromHeaders(response.headers);
 
     const fixtures = response.data.response || [];
@@ -787,23 +784,24 @@ async function fetchLiveMatches() {
 const fixtureStatsCache = new Map();
 const FIXTURE_STATS_CACHE_TTL = 30 * 1000;
 
-async function fetchFixtureStatistics(fixtureId) {
+async function fetchFixtureStatistics(fixtureId, homeTeamId = null, awayTeamId = null) {
   if (!API_KEY || !fixtureId || shouldSkipApiCalls()) return null;
   const cached = fixtureStatsCache.get(fixtureId);
-  if (cached && (Date.now() - cached.ts) < FIXTURE_STATS_CACHE_TTL) return cached.data;
+  if (cached && (Date.now() - cached.ts) < FIXTURE_STATS_CACHE_TTL
+    && (!homeTeamId || String(cached.homeTeamId) === String(homeTeamId))
+    && (!awayTeamId || String(cached.awayTeamId) === String(awayTeamId))) return cached.data;
 
   try {
-    const response = await axios.get(`${API_BASE}/fixtures/statistics`, {
-      params: { fixture: fixtureId },
-      headers: { 'x-apisports-key': API_KEY },
-      timeout: 5000,
-    });
+    const response = await requestFootballLive('/fixtures/statistics', { fixture: fixtureId }, () => !shouldSkipApiCalls());
     updateQuotaFromHeaders(response.headers);
     const rows = response.data?.response || [];
     if (!rows.length) return null;
 
-    const homeStats = rows[0]?.statistics || [];
-    const awayStats = rows[1]?.statistics || [];
+    const homeRow = homeTeamId ? rows.find(r => String(r.team?.id) === String(homeTeamId)) : rows[0];
+    const awayRow = awayTeamId ? rows.find(r => String(r.team?.id) === String(awayTeamId)) : rows[1];
+    if (!homeRow || !awayRow) return null;
+    const homeStats = homeRow.statistics || [];
+    const awayStats = awayRow.statistics || [];
     const getStat = (arr, key) => {
       const s = arr.find((x) => x.type === key);
       if (!s || s.value == null) return null;
@@ -812,17 +810,18 @@ async function fetchFixtureStatistics(fixtureId) {
     };
 
     const stats = {
+      corners: { home: getStat(homeStats, 'Corner Kicks'), away: getStat(awayStats, 'Corner Kicks') },
       possession: { home: getStat(homeStats, 'Ball Possession'), away: getStat(awayStats, 'Ball Possession') },
       shots: { home: getStat(homeStats, 'Shots on Goal'), away: getStat(awayStats, 'Shots on Goal') },
       totalShots: { home: getStat(homeStats, 'Total Shots'), away: getStat(awayStats, 'Total Shots') },
       xg: { home: getStat(homeStats, 'expected_goals'), away: getStat(awayStats, 'expected_goals') },
       cards: {
-        home: { yellow: getStat(homeStats, 'Yellow Cards') || 0, red: getStat(homeStats, 'Red Cards') || 0 },
-        away: { yellow: getStat(awayStats, 'Yellow Cards') || 0, red: getStat(awayStats, 'Red Cards') || 0 },
+        home: { yellow: getStat(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
+        away: { yellow: getStat(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
       },
     };
 
-    fixtureStatsCache.set(fixtureId, { ts: Date.now(), data: stats });
+    fixtureStatsCache.set(fixtureId, { ts: Date.now(), data: stats, homeTeamId: homeRow.team?.id, awayTeamId: awayRow.team?.id });
     return stats;
   } catch (error) {
     if (error.response?.headers) updateQuotaFromHeaders(error.response.headers);
@@ -1996,7 +1995,7 @@ async function runGoalFestSignalScan(trigger='portal-active') {
   try {
     for(const match of batch) {
       if(shouldSkipApiCalls()) break;
-      const stats=await fetchFixtureStatistics(match.id);
+      const stats=await fetchFixtureStatistics(match.id, match.homeTeamId, match.awayTeamId);
       if(!stats) {
         missingEvidence++;
         const unavailable = calculateGoalFestSignal({ ...match, shots:null, xg:null });
@@ -2014,7 +2013,7 @@ async function runGoalFestSignalScan(trigger='portal-active') {
            goalFest, _staleGoalFest:false}
         : m);
 
-      if(goalFest.active && Number(goalFest.score)>=GOAL_FEST_ALERT_THRESHOLD) {
+      if(!DAILY_DESK_ENABLED && goalFest.active && Number(goalFest.score)>=GOAL_FEST_ALERT_THRESHOLD) {
         active++;
         await saveAlert({
           matchId:match.id, home:match.home, away:match.away,
@@ -2046,6 +2045,51 @@ async function runGoalFestSignalScan(trigger='portal-active') {
 }
 
 console.log(`   Goal Fest scan: every ${GOAL_FEST_SCAN_SECONDS}s, max ${GOAL_FEST_SCAN_LIMIT} live matches/pass`);
+
+// One small monitored shortlist; no open browser and no LLM call required.
+const DAILY_DESK_ENABLED = process.env.DAILY_DESK_ENABLED !== 'false' && getActiveAlertChannel() === 'telegram';
+const cornersDesk = createCornersService({ getDb,
+  fetchText: async url => { const r = await axios.get(url, { timeout: 6000 }); return r.data; },
+});
+const dailyDesk = createDailyDeskService({
+  store: createDeskStore(getDb),
+  getMatches: () => ({ ready: calibrationStore.preparedDateUK === dayUK(Date.now()), matches: withFixtureStatuses(calibrationStore.matches || []) }),
+  getCalibration: () => pickCalibration.getMap(),
+  predictCorners: m => cornersDesk.predict(m),
+  loadPrices: matches => enrichOddsShortlist(matches, 12),
+  readLive: async () => (await fetchLiveMatches()).filter(f => Number.isFinite(f.goals?.home) && Number.isFinite(f.goals?.away) && Number.isFinite(f.fixture?.status?.elapsed)).map(parseLightFixture).filter(Boolean),
+  readStats: m => fetchFixtureStatistics(m.id, m.homeTeamId, m.awayTeamId),
+  refreshForecast: refreshLiveForecast,
+  readFinal: id => getSettlementFixture(id, { shouldSkipApiCalls, updateQuotaFromHeaders }),
+  send: sendWhatsApp, // existing notifier routes this to Telegram when configured
+  canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
+  limit: Math.max(1, Math.min(6, Number(process.env.DAILY_DESK_MATCH_LIMIT) || 6)),
+  requestLimit: Math.max(0, Math.min(800, Number(process.env.DAILY_DESK_REQUEST_LIMIT ?? 400))),
+});
+let cornersRefreshDay = '';
+let deskRunInFlight = null;
+async function runDailyDesk() {
+  if (!DAILY_DESK_ENABLED || !getDb()) return;
+  if (deskRunInFlight) return deskRunInFlight;
+  deskRunInFlight = (async () => {
+    if (cornersRefreshDay !== dayUK(Date.now())) {
+      cornersRefreshDay = dayUK(Date.now());
+      // Complete initial corner loading before freezing the daily shortlist.
+      try {
+        await cornersDesk.refresh();
+        await cornersDesk.settlePending();
+      } catch (err) { console.warn('[DailyDesk] Corners unavailable:', err.message); }
+    }
+    await cornersDesk.recordPredictions(calibrationStore.matches || []);
+    await dailyDesk.tick();
+  })().finally(() => { deskRunInFlight = null; });
+  return deskRunInFlight;
+}
+setInterval(() => runDailyDesk().catch(err => console.warn('[DailyDesk] Timer:', err.message)), 5 * 60000);
+app.get('/api/daily-desk', async (req, res) => {
+  try { res.json({ enabled: DAILY_DESK_ENABLED, ...(await dailyDesk.view()) }); }
+  catch { res.status(503).json({ error: 'Daily shortlist temporarily unavailable' }); }
+});
 
 async function pollUpcomingMatches() {
   // ── If calibration ran recently, use it instead of Gemini knowledge-only ──
@@ -2142,6 +2186,7 @@ const DAILY_PREP_WHATSAPP_ALERT_LIMIT = toNumberWithMin(
 );
 
 async function runLiveIntelligenceScan(trigger = 'scheduled') {
+  if (DAILY_DESK_ENABLED) return { skipped: true, reason: 'DAILY_DESK_MONITOR_ACTIVE' };
   if (!API_KEY || shouldSkipApiCalls()) {
     console.log(`[LiveIntel] ${trigger} skipped — API unavailable or quota guard active.`);
     return { scanned: 0, alerts: 0 };
@@ -2592,7 +2637,7 @@ async function enrichOddsShortlist(matches, maxFixtures = 24) {
 
 function generateBetSlips(bankroll = BANKROLL, mode = 'balanced') {
   const modeProfile = resolveSlipMode(mode);
-  const candidates = eligibleTicketCandidates(calibrationStore.matches).filter(c => {
+  const candidates = eligibleTicketCandidates(calibrationStore.matches.map(m => ({ ...m, analysis: withCorrectedChances(m.analysis, m) }))).filter(c => {
     const family = detectCompetitionContext(c._match).family;
     const policy = getCompetitionRiskPolicy(family);
     return c.probability01 * 100 >= Math.max(52,policy.confidenceFloor + modeProfile.confidenceFloorAdjustment);
@@ -4939,8 +4984,8 @@ async function runCalibration() {
       .sort((a, b) => (b.analysis?.dailySignal?.score ?? 0) - (a.analysis?.dailySignal?.score ?? 0))
       .slice(0, DAILY_PREP_WHATSAPP_ALERT_LIMIT);
 
-    for (const m of dailyAlertMatches) {
-      const topExecutable = getTopExecutableRecommendation(m);
+    for (const m of (DAILY_DESK_ENABLED ? [] : dailyAlertMatches)) {
+      const topExecutable = getTopExecutableRecommendation({ ...m, analysis: withCorrectedChances(m.analysis, m) });
       if (!topExecutable) continue;
       const conf = m.analysis?.dailySignal?.score ?? m.confidence ?? 0;
       const policy = getPhaseConfidencePolicy(m.status, m.matchMinutes || 0);

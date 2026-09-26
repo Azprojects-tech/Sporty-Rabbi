@@ -27,7 +27,7 @@ test('quiet match stays below threshold',()=>{
 test('scanner is portal-active bounded and quota-aware',()=>{
   assert.match(server,/GOAL_FEST_SCAN_SECONDS/);assert.match(server,/GOAL_FEST_SCAN_LIMIT/);
   assert.match(server,/clients\.size===0/);assert.match(server,/shouldSkipApiCalls\(\)/);
-  assert.match(server,/fetchFixtureStatistics\(match\.id\)/);assert.match(server,/type:'GOAL_FEST'/);
+  assert.match(server,/fetchFixtureStatistics\(match\.id, match\.homeTeamId, match\.awayTeamId\)/);assert.match(server,/type:'GOAL_FEST'/);
 });
 test('Goal Fest is visible in feed and detail',()=>{
   assert.match(feed,/GOAL FEST/);assert.match(feed,/goalFestView/);
