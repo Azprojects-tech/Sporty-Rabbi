@@ -114,20 +114,22 @@ test('bookmaker margin is removed by normalising all outcomes', () => {
 
 test('minimum odds worth taking = 1.05 / corrected chance, 2 dp', () => {
   assert.equal(minimumOddsWorthTaking(60), 1.75);
-  assert.equal(minimumOddsWorthTaking(54.4), 1.93);
+  assert.equal(minimumOddsWorthTaking(54.4), 1.94);
   assert.equal(minimumOddsWorthTaking(null), null);
   assert.equal(minimumOddsWorthTaking(0), null);
 });
 
 test('price check: warning on historically overrated markets, minimum odds even without a market price', () => {
   const map = buildCalibrationMap([...picksAt('under25', 68, 800, 0.54), ...picksAt('over15', 80, 800, 0.79)]);
-  const noPrice = buildPriceCheck({ marketKey: 'under25', modelProbability: 68 }, { calibration: map });
+  map.validation={status:'APPROVED',version:'test'};
+  const context={status:'NS',analysisVersion:'test',rawProbabilities:{under25:.68,over25:.32,over15:.80,under15:.2}};
+  const noPrice = buildPriceCheck({ marketKey: 'under25', modelProbability: 68 }, { calibration: map, context });
   assert.equal(noPrice.noMarketPrice, true);
   assert.equal(noPrice.fairMarketChance, null);
   assert.equal(noPrice.minimumOdds, minimumOddsWorthTaking(noPrice.correctedChance));
   assert.equal(noPrice.warning, OVERRATED_WARNING);
   const snap = { status: 'AVAILABLE', bookmaker: { name: 'Bet365' }, odds: { over15: 1.25, under15: 3.9 } };
-  const priced = buildPriceCheck({ marketKey: 'over15', modelProbability: 80 }, { calibration: map, oddsSnapshot: snap });
+  const priced = buildPriceCheck({ marketKey: 'over15', modelProbability: 80 }, { calibration: map, oddsSnapshot: snap, context });
   assert.equal(priced.warning, null);
   assert.equal(priced.noMarketPrice, false);
   assert.equal(priced.bookmakerOdds, 1.25);
@@ -182,8 +184,8 @@ test('calibration service rebuilds from the ledger (paged), saves, and skips whe
   const r = await svc.rebuild('test');
   assert.equal(r.ok, true);
   assert.equal(r.documents, 400);
-  assert.equal(svc.getMap().markets.under25.actualRate, 54);
-  assert.ok(db.saved.current.markets.under25);
+  assert.equal(svc.getMap().validation.status, 'INSUFFICIENT_HISTORY');
+  assert.deepEqual(db.saved.current.validation.approvedMarkets, []);
   clock += 3600000;
   assert.equal((await svc.refreshIfStale()).skipped, true);
   clock += 24 * 3600000;

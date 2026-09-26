@@ -1,3 +1,5 @@
+import { validateCalibration } from '../../../shared/calibrationValidation.js';
+import { FORECAST_VERSION } from '../../../shared/forecastMath.js';
 import { buildCalibrationMap, extractSettledPicks } from '../../../shared/pickCalibration.js';
 
 /**
@@ -13,6 +15,8 @@ export const CALIBRATION_DOC = { collection: 'modelCalibration', id: 'current' }
 function compactDoc(d = {}) {
   return {
     matchId: d.matchId,
+    modelState: d.modelState || null,
+    settledAt: d.settledAt || null, snapshotType:d.snapshotType || null,
     predictedAt: d.predictedAt || null,
     kickoffUTC: d.kickoffUTC || null,
     analysisVersion: d.analysisVersion || null,
@@ -46,7 +50,7 @@ export function createPickCalibrationService({
     if (!db) return null;
     try {
       const snap = await db.collection(CALIBRATION_DOC.collection).doc(CALIBRATION_DOC.id).get();
-      if (snap.exists && snap.data()?.markets) map = snap.data();
+      if (snap.exists && snap.data()?.validation?.version === FORECAST_VERSION) map = snap.data();
     } catch (err) { log.warn?.('[Calibration] Stored map unavailable:', err.message); }
     return map;
   }
@@ -73,7 +77,7 @@ export function createPickCalibrationService({
       if (!db) return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
       const docs = await readLedger(db);
       const picks = extractSettledPicks(docs);
-      const next = buildCalibrationMap(picks, { now: new Date(now()).toISOString() });
+      const next = validateCalibration(picks, { version: FORECAST_VERSION, now: new Date(now()).toISOString() });
       next.trigger = trigger;
       next.windowDays = windowDays;
       next.documentsRead = docs.length;

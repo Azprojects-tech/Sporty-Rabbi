@@ -28,7 +28,7 @@ test('prediction history writes are split below Firestore 500-write batch limit'
 test('morning WhatsApp alerts are reserved for top Daily-80+ signals', () => {
   assert.match(server, /DAILY_PREP_WHATSAPP_ALERT_LIMIT/);
   assert.match(server, /const dailyAlertMatches = highConfidence/);
-  assert.match(server, /for \(const m of dailyAlertMatches\)/);
+  assert.match(server, /for \(const m of \(DAILY_DESK_ENABLED \? \[\] : dailyAlertMatches\)\)/);
 });
 
 test('calibration results endpoint returns compact matches instead of spreading full in-memory store', () => {

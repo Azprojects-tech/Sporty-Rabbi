@@ -38,6 +38,7 @@ const round1 = (v) => Math.round(v * 10) / 10;
 
 export function marketFamily(marketKey) {
   const k = String(marketKey || '');
+  if (k.startsWith('corners_over')) return 'corners';
   if (k === MARKET.HOME_WIN || k === MARKET.AWAY_WIN || k === MARKET.DRAW) return 'result';
   if (k.startsWith('over')) return 'overs';
   if (k.startsWith('under')) return 'unders';
@@ -75,19 +76,23 @@ export function extractSettledPicks(docs = [], { versionPrefix = 'V10', includeW
     if (versionPrefix && !String(doc.analysisVersion || '').startsWith(versionPrefix)) continue;
     const predicted = Date.parse(doc.predictedAt || '');
     const kickoff = Date.parse(doc.kickoffUTC || '');
-    const afterKickoff = Number.isFinite(predicted) && Number.isFinite(kickoff) && predicted >= kickoff;
+    const afterKickoff = !Number.isFinite(predicted) || !Number.isFinite(kickoff) || predicted >= kickoff;
+    if (doc.matchId == null || afterKickoff || (doc.snapshotType && doc.snapshotType !== 'PRE_MATCH')) continue;
     for (const m of doc.markets) {
       if (!marketFamily(m?.marketKey)) continue;
       if (!includeWinCalls && m.source === 'WIN_CALL') continue;
       const key = `${doc.matchId}|${m.marketKey}`;
       const first = !seen.has(key);
-      seen.add(key);
       if (!first || afterKickoff) continue;
       if (m.result !== 'won' && m.result !== 'lost') continue;
       const p = statedPercent(m);
       if (p == null) continue;
+      seen.add(key);
       picks.push({
         marketKey: m.marketKey,
+        fixtureId: String(doc.matchId), version: doc.analysisVersion, predictedAt: new Date(predicted).toISOString(),
+        kickoffUTC: new Date(kickoff).toISOString(), settledAt: Number.isFinite(Date.parse(doc.settledAt)) ? new Date(doc.settledAt).toISOString() : null,
+        rawProbabilities:doc.modelState?.marketProbabilities || null,
         p,
         won: m.result === 'won' ? 1 : 0,
         leagueId: finiteNumberOrNull(doc.leagueId) ?? 0,
@@ -253,7 +258,7 @@ export function correctedChance(map, marketKey, statedPct, context = {}) {
 export function minimumOddsWorthTaking(correctedPct, margin = MIN_ODDS_MARGIN) {
   const p = finiteNumberOrNull(correctedPct);
   if (p == null || p <= 0 || p >= 100) return null;
-  return Math.round((margin / (p / 100)) * 100) / 100;
+  return Math.ceil((margin / (p / 100)) * 100 - 1e-10) / 100;
 }
 
 // Every outcome of a market, so the bookmaker margin can be spread out.
@@ -303,11 +308,13 @@ export function fairMarketChance(odds = {}, marketKey) {
 export function buildPriceCheck(rec = {}, { calibration = null, oddsSnapshot = null, context = {} } = {}) {
   const marketKey = rec?.marketKey;
   if (!marketFamily(marketKey)) return null;
-  const stated = finiteNumberOrNull(rec.modelProbability ?? (rec.probability01 != null ? rec.probability01 * 100 : null));
+  const stated = finiteNumberOrNull(rec.rawModelProbability ?? rec.modelProbability ?? (rec.probability01 != null ? rec.probability01 * 100 : null));
   if (stated == null || stated <= 0 || stated >= 100) return null;
   const hasHistory = Boolean(calibration?.markets?.[marketKey]?.knots?.length
     || calibration?.families?.[marketFamily(marketKey)]?.knots?.length);
-  const corrected = calibration ? correctedChance(calibration, marketKey, stated, context) : null;
+  const approved = calibration?.validation?.status === 'APPROVED' && Number.isFinite(context.rawProbabilities?.[marketKey])
+    && context.status === 'NS' && context.analysisVersion === calibration.validation.version;
+  const corrected = approved ? coherentCorrection(calibration, context.rawProbabilities, context)[marketKey] * 100 : null;
   const chanceForOdds = corrected ?? round1(stated);
   const marketStats = calibration?.markets?.[marketKey] || null;
 
@@ -338,7 +345,9 @@ export function buildPriceCheck(rec = {}, { calibration = null, oddsSnapshot = n
     minimumOdds: minimumOddsWorthTaking(chanceForOdds),
     overrated,
     warning: overrated ? OVERRATED_WARNING : null,
-    calibrationBuiltAt: calibration?.builtAt || null,
+    calibrationBuiltAt: approved ? calibration?.builtAt || null : null,
+    usedChance: chanceForOdds,
+    probabilityBasis: approved ? 'VALIDATED_CORRECTION' : 'RAW_MODEL',
   };
 }
 
@@ -346,11 +355,62 @@ export function buildPriceCheck(rec = {}, { calibration = null, oddsSnapshot = n
 export function withPriceChecks(analysis, calibration, context = {}) {
   if (!analysis || !Array.isArray(analysis.recommendations)) return analysis;
   const oddsSnapshot = analysis.oddsSnapshot || context.oddsSnapshot || null;
-  return {
-    ...analysis,
-    recommendations: analysis.recommendations.map((r) => {
-      const priceCheck = buildPriceCheck(r, { calibration, oddsSnapshot, context });
-      return priceCheck ? { ...r, priceCheck } : r;
-    }),
-  };
+  const validQuote = context.status === 'NS' && oddsSnapshot?.status === 'AVAILABLE'
+    && oddsSnapshot.kind === 'PRE_MATCH' && oddsSnapshot.period === 'REGULATION'
+    && String(oddsSnapshot.fixtureId) === String(context.id)
+    && Date.parse(oddsSnapshot.providerUpdatedAt) <= Date.now() + 60000
+    && Date.parse(oddsSnapshot.expiresAt) > Date.now();
+  const recommendations = analysis.recommendations.map((r) => {
+    const rawModelProbability = r.rawModelProbability ?? r.modelProbability;
+    const priceCheck = buildPriceCheck({ ...r, modelProbability: rawModelProbability }, {
+      calibration, oddsSnapshot: validQuote ? oddsSnapshot : null,
+      context: { ...context, rawProbabilities: analysis.predictionCore?.poisson?.marketProbabilities, analysisVersion: analysis.analysisVersion || analysis.predictionCore?.version },
+    });
+    if (!priceCheck) return r;
+    const p = priceCheck.usedChance / 100;
+    const price = validQuote ? offeredOddsForMarket(oddsSnapshot.odds, r.marketKey) : null;
+    const ev = price == null ? null : p * price - 1;
+    const passed = r.evidenceGate?.passed === true && p >= .55;
+    const decision = !passed ? 'NO_BET' : price == null ? 'NEEDS_PRICE' : ev >= .05 - 1e-10 ? 'BET' : 'NO_BET';
+    return { ...r, rawModelProbability, priceCheck, probability01: p, modelProbability: priceCheck.usedChance,
+      confidence: priceCheck.usedChance, probabilitySource: priceCheck.probabilityBasis,
+      decisionState: decision, value: { ...r.value, decision, expectedValue: ev, offeredOdds: price,
+        minimumAcceptableOdds: priceCheck.minimumOdds,
+        reason: !passed ? 'EVIDENCE_OR_PROBABILITY_THRESHOLD' : price == null ? 'ODDS_UNAVAILABLE' : ev >= .05 - 1e-10 ? 'VALUE_FOUND' : 'INSUFFICIENT_VALUE' } };
+  }).sort((a,b) => {
+    const rank = r => r.decisionState === 'BET' ? 0 : r.decisionState === 'NEEDS_PRICE' ? 1 : 2;
+    return rank(a)-rank(b) || (rank(a) === 0 ? (b.value.expectedValue-a.value.expectedValue) : (b.probability01 ?? 0)-(a.probability01 ?? 0));
+  });
+  const brief = r => r ? { marketKey:r.marketKey, selection:r.selection, probability01:r.probability01,
+    offeredOdds:r.value?.offeredOdds ?? null, expectedValue:r.value?.expectedValue ?? null } : null;
+  return { ...analysis, recommendations, marketSummary: {
+    mostLikely: brief([...recommendations].sort((a,b)=>(b.probability01??0)-(a.probability01??0))[0]),
+    bestPriced: brief(recommendations.find(r=>r.decisionState === 'BET')),
+    rankingBasis: 'SHARED_DECISION_PROBABILITY',
+  }};
+}
+
+// A single corrected vector: results sum to one, goal totals remain ordered,
+// Over/Under pairs remain complements, and BTTS cannot exceed Over 1.5.
+// This exact transformation is used in validation and production.
+export function coherentCorrection(map, raw = {}, context = {}) {
+  const out={...raw};
+  const chance=k=>Number.isFinite(raw[k])?correctedChance(map,k,raw[k]*100,context)/100:null;
+  const resultKeys=['home_win','draw','away_win'];
+  if(resultKeys.every(k=>Number.isFinite(raw[k]))){
+    const values=resultKeys.map(chance),sum=values.reduce((a,b)=>a+b,0);
+    resultKeys.forEach((k,i)=>{out[k]=values[i]/sum;});
+  }
+  let previous=1;
+  for(const line of ['05','15','25','35','45']){
+    const over='over'+line,under='under'+line;
+    if(!Number.isFinite(raw[over]))continue;
+    const a=map?.markets?.[over]?.knots?.length?chance(over):null;
+    const b=map?.markets?.[under]?.knots?.length?1-chance(under):null;
+    const value=a!=null&&b!=null?(a+b)/2:a??b??raw[over];
+    out[over]=Math.min(previous,Math.max(.001,Math.min(.999,value)));
+    out[under]=1-out[over];previous=out[over];
+  }
+  if(Number.isFinite(raw.btts))out.btts=Math.min(chance('btts'),out.over15??1);
+  return out;
 }

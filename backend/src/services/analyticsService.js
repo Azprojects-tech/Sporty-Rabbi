@@ -771,3 +771,10 @@ export async function getSettlementFixture(id, { shouldSkipApiCalls, updateQuota
   if (response.data?.errors && Object.keys(response.data.errors).length) throw new Error('Fixture result unavailable');
   return response.data?.response?.find(f => String(f.fixture?.id) === String(id)) || null;
 }
+
+
+// Shared request pacing for live fixture/statistics consumers as well as history.
+export async function requestFootballLive(path, params, canLaunch = () => true) {
+  if (!API_AVAILABLE) throw new Error('API_UNAVAILABLE');
+  return singleFlightGet(path, { params, timeout: 5000 }, canLaunch);
+}
