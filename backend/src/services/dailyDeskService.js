@@ -167,6 +167,14 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
             state.desk=desk;await store.save(day,state);
           }
         }
+        // Existing saved desks from before the feature shipped must gain discoveries without
+        // another preparation run or another paid API request.
+        if(state.desk && !Array.isArray(state.desk.opportunities) && prepared.ready){
+          const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
+            .map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
+          state.desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
+          await store.save(day,state);
+        }
         if(state.desk && !state.dailyAttempted){
           for(const card of state.desk.cards){
             await store.createEvent(hash(`${day}|prematch|${card.id}`),{type:'DAILY_PICK',fixtureId:card.id,kickoffUTC:card.kickoffUTC,
