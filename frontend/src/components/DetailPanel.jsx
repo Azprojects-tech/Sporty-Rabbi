@@ -3,6 +3,7 @@ import { EvidenceCard, EvidenceContents } from './EvidenceCard.jsx';
 import { apiService } from '../services/api';
 import { describeMatchClock, describeScorePressure } from '../../../shared/matchClock.js';
 import { goalFestView } from '../../../shared/goalFestView.js';
+import PlayedBetForm, { PriceCheck } from './PlayedBetForm.jsx';
 
 const TIER_COLORS = { 1: '#f59e0b', 2: '#00b859', 3: '#fbbf24', 4: '#f97316' };
 const TIER_BG     = { 1: '#1c1200', 2: '#001f0e', 3: '#1c1200', 4: '#1a0c00' };
@@ -324,7 +325,7 @@ function ParamDetail({ paramKey, p, match }) {
   ) : null;
 }
 
-export default function DetailPanel({ match, analysis: preloadedAnalysis, bets = [], onClose }) {
+export default function DetailPanel({ match, analysis: preloadedAnalysis, bets = [], otherPicks = [], onClose }) {
   const [analysis, setAnalysis]     = useState(preloadedAnalysis || null);
   // Only show full-screen spinner if there is nothing to display yet
   const [loading, setLoading]       = useState(!preloadedAnalysis);
@@ -334,9 +335,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
   const [playedBusyKey, setPlayedBusyKey] = useState(null);
   const [playedMessage, setPlayedMessage] = useState('');
   const [playedFormKey, setPlayedFormKey] = useState(null);
-  const [playedStake, setPlayedStake] = useState('');
-  const [playedOdds, setPlayedOdds] = useState('');
-  const [playedPaper, setPlayedPaper] = useState(false);
   const [showUnavailableParams, setShowUnavailableParams] = useState(false);
   const panelScrollRef = useRef(null);
 
@@ -412,6 +410,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
         away:             match.away,
         league:           match.league || 'Unknown',
         leagueId:         _lid,
+        leagueCountry:    match.leagueCountry || '',
         homeTeamId:       match.homeTeamId || null,
         awayTeamId:       match.awayTeamId || null,
         fixtureId:        match.id || null,
@@ -545,53 +544,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
     const key = `${match?.id}|${r.marketKey}|${r.selection}`;
     setPlayedMessage('');
     setPlayedFormKey(playedFormKey === key ? null : key);
-    setPlayedStake('');
-    const shownOdds = analysis?.oddsSnapshot?.odds?.[r.marketKey];
-    setPlayedOdds(Number.isFinite(Number(shownOdds)) ? String(shownOdds) : '');
-    setPlayedPaper(false);
-  }
-
-  async function handlePlayedRecommendation(r) {
-    if (!r?.marketKey || isAlreadyPlayed(r)) return;
-    const key = `${match?.id}|${r.marketKey}|${r.selection}`;
-    const stake = Number(playedStake);
-    const odds = Number(playedOdds);
-    if (!Number.isFinite(stake) || stake <= 0) { setPlayedMessage('Enter the stake you placed (₦).'); return; }
-    if (!Number.isFinite(odds) || odds <= 1) { setPlayedMessage('Enter the SportyBet odds you got (e.g. 1.85).'); return; }
-    setPlayedBusyKey(key);
-    setPlayedMessage('');
-    try {
-      await apiService.logPlayedRecommendation({
-        predictionId: match?.predictionId || null,
-        matchId: match?.id,
-        home: match?.home,
-        away: match?.away,
-        league: match?.league,
-        leagueId: match?.leagueId || 0,
-        leagueCountry: match?.leagueCountry || '',
-        matchType: match?.matchType || 'League',
-        kickoffUTC: match?.kickoffUTC || null,
-        marketKey: r.marketKey,
-        selection: r.selection,
-        confidence: r.confidence,
-        modelProbability: r.modelProbability ?? r.confidence,
-        dailySignalScore: analysis?.dailySignal?.score ?? match?.dailySignal?.score ?? null,
-        competitionFamily: r?.evidence?.competitionFamily || null,
-        analysisVersion: analysis?.analysisVersion || null,
-        analysisTimestamp: analysis?.analysisTimestamp || null,
-        displayedOdds: analysis?.oddsSnapshot || null,
-        stake,
-        odds,
-        bookmaker: 'SportyBet',
-        paper: playedPaper,
-      });
-      setPlayedMessage(`Recorded: ${r.selection}${playedPaper ? ' (practice)' : ''}`);
-      setPlayedFormKey(null);
-    } catch (err) {
-      setPlayedMessage(err.response?.data?.error || 'Could not record this selection.');
-    } finally {
-      setPlayedBusyKey(null);
-    }
   }
 
   return (
@@ -733,7 +685,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
             </div>
           )}
           {playedMessage && (
-            <div style={{ fontSize: 10, color: playedMessage.startsWith('Recorded:') ? '#00b859' : '#fbbf24', marginBottom: 7 }} role="status">
+            <div style={{ fontSize: 10, color: playedMessage.startsWith('Recorded') ? '#00b859' : '#fbbf24', marginBottom: 7 }} role="status">
               {playedMessage}
             </div>
           )}
@@ -770,8 +722,10 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                 </div>
                 {r.marketKey && <div style={{fontSize:10,color:'#94a3b8',marginBottom:5}}>
                   {r.decisionState === 'BET' ? 'Price qualifies' : r.decisionState === 'NEEDS_PRICE' ? 'Price required' : 'Outside selection criteria'}
-                  {r.value?.minimumAcceptableOdds != null ? ` · Minimum odds ${r.value.minimumAcceptableOdds.toFixed(2)}` : ''}
+                  {/* The old minimum odds used the uncorrected figure; the price check below replaces it. */}
+                  {!r.priceCheck && r.value?.minimumAcceptableOdds != null ? ` · Minimum odds ${r.value.minimumAcceptableOdds.toFixed(2)}` : ''}
                 </div>}
+                {r.priceCheck && <PriceCheck check={r.priceCheck} />}
                 {r.logic && (
                   <div style={{ fontSize: 11, color: '#6b7d96', lineHeight: 1.5 }}>
                     {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
@@ -801,29 +755,13 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
                   </button>
                 )}
                 {playedFormKey === `${match?.id}|${r.marketKey}|${r.selection}` && !isAlreadyPlayed(r) && (
-                  <form
-                    onSubmit={(e) => { e.preventDefault(); handlePlayedRecommendation(r); }}
-                    style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
-                  >
-                    <label style={{ fontSize: 10, color: '#8b9ab3' }}>
-                      Stake (₦)
-                      <input type="number" min="1" step="any" required value={playedStake} onChange={(e) => setPlayedStake(e.target.value)}
-                        style={{ display: 'block', width: 90, marginTop: 2, background: '#0a0d15', border: '1px solid #2d3748', borderRadius: 4, color: '#e2e8f0', padding: '4px 6px', fontSize: 11 }} />
-                    </label>
-                    <label style={{ fontSize: 10, color: '#8b9ab3' }}>
-                      SportyBet odds
-                      <input type="number" min="1.01" step="0.01" required value={playedOdds} onChange={(e) => setPlayedOdds(e.target.value)}
-                        style={{ display: 'block', width: 80, marginTop: 2, background: '#0a0d15', border: '1px solid #2d3748', borderRadius: 4, color: '#e2e8f0', padding: '4px 6px', fontSize: 11 }} />
-                    </label>
-                    <label style={{ fontSize: 10, color: '#8b9ab3', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input type="checkbox" checked={playedPaper} onChange={(e) => setPlayedPaper(e.target.checked)} />
-                      Practice (no real money)
-                    </label>
-                    <button type="submit" disabled={playedBusyKey != null}
-                      style={{ border: '1px solid #006833', background: '#001f0e', color: '#00b859', borderRadius: 6, padding: '6px 9px', fontSize: 10, fontWeight: 800, cursor: 'pointer' }}>
-                      SAVE
-                    </button>
-                  </form>
+                  <PlayedBetForm
+                    match={match}
+                    analysis={analysis}
+                    rec={r}
+                    otherPicks={otherPicks}
+                    onSaved={(text) => { setPlayedMessage(text); setPlayedFormKey(null); }}
+                  />
                 )}
                 {r.evidence && (
                   <div style={{ marginTop: 7, paddingTop: 7, borderTop: '1px solid #1e253555' }}>

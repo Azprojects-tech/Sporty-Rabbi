@@ -37,6 +37,7 @@ export const ROUTE_POLICY = Object.freeze([
   { method: 'post',  path: '/api/predictions/settle',   access: ACCESS.ADMIN,    reason: 'Settles the prediction ledger (cron calls the function directly)' },
   { method: 'post',  path: '/api/analyze/natural',      access: ACCESS.ADMIN,    reason: 'Free-text LLM analysis (LLM cost); no UI caller' },
   { method: 'patch', path: '/api/bets/:id',             access: ACCESS.ADMIN,    reason: 'Overwrites any stored bet; no UI caller' },
+  { method: 'post',  path: '/api/calibration/rebuild',  access: ACCESS.ADMIN,    reason: 'Re-reads the whole prediction ledger (Firestore reads); runs daily by itself' },
   // Write routes the portal UI uses. Token required once ADMIN_TOKEN is set.
   { method: 'post',  path: '/api/bets',                 access: ACCESS.UI_WRITE, reason: 'Log a bet (Bet logger form)' },
   { method: 'post',  path: '/api/bets/played',          access: ACCESS.UI_WRITE, reason: 'Record a played recommendation (match detail)' },
