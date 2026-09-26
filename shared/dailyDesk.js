@@ -18,6 +18,7 @@ export function deskCard(match, calibration, corners = null) {
     probability:r.modelProbability,rawProbability:r.rawModelProbability,basis:r.probabilitySource,
     decision:r.decisionState,odds:r.value.offeredOdds,minimumOdds:r.priceCheck.minimumOdds,
     expectedValue:r.value.expectedValue,calibrationBuiltAt:r.priceCheck.calibrationBuiltAt}));
+  if(corners?.status==='AVAILABLE' && Number.isFinite(corners.lines?.corners_over85)) markets.push({marketKey:'corners_over85',selection:'Over 8.5 corners',probability:corners.lines.corners_over85,rawProbability:corners.lines.corners_over85,basis:'CORNERS_HISTORICAL_MODEL',decision:'RESEARCH_ONLY',odds:null,minimumOdds:null});
   return {id:match.id,home:match.home,away:match.away,homeTeamId:match.homeTeamId??null,awayTeamId:match.awayTeamId??null,
     league:match.league??'',leagueId:match.leagueId??null,kickoffUTC:match.kickoffUTC,status:match.status,
     evidence:core.reliability,analysisVersion:match.analysis.analysisVersion,markets,
@@ -36,7 +37,7 @@ export function buildDailyDesk(matches, calibration, { now=Date.now(), limit=6, 
       || b.best.probability-a.best.probability || Date.parse(a.kickoffUTC)-Date.parse(b.kickoffUTC)).slice(0,limit);
   return {dateUK:dayUK(now),generatedAt:new Date(now).toISOString(),cards,
     combinations:[2,3].map(target=>targetCombination(cards,target,now)),
-    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration)).filter(Boolean),{now})};
+    opportunities:discoverOpportunities(matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now && dayUK(Date.parse(m.kickoffUTC))===dayUK(now)).map(m=>deskCard(m,calibration,predictCorners(m))).filter(Boolean),{now})};
 }
 export function targetCombination(cards,target,now=Date.now()) {
   const eligible=cards.filter(c=>c.status==='NS' && Date.parse(c.kickoffUTC)>now && Date.parse(c.quoteExpiresAt)>now
