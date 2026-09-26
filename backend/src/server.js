@@ -2108,6 +2108,12 @@ app.post('/api/opportunities/played', async (req,res)=>{
     return res.status(201).json({success:true,id});
   }catch(e){console.warn('[OpportunityPlayed]',e.message);return res.status(503).json({error:'Could not record this opportunity.'});}
 });
+app.get('/api/opportunities/played', async(req,res)=>{
+  try{const db=getDb();if(!db)return res.status(503).json({error:'Storage unavailable'});
+    const docs=await db.collection('playedOpportunities').orderBy('createdAt','desc').limit(60).get();
+    return res.json({bets:docs.docs.map(d=>({id:d.id,...d.data()}))});
+  }catch(e){return res.status(503).json({error:'Could not load played opportunities'});}
+});
 app.get('/api/daily-desk', async (req, res) => {
   try { res.json({ enabled: DAILY_DESK_ENABLED, ...(await dailyDesk.view()) }); }
   catch { res.status(503).json({ error: 'Daily shortlist temporarily unavailable' }); }
