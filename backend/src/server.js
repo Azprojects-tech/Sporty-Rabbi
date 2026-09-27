@@ -186,7 +186,11 @@ initFirebase();
 
 // V11 challenger: opponent-adjusted attack/defence strengths fitted from SportyRabbi's settled ledger.
 // It runs in SHADOW mode only: it is recorded for evaluation and cannot change a pick, alert or stake.
-const dynamicStrength = createDynamicStrengthService();
+const dynamicStrength = createDynamicStrengthService({
+  // Independent historical results feed for V11.1 only. This changes data
+  // coverage, not model thresholds, coefficients or probability logic.
+  fetchText: async url => { const r = await axios.get(url, { timeout: 8000 }); return r.data; },
+});
 
 function analyzeWithChallenger(matchData = {}) {
   const analysis = analyzeV9(matchData);
