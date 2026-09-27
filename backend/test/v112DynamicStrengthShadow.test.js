@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   DYNAMIC_STRENGTH_VERSION,
+  fitLeagueStrength,
   predictDynamicStrength,
   strengthRowsFromLedger,
   trainDynamicStrength,
@@ -77,4 +78,25 @@ test('production server records V11 shadow without routing picks through it',()=
   assert.match(server,/onLedgerRead: docs => dynamicStrength\.rebuildFromLedger/);
   assert.match(ledger,/challengerStates/);
   assert.match(ledger,/schemaVersion: 6/);
+});
+
+
+test('V11.1 batch fit regularises thin samples and keeps league venue rates explicit',()=>{
+  const rows=trainingRows();
+  const fitted=fitLeagueStrength(rows,{halfLifeDays:365,priorGames:4,iterations:24,minLeagueMatches:80});
+  assert.ok(fitted);
+  assert.ok(fitted.leagueHome>0&&fitted.leagueAway>0);
+  assert.ok(fitted.attack.alpha>fitted.attack.bravo);
+  assert.ok(fitted.teamMatches.alpha>=3&&fitted.teamMatches.bravo>=3);
+  assert.ok(Number.isFinite(fitted.defence.alpha));
+});
+
+test('V11.1 recent results can move strength without future leakage',()=>{
+  const base=trainingRows();
+  const cutoff=base[80].kickoff;
+  const before=fitLeagueStrength(base,{minLeagueMatches:60},cutoff-1);
+  const after=fitLeagueStrength(base,{minLeagueMatches:60},base[base.length-1].kickoff);
+  assert.ok(before&&after);
+  assert.notDeepEqual(before.attack,after.attack);
+  assert.ok(before.trainedThrough < after.trainedThrough);
 });
