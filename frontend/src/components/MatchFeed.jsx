@@ -103,7 +103,7 @@ function displayLeagueName(name = '', home = '', away = '') {
   return `${name} (Women)`;
 }
 
-function MatchRow({ match, isSelected, onSelect }) {
+function MatchRow({ match, isSelected, onSelect, cornerForecast=null, showCornerEstimate=false }) {
   const [hScore, aScore] = (match.score || '0-0').split('-');
   const isLive = LIVE_STATUSES.has(match.status);
   const goalFest = goalFestView(match, [match?.goalFest]);
@@ -166,6 +166,12 @@ function MatchRow({ match, isSelected, onSelect }) {
         </div>
       )}
 
+      {showCornerEstimate && cornerForecast?.status==='AVAILABLE' && (
+        <span title="Historical estimate of total match corners" style={{marginLeft:8,background:'#131826',border:'1px solid #334155',borderRadius:4,padding:'2px 7px',fontSize:10,fontWeight:800,color:'#e2e8f0',flexShrink:0,whiteSpace:'nowrap'}}>
+          ~{cornerForecast.expectedTotal} corners
+        </span>
+      )}
+
       {goalFest && (
         <span className="goal-fest-badge" title={goalFest.summary || 'High-goal live trajectory'} style={{
           marginLeft:8, background:goalFest.active ? '#2a1200' : '#131826', border:'1px solid ' + (goalFest.active ? '#f97316' : '#2d3748'),
@@ -188,7 +194,7 @@ const MatchRowMemo = memo(MatchRow, (prev, next) =>
 
 const PULL_THRESHOLD = 70;
 
-function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
+function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh, cornerForecasts = {}, showCornerEstimate = false }) {
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const [pullDist, setPullDist] = useState(0);
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -309,6 +315,8 @@ function MatchFeedInner({ matches, selectedMatch, onSelectMatch, onRefresh }) {
               match={m}
               isSelected={selectedMatch?.id === m.id}
               onSelect={onSelectMatch}
+              cornerForecast={cornerForecasts[String(m.id)]||null}
+              showCornerEstimate={showCornerEstimate}
             />
           ))}
         </div>
