@@ -194,6 +194,114 @@ function analyzeWithChallenger(matchData = {}) {
   return { ...analysis, challengers: { ...(analysis.challengers || {}), dynamicStrength: dynamic } };
 }
 
+// User-facing match clicks now display the V11.1 challenger while V10.6C remains
+// the production decision champion in the background. This projection is response
+// only: it never mutates the stored analysis, Daily Desk, alerts, stakes or ledger.
+function buildVisibleV11Forecast(analysis = {}, source = {}) {
+  const d = analysis?.challengers?.dynamicStrength;
+  const engineVersion = d?.version || 'V11.1-Opponent-Adjusted-Strength-Shadow';
+  if (!d || d.status !== 'AVAILABLE' || !d.marketProbabilities) {
+    return {
+      status: 'UNAVAILABLE',
+      engineVersion,
+      reason: d?.reason || 'V11_1_FORECAST_UNAVAILABLE',
+      homeMatches: d?.homeMatches ?? null,
+      awayMatches: d?.awayMatches ?? null,
+    };
+  }
+  const p = d.marketProbabilities;
+  const home = source.home || analysis?.match?.home || 'Home';
+  const away = source.away || analysis?.match?.away || 'Away';
+  const live = String(source.status || 'NS').toUpperCase() !== 'NS';
+  const entries = live ? [
+    ['home_win', `${home} Win`, .58],
+    ['away_win', `${away} Win`, .58],
+    ['over05', 'Over 0.5 Goals', .35],
+    ['over15', 'Over 1.5 Goals', .35],
+    ['over25', 'Over 2.5 Goals', .35],
+    ['over35', 'Over 3.5 Goals', .35],
+    ['under25', 'Under 2.5 Goals', .60],
+    ['btts', 'Both Teams to Score', .45],
+    ['next_goal_home', `${home} Next Goal`, .30],
+    ['next_goal_away', `${away} Next Goal`, .30],
+  ] : [
+    ['home_win', `${home} Win`, .58],
+    ['away_win', `${away} Win`, .58],
+    ['over25', 'Over 2.5 Goals', .52],
+    ['under25', 'Under 2.5 Goals', .60],
+    ['over15', 'Over 1.5 Goals', .75],
+    ['btts', 'Both Teams to Score', .62],
+  ];
+  const recommendations = entries.flatMap(([marketKey, selection, threshold]) => {
+    const probability01 = Number(p[marketKey]);
+    if (!Number.isFinite(probability01) || probability01 < threshold || probability01 >= 1) return [];
+    const modelProbability = +(probability01 * 100).toFixed(1);
+    const tier = modelProbability >= 85 ? 1 : modelProbability >= 72 ? 2 : modelProbability >= 62 ? 3 : 4;
+    return [{
+      marketKey, selection, probability01, modelProbability, confidence: modelProbability,
+      tier, decisionState: 'FORECAST_ONLY',
+      logic: `V11.1 opponent-adjusted forecast: ${modelProbability}%.`,
+    }];
+  }).sort((a,b)=>b.probability01-a.probability01);
+
+  const homeWin = Number(p.home_win), draw = Number(p.draw), awayWin = Number(p.away_win);
+  const outcomes = [
+    ['HOME', home, homeWin],
+    ['DRAW', 'Draw', draw],
+    ['AWAY', away, awayWin],
+  ].filter(x => Number.isFinite(x[2])).sort((a,b)=>b[2]-a[2]);
+  const leader = outcomes[0] || null;
+  const decisiveWin = [ ['HOME', home, homeWin], ['AWAY', away, awayWin] ]
+    .filter(x => Number.isFinite(x[2]) && x[2] >= .58).sort((a,b)=>b[2]-a[2])[0] || null;
+
+  return {
+    status: 'AVAILABLE',
+    engineVersion,
+    phase: d.phase || (live ? 'LIVE' : 'PRE_MATCH'),
+    homeLambda: d.homeLambda,
+    awayLambda: d.awayLambda,
+    expectedTotalGoals: d.expectedTotalGoals,
+    likelyScore: d.likelyScore ? {
+      score: d.likelyScore.score,
+      probability: Number.isFinite(d.likelyScore.probability01) ? Math.round(d.likelyScore.probability01 * 100) : null,
+    } : null,
+    probabilities: {
+      over05: Number.isFinite(p.over05) ? Math.round(p.over05 * 100) : null,
+      over15: Number.isFinite(p.over15) ? Math.round(p.over15 * 100) : null,
+      over25: Number.isFinite(p.over25) ? Math.round(p.over25 * 100) : null,
+      over35: Number.isFinite(p.over35) ? Math.round(p.over35 * 100) : null,
+      over45: Number.isFinite(p.over45) ? Math.round(p.over45 * 100) : null,
+      under15: Number.isFinite(p.under15) ? Math.round(p.under15 * 100) : null,
+      under25: Number.isFinite(p.under25) ? Math.round(p.under25 * 100) : null,
+      under35: Number.isFinite(p.under35) ? Math.round(p.under35 * 100) : null,
+      under45: Number.isFinite(p.under45) ? Math.round(p.under45 * 100) : null,
+      btts: Number.isFinite(p.btts) ? Math.round(p.btts * 100) : null,
+      homeWin: Number.isFinite(homeWin) ? Math.round(homeWin * 100) : null,
+      draw: Number.isFinite(draw) ? Math.round(draw * 100) : null,
+      awayWin: Number.isFinite(awayWin) ? Math.round(awayWin * 100) : null,
+    },
+    marketProbabilities: p,
+    outcomeProbabilities: {
+      available: [homeWin,draw,awayWin].every(Number.isFinite),
+      homeWin: Number.isFinite(homeWin) ? +(homeWin * 100).toFixed(1) : null,
+      draw: Number.isFinite(draw) ? +(draw * 100).toFixed(1) : null,
+      awayWin: Number.isFinite(awayWin) ? +(awayWin * 100).toFixed(1) : null,
+      selectedOutcomeProbability: leader ? +(leader[2] * 100).toFixed(1) : null,
+    },
+    winCall: decisiveWin ? {
+      outcome: decisiveWin[0], team: decisiveWin[1], selection: `${decisiveWin[1]} Win`,
+      probability01: decisiveWin[2], modelProbability: +(decisiveWin[2] * 100).toFixed(1),
+      confidence: +(decisiveWin[2] * 100).toFixed(1),
+    } : { outcome: 'UNDECIDED', team: null, selection: 'Wins (Undecided)', probability01: null, modelProbability: null, confidence: null },
+    recommendations,
+    homeMatches: d.homeMatches ?? null,
+    awayMatches: d.awayMatches ?? null,
+    leagueMatches: d.leagueMatches ?? null,
+    trainedThrough: d.trainedThrough ?? null,
+    live: d.live || null,
+  };
+}
+
 // V10.8: "corrected chance" map, rebuilt daily from SportyRabbi's own settled picks.
 const pickCalibration = createPickCalibrationService({
   getDb,
@@ -4245,7 +4353,11 @@ async function analyzeFixtureRequest(req, res) {
     // status (overlay first, then one cached-by-id provider lookup) before
     // doing any work. Finished matches return the locked pre-match analysis.
     const lockResult = await resolveKickoffLock(body, fixtureId, kickoffCutoff);
-    if (lockResult?.response) return res.json(withCorrectedChances(lockResult.response, body));
+    if (lockResult?.response) {
+      const response = withCorrectedChances(lockResult.response, body);
+      response.visibleForecast = buildVisibleV11Forecast(lockResult.response, body);
+      return res.json(response);
+    }
     if (lockResult?.status) {
       body.status = lockResult.status;
       if (lockResult.score != null) body.score = lockResult.score;
@@ -4542,7 +4654,9 @@ async function analyzeFixtureRequest(req, res) {
 
     if (lockResult?.prematchSnapshot) analysis.prematchSnapshot = lockResult.prematchSnapshot;
     // Critical path ends here: return football analysis without waiting for an LLM.
-    res.json(withCorrectedChances(analysis, enriched));
+    const response = withCorrectedChances(analysis, enriched);
+    response.visibleForecast = buildVisibleV11Forecast(analysis, enriched);
+    res.json(response);
   } catch (error) {
     console.error('V10 analysis error:', error.message);
     res.status(500).json({ error: 'Analysis failed', detail: error.message });
