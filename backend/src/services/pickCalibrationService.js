@@ -15,6 +15,11 @@ export const CALIBRATION_DOC = { collection: 'modelCalibration', id: 'current' }
 function compactDoc(d = {}) {
   return {
     matchId: d.matchId,
+    home: d.home || '',
+    away: d.away || '',
+    league: d.league || '',
+    finalScore: d.finalScore || null,
+    finalStatus: d.finalStatus || null,
     modelState: d.modelState || null,
     settledAt: d.settledAt || null, snapshotType:d.snapshotType || null,
     predictedAt: d.predictedAt || null,
@@ -40,6 +45,7 @@ export function createPickCalibrationService({
   windowDays = 120,
   pageSize = 500,
   maxAgeMs = 24 * 3600000,
+  onLedgerRead = null,
   log = console,
 } = {}) {
   let map = null;
@@ -76,6 +82,10 @@ export function createPickCalibrationService({
       const db = getDb?.();
       if (!db) return { ok: false, reason: 'STORAGE_UNAVAILABLE' };
       const docs = await readLedger(db);
+      if (typeof onLedgerRead === 'function') {
+        try { await onLedgerRead(docs, { trigger, now: new Date(now()).toISOString() }); }
+        catch (err) { log.warn?.('[Calibration] Ledger consumer failed:', err.message); }
+      }
       const picks = extractSettledPicks(docs);
       const next = validateCalibration(picks, { version: FORECAST_VERSION, now: new Date(now()).toISOString() });
       next.trigger = trigger;
