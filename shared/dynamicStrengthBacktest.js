@@ -87,17 +87,47 @@ export function walkForwardDynamicStrengthAudit(docs=[],{
   seedLeagueMatches=60,
   minTeamMatches=3,
   modelOptions={},
+  bootstrapRows=[],
 }={}){
   const cfg={...DYNAMIC_STRENGTH_DEFAULTS,...modelOptions};
-  const rows=firstPrematchDocs(docs),byLeague=new Map();
+  const rows=firstPrematchDocs(docs),byLeague=new Map(),bootstrapByLeague=new Map();
   for(const row of rows){const k=String(row.leagueId);if(!byLeague.has(k))byLeague.set(k,[]);byLeague.get(k).push(row);}
-  const champion=accumulator(),challenger=accumulator(),leagueResults={};let eligible=0;
+  for(const raw of bootstrapRows||[]){
+    const leagueId=finite(raw?.leagueId),kickoff=finite(raw?.kickoff)??Date.parse(raw?.kickoffUTC||'');
+    const home=String(raw?.home||'').trim(),away=String(raw?.away||'').trim();
+    const homeGoals=finite(raw?.homeGoals),awayGoals=finite(raw?.awayGoals);
+    if(!(leagueId>0)||!Number.isFinite(kickoff)||!home||!away||homeGoals==null||awayGoals==null)continue;
+    const row={leagueId,league:String(raw?.league||''),home,away,homeKey:key(home),awayKey:key(away),kickoff,
+      kickoffUTC:new Date(kickoff).toISOString(),score:{home:homeGoals,away:awayGoals},champion:null,analysisVersion:null};
+    const k=String(leagueId);if(!bootstrapByLeague.has(k))bootstrapByLeague.set(k,[]);bootstrapByLeague.get(k).push(row);
+  }
+  for(const list of bootstrapByLeague.values())list.sort((a,b)=>a.kickoff-b.kickoff);
+
+  const champion=accumulator(),challenger=accumulator(),leagueResults={};let eligible=0,bootstrapUsed=0;
   for(const [leagueId,list] of byLeague){
-    if(list.length<=seedLeagueMatches)continue;
-    const seed=list.slice(0,seedLeagueMatches),state=initState(seed,cfg);if(!state)continue;
-    for(const r of seed)update(state,r);
+    if(!list.length)continue;
+    const firstKickoff=list[0].kickoff,firstDay=new Date(firstKickoff);
+    const cutoff=Date.UTC(firstDay.getUTCFullYear(),firstDay.getUTCMonth(),firstDay.getUTCDate());
+    const bootstrap=(bootstrapByLeague.get(leagueId)||[]).filter(r=>r.kickoff<cutoff);
+    let state=null,startIndex=0;
+
+    if(bootstrap.length>=seedLeagueMatches){
+      const seed=bootstrap.slice(0,seedLeagueMatches);
+      state=initState(seed,cfg);if(!state)continue;
+      for(const r of bootstrap)update(state,r);
+      bootstrapUsed+=bootstrap.length;
+    }else{
+      const needed=Math.max(0,seedLeagueMatches-bootstrap.length);
+      if(list.length<=needed)continue;
+      const seed=[...bootstrap,...list.slice(0,needed)];
+      state=initState(seed,cfg);if(!state)continue;
+      for(const r of seed)update(state,r);
+      bootstrapUsed+=bootstrap.length;
+      startIndex=needed;
+    }
+
     const c=accumulator(),h=accumulator();
-    for(const row of list.slice(seedLeagueMatches)){
+    for(const row of list.slice(startIndex)){
       const beforeHome=state.teamMatches[row.homeKey]||0,beforeAway=state.teamMatches[row.awayKey]||0;
       const q=predict(state,row);
       const versionOk=!targetVersion||row.analysisVersion===targetVersion;
@@ -108,7 +138,10 @@ export function walkForwardDynamicStrengthAudit(docs=[],{
       }
       update(state,row);
     }
-    if(c.fixtures)leagueResults[leagueId]={league:list[0]?.league||'',champion:finish(c),challenger:finish(h),delta:delta(finish(c),finish(h))};
+    if(c.fixtures){
+      const C=finish(c),H=finish(h);
+      leagueResults[leagueId]={league:list[0]?.league||'',fixtures:c.fixtures,champion:C,challenger:H,delta:delta(C,H)};
+    }
   }
   const C=finish(champion),H=finish(challenger),D=delta(C,H);
   const binaryDeltas=Object.values(D.binary).filter(Number.isFinite);
@@ -118,7 +151,7 @@ export function walkForwardDynamicStrengthAudit(docs=[],{
   return{
     status:!enough?'INSUFFICIENT_COMPARABLE_HISTORY':better?'HISTORICAL_EVIDENCE_PASS':'NO_IMPROVEMENT_PROVEN',
     targetVersion:targetVersion||'ALL',seedLeagueMatches,minTeamMatches,settledFixtures:rows.length,comparableFixtures:eligible,
-    champion:C,challenger:H,delta:D,leagues:leagueResults,
+    bootstrapRowsUsed:bootstrapUsed,champion:C,challenger:H,delta:D,leagues:leagueResults,
     automaticPromotion:false,
     note:'Historical replay qualifies research only. Forward shadow evidence is still required before any production promotion.',
   };
