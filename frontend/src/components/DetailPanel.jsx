@@ -706,13 +706,14 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
           background: '#001a0a',
         }}>
           <div style={{ fontSize: 9, fontWeight: 800, color: '#00b859', letterSpacing: '1px', marginBottom: 8 }}>
-            AGENT RECOMMENDATION
+            {useVisibleV11 ? 'V11.1 FORECAST' : 'AGENT RECOMMENDATION'}
           </div>
           <div style={{ fontSize: 10, color: '#8b9ab3', marginBottom: 8, lineHeight: 1.5 }}>
-            Model probability, evidence quality and price decision.
-            {hasPick ? `Pick score: ${Math.round(modelSignalScore)}/100 (not a win chance) | Model P: ${modelProbabilityValue}%` : noPickReason} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataSampleText ? ` (${dataSampleText})` : ''} | Evidence: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}
+            {useVisibleV11
+              ? `Opponent-adjusted team-strength forecast. Home history: ${visibleForecast?.homeMatches ?? '—'} matches · Away history: ${visibleForecast?.awayMatches ?? '—'} matches.`
+              : <>Model probability, evidence quality and price decision. {hasPick ? `Pick score: ${Math.round(modelSignalScore)}/100 (not a win chance) | Model P: ${modelProbabilityValue}%` : noPickReason} | Data: {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataSampleText ? ` (${dataSampleText})` : ''} | Evidence: {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}</>}
           </div>
-          {decisionStatusObj?.reason && (
+          {!useVisibleV11 && decisionStatusObj?.reason && (
             <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8 }}>
               Decision: {decisionStatus.replace('_', ' ')} - {decisionStatusObj.reason}
             </div>
@@ -734,7 +735,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
               {playedMessage}
             </div>
           )}
-          {analysis?.marketSummary && (
+          {!useVisibleV11 && analysis?.marketSummary && (
             <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.6,marginBottom:8}}>
               <div>Most likely: {analysis.marketSummary.mostLikely?.selection || 'Unavailable'}</div>
               <div>Best priced opportunity: {analysis.marketSummary.bestPriced?.selection || 'No qualifying price'}</div>
@@ -755,7 +756,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
                     border: `1px solid ${TIER_COLORS[r.tier]}44`,
                     borderRadius: 3, padding: '2px 6px', letterSpacing: '0.5px',
                   }}>
-                    {DECISION_LABELS[r.decisionState] || (r.marketKey ? 'MODEL PICK' : 'NO PICK')}
+                    {useVisibleV11 ? 'V11.1 FORECAST' : (DECISION_LABELS[r.decisionState] || (r.marketKey ? 'MODEL PICK' : 'NO PICK'))}
                   </span>
                   <span style={{ fontSize: 9, color: '#4a5568' }}>&middot;</span>
                   <span style={{ fontSize: 12, fontWeight: 800, color: scoreColor(r.confidence) }}>
@@ -766,17 +767,18 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
                   &rsaquo; {r.selection}
                 </div>
                 {r.marketKey && <div style={{fontSize:10,color:'#94a3b8',marginBottom:5}}>
-                  {r.decisionState === 'BET' ? 'Price qualifies' : r.decisionState === 'NEEDS_PRICE' ? 'Price required' : 'Outside selection criteria'}
-                  {/* The old minimum odds used the uncorrected figure; the price check below replaces it. */}
-                  {!r.priceCheck && r.value?.minimumAcceptableOdds != null ? ` · Minimum odds ${r.value.minimumAcceptableOdds.toFixed(2)}` : ''}
+                  {useVisibleV11
+                    ? 'Forecast only — automated price decisions remain separated while V11.1 is evaluated.'
+                    : (r.decisionState === 'BET' ? 'Price qualifies' : r.decisionState === 'NEEDS_PRICE' ? 'Price required' : 'Outside selection criteria')}
+                  {!useVisibleV11 && !r.priceCheck && r.value?.minimumAcceptableOdds != null ? ` · Minimum odds ${r.value.minimumAcceptableOdds.toFixed(2)}` : ''}
                 </div>}
-                {r.priceCheck && <PriceCheck check={r.priceCheck} />}
+                {!useVisibleV11 && r.priceCheck && <PriceCheck check={r.priceCheck} />}
                 {r.logic && (
                   <div style={{ fontSize: 11, color: '#6b7d96', lineHeight: 1.5 }}>
                     {r.logic.length > 100 ? r.logic.slice(0, 100) + '...' : r.logic}
                   </div>
                 )}
-                {r.marketKey && !String(r.marketKey).startsWith('next_goal_') && r.marketKey !== 'no_more_goal' && (
+                {!useVisibleV11 && r.marketKey && !String(r.marketKey).startsWith('next_goal_') && r.marketKey !== 'no_more_goal' && (
                   <button
                     onClick={() => openPlayedForm(r)}
                     disabled={isAlreadyPlayed(r) || playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`}
