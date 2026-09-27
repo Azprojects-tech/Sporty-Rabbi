@@ -57,6 +57,22 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
     return inFlight;
   }
 
+
+  function goalStrengthRows() {
+    const out=[];
+    for (const [code, rows] of Object.entries(rowsByCode)) {
+      const league=FD_LEAGUES[code];
+      if (!league) continue;
+      for (const r of rows || []) {
+        if (!Number.isInteger(r.hg) || !Number.isInteger(r.ag) || !Number.isFinite(r.date)) continue;
+        const kickoff=r.date + 12*3600000;
+        out.push({fixtureId:'fd:'+code+':'+r.date+':'+r.home+':'+r.away,leagueId:league.id,league:league.name,leagueCountry:league.country,
+          kickoff,kickoffUTC:new Date(kickoff).toISOString(),home:r.home,away:r.away,homeGoals:r.hg,awayGoals:r.ag,source:'FOOTBALL_DATA'});
+      }
+    }
+    return out.sort((a,b)=>a.kickoff-b.kickoff);
+  }
+
   function predict(match) {
     if (!match || !fdCodeForMatch(match)) return { status: 'NO_PREDICTION', reason: 'LEAGUE_NOT_COVERED' };
     if (!refreshedAt) return { status: 'NO_PREDICTION', reason: 'LOADING' };
@@ -156,7 +172,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
     };
   }
 
-  return { refresh, predict, predictChallenger, recordPredictions, settlePending, refreshShadowEvaluation, status, getModels: () => models, getDynamicModels: () => dynamicModels };
+  return { refresh, predict, predictChallenger, recordPredictions, settlePending, refreshShadowEvaluation, status, goalStrengthRows, getModels: () => models, getDynamicModels: () => dynamicModels };
 }
 
 /** Settled corners predictions shaped like ledger documents, for the calibration layer. */
