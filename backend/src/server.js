@@ -2149,13 +2149,14 @@ app.get('/api/opportunities/played', async(req,res)=>{
 app.get('/api/live-corners', (req,res)=>{
  try{
  const prepared=new Map((calibrationStore.matches||[]).map(m=>[String(m.id),m]));
- const predictions={};
+ const predictions={}, modelProbabilities={};
  for(const live of liveMatches){
   const match=prepared.get(String(live.id))||live;
   const p=cornersDesk.predict(match);
+  modelProbabilities[String(live.id)]=match.analysis?.predictionCore?.poisson?.marketProbabilities||null;
   predictions[String(live.id)]=p.status==='AVAILABLE'?{status:'AVAILABLE',lines:p.lines,expectedTotal:p.expectedTotal,source:p.source}:{status:'UNAVAILABLE',reason:p.reason||'Insufficient league history'};
  }
- res.json({predictions});
+ res.json({predictions,modelProbabilities});
  }catch(e){res.status(503).json({error:'Live corners unavailable'});}
 });
 app.get('/api/daily-desk', async (req, res) => {
