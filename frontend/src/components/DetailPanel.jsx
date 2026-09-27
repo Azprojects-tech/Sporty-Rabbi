@@ -325,7 +325,7 @@ function ParamDetail({ paramKey, p, match }) {
   ) : null;
 }
 
-export default function DetailPanel({ match, analysis: preloadedAnalysis, bets = [], otherPicks = [], onClose }) {
+export default function DetailPanel({ match, analysis: preloadedAnalysis, cornersForecast = null, bets = [], otherPicks = [], onClose }) {
   const [analysis, setAnalysis]     = useState(preloadedAnalysis || null);
   // Only show full-screen spinner if there is nothing to display yet
   const [loading, setLoading]       = useState(!preloadedAnalysis);
@@ -988,6 +988,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, bets =
           </div>
         )}
 
+        {section === 'poisson' && <div style={{marginTop:14,padding:12,border:'1px solid #334155',borderRadius:8}}><strong>Corner predictions</strong><p style={{fontSize:11,color:'#94a3b8'}}>Historical league model, not live-adjusted. Not every league is covered.</p>{cornersForecast?.status==='AVAILABLE'?<><p>Expected total: {cornersForecast.expectedTotal??'Unavailable'}</p>{[8.5,9.5,10.5].map(line=>{const value=cornersForecast.lines?.['corners_over'+String(line).replace('.','')];return <div key={line} style={{display:'flex',justifyContent:'space-between',padding:'5px 0'}}><span>Over {line} corners</span><strong>{Number.isFinite(value)?value.toFixed(1)+'%':'Unavailable'}</strong></div>;})}</>:<p>Corner prediction unavailable for this fixture.</p>}</div>}
         {/* CHAOS */}
         {section === 'chaos' && <div>
           {(evidenceDesk?.chaos || []).map(item => <EvidenceCard key={item.id} item={item} />)}

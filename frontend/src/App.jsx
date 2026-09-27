@@ -34,6 +34,9 @@ export default function App() {
  const [showDesk,setShowDesk]=useState(true);
  const [allMatches, setAllMatches] = useState([]);
  const [filter, setFilter] = useState('all');
+ const [liveSort,setLiveSort]=useState('default');
+ const [liveCorners,setLiveCorners]=useState({});
+ const [liveProbabilities,setLiveProbabilities]=useState({});
  const [selectedLeague, setSelectedLeague] = useState(null);
  const [selectedMatch, setSelectedMatch] = useState(null);
  const [selectedAnalysis, setSelectedAnalysis] = useState(null);
@@ -251,7 +254,25 @@ export default function App() {
  if (selectedCountry && !selectedKeyword && (m.leagueCountry || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
  if (selectedLeague != null && !selectedCountry && !selectedKeyword && m.leagueId !== selectedLeague) return false;
  return true;
+ }).sort((a,b)=>{
+ if(filter!=='live'||liveSort==='default')return 0;
+ const probability=(m,key)=>{const raw=m.analysis?.predictionCore?.poisson?.marketProbabilities?.[key]??liveProbabilities[String(m.id)]?.[key];return Number.isFinite(raw)?raw*100:null;};
+ const metric=m=>{
+  if(liveSort==='goals')return Math.max(probability(m,'over25')??-1,probability(m,'over15')??-1);
+  if(liveSort==='wins')return Math.max(probability(m,'home_win')??-1,probability(m,'away_win')??-1);
+  if(liveSort==='corners')return liveCorners[String(m.id)]?.lines?.corners_over85??-1;
+  if(liveSort==='odds')return Number.isFinite(Number(m.oddsSnapshot?.odds))?Number(m.oddsSnapshot.odds):-1;
+  return -1;
+ };
+ return metric(b)-metric(a);
  });
+
+ useEffect(()=>{
+ if(filter!=='live')return;
+ let active=true;
+ const refresh=()=>apiService.client.get('/live-corners').then(r=>{if(active){setLiveCorners(r.data.predictions||{});setLiveProbabilities(r.data.modelProbabilities||{});}}).catch(()=>{});
+ refresh();const timer=setInterval(refresh,60000);return()=>{active=false;clearInterval(timer);};
+ },[filter]);
 
  useEffect(() => {
  if (!selectedMatch?.id) return;
@@ -550,6 +571,7 @@ export default function App() {
  <span style={{ fontSize: 11, color: '#4a5568' }}>
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}
  </span>
+ {filter==='live'&&<label style={{marginLeft:'auto',fontSize:12,color:'#8b9ab3'}}>Sort by <select aria-label="Sort live games" value={liveSort} onChange={e=>setLiveSort(e.target.value)} style={{background:'#1a1f2e',color:'#e2e8f0',padding:7,borderRadius:6,border:'1px solid #334155'}}><option value="default">Default</option><option value="goals">Goals chance ↓</option><option value="wins">Win chance ↓</option><option value="corners">Corners over 8.5 ↓</option><option value="odds">Available odds ↓</option></select></label>}
  {loading && <span style={{ fontSize: 11, color: '#4a5568', marginLeft: 4 }}>Loading...</span>}
  </div>
 
@@ -567,6 +589,7 @@ export default function App() {
  <DetailPanel
  match={selectedMatch}
  analysis={selectedAnalysis}
+ cornersForecast={liveCorners[String(selectedMatch.id)]||null}
  bets={bets}
  otherPicks={playablePicks}
  onClose={() => { setSelectedMatch(null); setSelectedAnalysis(null); }}
