@@ -36,6 +36,7 @@ export default function App() {
  const [filter, setFilter] = useState('all');
  const [liveSort,setLiveSort]=useState('default');
  const [liveCorners,setLiveCorners]=useState({});
+ const [liveProbabilities,setLiveProbabilities]=useState({});
  const [selectedLeague, setSelectedLeague] = useState(null);
  const [selectedMatch, setSelectedMatch] = useState(null);
  const [selectedAnalysis, setSelectedAnalysis] = useState(null);
@@ -255,7 +256,7 @@ export default function App() {
  return true;
  }).sort((a,b)=>{
  if(filter!=='live'||liveSort==='default')return 0;
- const probability=(m,key)=>{const raw=m.analysis?.predictionCore?.poisson?.marketProbabilities?.[key];return Number.isFinite(raw)?raw*100:null;};
+ const probability=(m,key)=>{const raw=m.analysis?.predictionCore?.poisson?.marketProbabilities?.[key]??liveProbabilities[String(m.id)]?.[key];return Number.isFinite(raw)?raw*100:null;};
  const metric=m=>{
   if(liveSort==='goals')return Math.max(probability(m,'over25')??-1,probability(m,'over15')??-1);
   if(liveSort==='wins')return Math.max(probability(m,'home_win')??-1,probability(m,'away_win')??-1);
@@ -269,7 +270,7 @@ export default function App() {
  useEffect(()=>{
  if(filter!=='live')return;
  let active=true;
- const refresh=()=>apiService.client.get('/live-corners').then(r=>{if(active)setLiveCorners(r.data.predictions||{});}).catch(()=>{});
+ const refresh=()=>apiService.client.get('/live-corners').then(r=>{if(active){setLiveCorners(r.data.predictions||{});setLiveProbabilities(r.data.modelProbabilities||{});}}).catch(()=>{});
  refresh();const timer=setInterval(refresh,60000);return()=>{active=false;clearInterval(timer);};
  },[filter]);
 
