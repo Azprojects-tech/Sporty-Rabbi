@@ -3,7 +3,7 @@ export const watchId = id => 'fixture_'+String(id);
 export const watchMessage = (item,stage) => {
  const name = item.home+' vs '+item.away;
  const heading = stage==='kickoff'?'🟢 WATCH THIS · KICKOFF':'⏱ WATCH THIS · MARKET CHECK';
- return [heading,'━━━━━━━━━━━━━━━━━━━━','⚽ '+name,'🏆 '+(item.country?item.country+' · ':'')+(item.league||'League unavailable'),'🎯 Wanted: '+item.market,stage==='kickoff'?'Your selected match is starting. Check SportyBet for your preferred market.':'15 minutes after scheduled kickoff. Check SportyBet again if the preferred market was missing.','Market availability and live odds have NOT been verified.'].join('\\n');
+ return [heading,'━━━━━━━━━━━━━━━━━━━━','⚽ '+name,'🏆 '+(item.country?item.country+' · ':'')+(item.league||'League unavailable'),'🎯 Wanted: '+item.market,stage==='kickoff'?'Your selected match is starting. Check SportyBet for your preferred market.':'15 minutes after scheduled kickoff. Check SportyBet again if the preferred market was missing.','Market availability and live odds have NOT been verified.'].join('\n');
 };
 export function dueWatchStages(item,now){
  const kickoff=Date.parse(item.kickoffUTC);
