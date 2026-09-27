@@ -571,46 +571,78 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
               {match.home} <span style={{ color: '#4a5568', fontWeight: 400 }}>vs</span> {match.away}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-              <span title={analysis?.analysisVersion || ''} style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
+              <span title={useVisibleV11 ? (visibleForecast?.engineVersion || 'V11.1') : (analysis?.analysisVersion || '')} style={{ fontSize: 9, background: '#001f0e', border: '1px solid #006833', borderRadius: 3, padding: '1px 5px', fontWeight: 800, color: '#00b859', letterSpacing: '0.5px' }}>
                 {versionLabel}
               </span>
-              {hasPick ? (
-                <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title={PICK_SCORE_HELP}>
-                  Pick score {Math.round(modelSignalScore)}/100
-                </span>
+              {useVisibleV11 ? (
+                <>
+                  {hasPick ? (
+                    <span style={{ fontSize: 13, fontWeight: 800, color: '#00b859' }}>
+                      {recommendations[0]?.selection || 'V11.1 forecast'}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8' }}>{noPickReason}</span>
+                  )}
+                  {hasPick && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                      Model P {modelProbabilityValue}%
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#8b9ab3', background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                    History H {visibleForecast?.homeMatches ?? '—'} / A {visibleForecast?.awayMatches ?? '—'}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                    1X2 {selectedOutcomeProbability != null ? `${roundPct(selectedOutcomeProbability)}%` : 'Unavailable'}
+                  </span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700,
+                    color: winCall?.outcome === 'UNDECIDED' ? '#fbbf24' : '#8b9ab3',
+                    background: winCall?.outcome === 'UNDECIDED' ? '#1c1200' : '#0f1117',
+                    border: `1px solid ${winCall?.outcome === 'UNDECIDED' ? '#78350f55' : '#1e2535'}`,
+                    borderRadius: 4, padding: '2px 6px',
+                  }}>
+                    {winCall?.selection || 'Wins (Undecided)'}
+                  </span>
+                </>
               ) : (
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8' }} title="The model does not make a pick unless a market has a probability and passes the thresholds.">
-                  {noPickReason}
-                </span>
+                <>
+                  {hasPick ? (
+                    <span style={{ fontSize: 14, fontWeight: 800, color: scoreColor(modelSignalScore) }} title={PICK_SCORE_HELP}>
+                      Pick score {Math.round(modelSignalScore)}/100
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8' }}>
+                      {noPickReason}
+                    </span>
+                  )}
+                  {hasPick && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                      Model P {modelProbabilityValue}%
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                    Data {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataCompletenessLabel ? ` (${dataCompletenessLabel})` : ''}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                    Evidence {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}{recommendationConfidenceLabel ? ` (${recommendationConfidenceLabel})` : ''}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: decisionStatusStyle.color, background: decisionStatusStyle.bg, border: `1px solid ${decisionStatusStyle.border}`, borderRadius: 4, padding: '2px 6px' }}>
+                    {decisionStatus.replace('_', ' ')}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }}>
+                    1X2 {selectedOutcomeProbability != null ? `${roundPct(selectedOutcomeProbability)}%` : 'Unavailable'}
+                  </span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700,
+                    color: winCall?.outcome === 'UNDECIDED' ? '#fbbf24' : '#8b9ab3',
+                    background: winCall?.outcome === 'UNDECIDED' ? '#1c1200' : '#0f1117',
+                    border: `1px solid ${winCall?.outcome === 'UNDECIDED' ? '#78350f55' : '#1e2535'}`,
+                    borderRadius: 4, padding: '2px 6px',
+                  }}>
+                    {winCall?.selection || 'Wins (Undecided)'}
+                  </span>
+                </>
               )}
-              {hasPick && (
-                <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(modelProbabilityValue), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Model probability for the top pick's market.">
-                  Model P {modelProbabilityValue}%
-                </span>
-              )}
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(dataCompletenessScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title={`Required inputs present, scaled down when the game sample is small.${dataSampleText ? ` ${dataSampleText}.` : ''}`}>
-                Data {dataCompletenessScore != null ? `${dataCompletenessScore}%` : 'Unavailable'}{dataCompletenessLabel ? ` (${dataCompletenessLabel})` : ''}
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(recommendationConfidenceScore ?? 0), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Evidence quality score from available historical inputs.">
-                Evidence {recommendationConfidenceScore != null ? `${recommendationConfidenceScore}/100` : 'Unavailable'}{recommendationConfidenceLabel ? ` (${recommendationConfidenceLabel})` : ''}
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 800, color: decisionStatusStyle.color, background: decisionStatusStyle.bg, border: `1px solid ${decisionStatusStyle.border}`, borderRadius: 4, padding: '2px 6px' }} title={decisionStatusObj?.reason || 'Decision status'}>
-                {decisionStatus.replace('_', ' ')}
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor(selectedOutcomeProbability ?? 50), background: '#0f1117', border: '1px solid #1e2535', borderRadius: 4, padding: '2px 6px' }} title="Outcome probability (1X2) from Poisson. This is not model signal strength.">
-                1X2 {selectedOutcomeProbability != null ? `${roundPct(selectedOutcomeProbability)}%` : 'Unavailable'}
-              </span>
-              <span style={{
-                fontSize: 10,
-                fontWeight: 700,
-                color: winCall?.outcome === 'UNDECIDED' ? '#fbbf24' : '#8b9ab3',
-                background: winCall?.outcome === 'UNDECIDED' ? '#1c1200' : '#0f1117',
-                border: `1px solid ${winCall?.outcome === 'UNDECIDED' ? '#78350f55' : '#1e2535'}`,
-                borderRadius: 4,
-                padding: '2px 6px',
-              }}>
-                {winCall?.selection || 'Wins (Undecided)'}
-              </span>
               {analysis?.gemini && (
                 <span style={{ fontSize: 9, color: '#4a5568' }}>
                   AI {analysis.gemini.confidence}% confident
