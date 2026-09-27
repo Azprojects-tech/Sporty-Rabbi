@@ -490,21 +490,28 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
   );
 
   const {
-    parameters: P = {}, poisson,
-    recommendations = [], bookieEdges = [],
+    parameters: P = {}, poisson: legacyPoisson,
+    recommendations: legacyRecommendations = [], bookieEdges = [],
     overallScore = null,
   } = analysis || {};
+  const visibleForecast = analysis?.visibleForecast || null;
+  const useVisibleV11 = Boolean(visibleForecast);
+  const visibleAvailable = visibleForecast?.status === 'AVAILABLE';
+  const poisson = useVisibleV11 ? (visibleAvailable ? visibleForecast : null) : legacyPoisson;
+  const recommendations = useVisibleV11 ? (visibleAvailable ? (visibleForecast.recommendations || []) : []) : legacyRecommendations;
   const evidenceDesk = analysis?.narrative?.evidencePanels;
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
-  const winCall = analysis?.winCall || null;
+  const winCall = useVisibleV11 ? (visibleForecast?.winCall || null) : (analysis?.winCall || null);
   const decisionMetrics = analysis?.decisionMetrics || {};
-  const modelProbability = decisionMetrics?.modelProbability || {};
+  const modelProbability = useVisibleV11
+    ? { value: recommendations[0]?.modelProbability ?? null }
+    : (decisionMetrics?.modelProbability || {});
   const dataCompleteness = decisionMetrics?.dataCompleteness || {};
   const recommendationConfidence = decisionMetrics?.recommendationConfidence || {};
   const decisionStatusObj = decisionMetrics?.decisionStatus || {};
   const signalStrength = decisionMetrics?.signalStrength || {};
-  const outcomeProbabilities = decisionMetrics?.outcomeProbabilities || {};
-  const modelSignalScore = signalStrength?.score ?? overallScore ?? null;
+  const outcomeProbabilities = useVisibleV11 ? (visibleForecast?.outcomeProbabilities || {}) : (decisionMetrics?.outcomeProbabilities || {});
+  const modelSignalScore = useVisibleV11 ? null : (signalStrength?.score ?? overallScore ?? null);
   const selectedOutcomeProbability = outcomeProbabilities?.selectedOutcomeProbability;
   const modelProbabilityValue = roundPct(modelProbability?.value);
   // "Data" is sample-adjusted: 4/4 inputs from 2 games is not "100%".
@@ -513,12 +520,18 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
   const dataSampleText = dataCompleteness?.sampleText || null;
   const coreReady = analysis?.predictionCore?.coreReady !== false;
   const missingInputs = analysis?.predictionCore?.dataQuality?.missing || [];
-  // A pick score is only meaningful when a market actually has a model probability.
-  const hasPick = modelSignalScore != null && modelProbabilityValue != null && !analysis?.noPrediction;
-  const noPickReason = !coreReady || analysis?.noPrediction
-    ? `No prediction${missingInputs.length ? ` — missing: ${missingInputs.join(', ')}` : ''}`
-    : 'No pick — no market passed the thresholds';
-  const versionLabel = String(analysis?.analysisVersion || 'Model').split('-')[0];
+  // V11.1 is a display forecast only; V10.6C remains the background decision champion.
+  const hasPick = useVisibleV11
+    ? visibleAvailable && recommendations.length > 0
+    : modelSignalScore != null && modelProbabilityValue != null && !analysis?.noPrediction;
+  const noPickReason = useVisibleV11
+    ? (visibleAvailable
+      ? 'No V11.1 market passed the display thresholds'
+      : `V11.1 unavailable — ${String(visibleForecast?.reason || 'insufficient history').replaceAll('_', ' ').toLowerCase()}`)
+    : (!coreReady || analysis?.noPrediction
+      ? `No prediction${missingInputs.length ? ` — missing: ${missingInputs.join(', ')}` : ''}`
+      : 'No pick — no market passed the thresholds');
+  const versionLabel = useVisibleV11 ? 'V11.1' : String(analysis?.analysisVersion || 'Model').split('-')[0];
   const recommendationConfidenceScore = recommendationConfidence?.score != null ? Math.round(recommendationConfidence.score) : null;
   const recommendationConfidenceLabel = recommendationConfidence?.label || (recommendationConfidenceScore == null ? 'Unknown' : recommendationConfidenceScore >= 75 ? 'Strong' : recommendationConfidenceScore >= 60 ? 'Moderate' : 'Weak');
   const decisionStatus = decisionStatusObj?.status || 'INSUFFICIENT_DATA';
