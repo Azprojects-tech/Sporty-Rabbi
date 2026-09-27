@@ -2,6 +2,7 @@ import {
   FD_LEAGUES, fdSeasonCode, parseFdCsv, buildLeagueCornersModel, predictCorners, fdCodeForMatch,
   settleCornersLines,
 } from '../../../shared/cornersModel.js';
+import { buildDynamicCornersModel, predictDynamicCorners, DYNAMIC_CORNERS_VERSION } from '../../../shared/dynamicCornersModel.js';
 
 /**
  * Corners: downloads football-data.co.uk results once a day (about 44 small
@@ -15,6 +16,7 @@ const BASE = 'https://www.football-data.co.uk/mmz4281';
 
 export function createCornersService({ fetchText, getDb = () => null, now = () => Date.now(), log = console } = {}) {
   let models = {};
+  let dynamicModels = {};
   let rowsByCode = {};
   let refreshedAt = null;
   const previousSeason = new Map(); // code -> rows, downloaded once per process
@@ -34,6 +36,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
       const current = fdSeasonCode(today);
       const previous = fdSeasonCode(today, -1);
       const nextModels = {};
+      const nextDynamicModels = {};
       const nextRows = {};
       for (const code of Object.keys(FD_LEAGUES)) {
         const cur = await download(code, current);
@@ -41,9 +44,11 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
         const rows = [...previousSeason.get(code), ...cur];
         nextRows[code] = rows;
         const model = buildLeagueCornersModel(rows, { now: now() });
+        const dynamic = buildDynamicCornersModel(rows);
         if (model) nextModels[code] = model;
+        if (dynamic) nextDynamicModels[code] = dynamic;
       }
-      if (Object.keys(nextModels).length) { models = nextModels; rowsByCode = nextRows; refreshedAt = new Date(now()).toISOString(); memo.clear(); }
+      if (Object.keys(nextModels).length) { models = nextModels; dynamicModels = nextDynamicModels; rowsByCode = nextRows; refreshedAt = new Date(now()).toISOString(); memo.clear(); }
       log.log?.(`[Corners] Models ready for ${Object.keys(models).length} leagues`);
       return status();
     })().finally(() => { inFlight = null; });
@@ -57,6 +62,11 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
     if (!memo.has(key)) memo.set(key, predictCorners(models, match));
     if (memo.size > 5000) memo.clear();
     return memo.get(key);
+  }
+
+  function predictChallenger(match) {
+    const code = fdCodeForMatch(match);
+    return code ? predictDynamicCorners(dynamicModels[code], match) : { status:'UNAVAILABLE', version:DYNAMIC_CORNERS_VERSION, reason:'LEAGUE_NOT_COVERED' };
   }
 
   async function recordPredictions(matches = []) {
@@ -75,7 +85,8 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
         league: m.league || '', leagueId: m.leagueId ?? 0, leagueCountry: m.leagueCountry || '', kickoffUTC: m.kickoffUTC,
         predictedAt: new Date(now()).toISOString(), analysisVersion: CORNERS_MODEL_VERSION, source: `football-data.co.uk:${p.source}`,
         fdHome: p.fdHome, fdAway: p.fdAway, expectedTotal: p.expectedTotal, lines: p.lines, mainLine: p.line,
-        result: 'pending', totalCorners: null, results: null, settledAt: null,
+        challenger: predictChallenger(m),
+        result: 'pending', totalCorners: null, results: null, challengerResults: null, settledAt: null,
       };
       try {
         await db.collection(CORNERS_COLLECTION).doc(`corners_${m.id}`).create(doc);
@@ -110,7 +121,8 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
       const stamp = new Date(now()).toISOString();
       if (row) {
         const total = row.hc + row.ac;
-        await d.ref.update({ result: 'settled', totalCorners: total, results: settleCornersLines(doc.lines, total), settledAt: stamp });
+        await d.ref.update({ result: 'settled', totalCorners: total, results: settleCornersLines(doc.lines, total),
+          challengerResults: doc.challenger?.status === 'AVAILABLE' ? settleCornersLines(doc.challenger.lines, total) : null, settledAt: stamp });
         settled++;
       } else if (now() - ko > 21 * 86400000) {
         await d.ref.update({ result: 'unsettled', settledAt: stamp }); // result never published
@@ -122,6 +134,8 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
   function status() {
     return {
       refreshedAt,
+      challengerVersion: DYNAMIC_CORNERS_VERSION,
+      challengerLeagues: Object.keys(dynamicModels).length,
       leagues: Object.entries(models).map(([code, m]) => ({
         code, league: FD_LEAGUES[code].name, country: FD_LEAGUES[code].country, gamesUsed: m.games,
         latestResult: new Date(m.lastResultAt).toISOString().slice(0, 10),
@@ -130,7 +144,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
     };
   }
 
-  return { refresh, predict, recordPredictions, settlePending, status, getModels: () => models };
+  return { refresh, predict, predictChallenger, recordPredictions, settlePending, status, getModels: () => models, getDynamicModels: () => dynamicModels };
 }
 
 /** Settled corners predictions shaped like ledger documents, for the calibration layer. */
