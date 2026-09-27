@@ -140,7 +140,7 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
   if (markets.length === 0) return null;
 
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     predictionId,
     snapshotType: 'PRE_MATCH',
     matchId: match.id,
@@ -163,6 +163,13 @@ export function buildPredictionLedgerDocument(match = {}, options = {}) {
       marketProbabilities: match.analysis?.poisson?.marketProbabilities || null,
       marketPeriod: match.analysis?.poisson?.marketPeriod || 'REGULATION',
     },
+    challengerStates: Object.fromEntries(Object.entries(match.analysis?.challengers || {}).map(([key, c]) => [key, {
+      status: c?.status || 'UNAVAILABLE', version: c?.version || null, phase: c?.phase || 'PRE_MATCH',
+      reason: c?.reason || null, homeLambda: observedNumber(c?.homeLambda), awayLambda: observedNumber(c?.awayLambda),
+      expectedTotalGoals: observedNumber(c?.expectedTotalGoals), marketProbabilities: c?.marketProbabilities || null,
+      leagueMatches: observedNumber(c?.leagueMatches), homeMatches: observedNumber(c?.homeMatches), awayMatches: observedNumber(c?.awayMatches),
+      trainedThrough: c?.trainedThrough || null,
+    }])),
     forecastInputs: Object.fromEntries([
       'season','homeGoalsAvgFor','homeGoalsAvgAgainst','awayGoalsAvgFor','awayGoalsAvgAgainst',
       'homeXgAvg','homeXgaAvg','awayXgAvg','awayXgaAvg','homeSampleSize','awaySampleSize',
