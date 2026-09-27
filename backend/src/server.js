@@ -2090,6 +2090,7 @@ async function runDailyDesk() {
       // Complete initial corner loading before freezing the daily shortlist.
       try {
         await cornersDesk.refresh();
+        await dynamicStrength.setBootstrapRows(cornersDesk.goalStrengthRows());
         await cornersDesk.settlePending();
       } catch (err) { console.warn('[DailyDesk] Corners unavailable:', err.message); }
     }
