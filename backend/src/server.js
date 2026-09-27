@@ -2154,7 +2154,7 @@ app.get('/api/live-corners', (req,res)=>{
   const match=prepared.get(String(live.id))||live;
   const p=cornersDesk.predict(match);
   modelProbabilities[String(live.id)]=match.analysis?.predictionCore?.poisson?.marketProbabilities||null;
-  predictions[String(live.id)]=p.status==='AVAILABLE'?{status:'AVAILABLE',lines:p.lines,expectedTotal:p.expectedTotal,source:p.source}:{status:'UNAVAILABLE',reason:p.reason||'Insufficient league history'};
+  predictions[String(live.id)]=p.status==='AVAILABLE'?{status:'AVAILABLE',lines:p.lines,expectedTotal:p.expectedTotal,expectedHome:p.expectedHome,expectedAway:p.expectedAway,source:p.source}:{status:'UNAVAILABLE',reason:p.reason||'Insufficient league history'};
  }
  res.json({predictions,modelProbabilities});
  }catch(e){res.status(503).json({error:'Live corners unavailable'});}
