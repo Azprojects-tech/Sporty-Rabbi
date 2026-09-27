@@ -65,7 +65,7 @@ export function walkForwardDynamicStrengthAudit(docs=[],{
   minTeamMatches=3,
   modelOptions={},
 }={}){
-  const cfg={...DYNAMIC_STRENGTH_DEFAULTS,...modelOptions,minTeamMatches};
+  const cfg={...DYNAMIC_STRENGTH_DEFAULTS,...modelOptions,minTeamMatches,minLeagueMatches:modelOptions.minLeagueMatches??seedLeagueMatches};
   const rows=firstPrematchDocs(docs),byLeague=new Map();
   for(const row of rows){const k=String(row.leagueId);if(!byLeague.has(k))byLeague.set(k,[]);byLeague.get(k).push(row);}
   const champion=accumulator(),challenger=accumulator(),leagueResults={};let eligible=0;
