@@ -63,7 +63,7 @@ export function fitLeagueStrength(rows=[], options={}, cutoff=null){
   const raw=[...(rows||[])].filter(r=>Number.isFinite(Number(r?.kickoff))&&Number.isInteger(r?.homeGoals)&&Number.isInteger(r?.awayGoals)
     &&r?.homeKey&&r?.awayKey&&r.homeKey!==r.awayKey).sort((a,b)=>a.kickoff-b.kickoff);
   if(!raw.length)return null;
-  const end=Number.isFinite(Number(cutoff))?Number(cutoff):raw[raw.length-1].kickoff;
+  const end=cutoff!=null&&Number.isFinite(Number(cutoff))?Number(cutoff):raw[raw.length-1].kickoff;
   const list=raw.filter(r=>r.kickoff<=(end+1)&&end-r.kickoff<=cfg.windowDays*DAY);
   if(list.length<cfg.minLeagueMatches)return null;
   const teams=[...new Set(list.flatMap(r=>[r.homeKey,r.awayKey]))];
