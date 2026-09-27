@@ -14,7 +14,7 @@ function doc(i,{version='V10.6C-Unified-Decisions',futureShift=0}={}){
     predictedAt:new Date(kickoff-3600000).toISOString(),kickoffUTC:new Date(kickoff).toISOString(),
     finalScore:home==='Alpha'?'3-0':away==='Alpha'?'0-3':String(hg)+'-'+String(ag),
     analysisVersion:version,snapshotType:'PRE_MATCH',
-    modelState:{marketProbabilities:{home_win:strong?.34:.38,draw:.32,away_win:strong?.34:.30,over15:.55,over25:.45,under25:.55,btts:.5}},
+    modelState:{marketProbabilities:{home_win:strong ? .34 : .38,draw:.32,away_win:strong ? .34 : .30,over15:.55,over25:.45,under25:.55,btts:.5}},
   };
 }
 
