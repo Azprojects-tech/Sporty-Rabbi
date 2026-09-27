@@ -22,6 +22,7 @@ export function createDynamicStrengthService({
   log = console,
   options = {},
   fetchText = null,
+  loadSupplementalRows = null,
   now = () => Date.now(),
 } = {}) {
   let model = trainDynamicStrength([], options);
@@ -89,6 +90,11 @@ export function createDynamicStrengthService({
     try {
       const ledgerRows = strengthRowsFromLedger(docs);
       await refreshExternalHistory();
+      let supplementalRows = [];
+      if (typeof loadSupplementalRows === 'function') {
+        try { supplementalRows = (await loadSupplementalRows()) || []; }
+        catch (err) { log.warn?.('[V11 Data] supplemental history unavailable:', err.message); }
+      }
 
       // For a league with a full independent history, train from that source.
       // Do not double-count the same recent match again from Sporty's ledger.
@@ -97,11 +103,23 @@ export function createDynamicStrengthService({
       const minLeagueMatches = Number(options.minLeagueMatches) || 80;
       const externalCountByLeague = {};
       for (const r of externalRows) externalCountByLeague[r.leagueId] = (externalCountByLeague[r.leagueId] || 0) + 1;
-      const externallyCovered = new Set(Object.entries(externalCountByLeague)
+      const supplementalCountByLeague = {};
+      for (const r of supplementalRows) supplementalCountByLeague[r.leagueId] = (supplementalCountByLeague[r.leagueId] || 0) + 1;
+
+      // football-data takes precedence where it has enough history. API-Football
+      // then fills leagues football-data does not cover. Sporty's own ledger is
+      // only used where neither independent source has reached the unchanged
+      // minLeagueMatches gate.
+      const fdCovered = new Set(Object.entries(externalCountByLeague)
         .filter(([,count]) => count >= minLeagueMatches)
         .map(([leagueId]) => Number(leagueId)));
-      const ledgerForUncovered = ledgerRows.filter(r => !externallyCovered.has(Number(r.leagueId)));
-      const trainingRows = [...externalRows, ...ledgerForUncovered]
+      const apiCovered = new Set(Object.entries(supplementalCountByLeague)
+        .filter(([leagueId,count]) => count >= minLeagueMatches && !fdCovered.has(Number(leagueId)))
+        .map(([leagueId]) => Number(leagueId)));
+      const independentCovered = new Set([...fdCovered,...apiCovered]);
+      const apiRowsUsed = supplementalRows.filter(r => apiCovered.has(Number(r.leagueId)));
+      const ledgerForUncovered = ledgerRows.filter(r => !independentCovered.has(Number(r.leagueId)));
+      const trainingRows = [...externalRows, ...apiRowsUsed, ...ledgerForUncovered]
         .sort((a,b)=>a.kickoff-b.kickoff||String(a.fixtureId).localeCompare(String(b.fixtureId)));
 
       model = trainDynamicStrength(trainingRows, options);
@@ -115,6 +133,7 @@ export function createDynamicStrengthService({
         trainingRows: trainingRows.length,
         ledgerTrainingRows: ledgerForUncovered.length,
         externalTrainingRows: externalRows.length,
+        supplementalTrainingRows: apiRowsUsed.length,
         leagueCount: model.leagueCount,
         error: null,
         evaluation,
@@ -126,9 +145,11 @@ export function createDynamicStrengthService({
           leagues: Object.keys(externalTeamsByLeague).length,
           seasonsPerLeague: FOOTBALL_DATA_STRENGTH_SEASON_OFFSETS.length,
           failures: externalFailures.length,
+          supplementalRows: apiRowsUsed.length,
+          supplementalLeagues: apiCovered.size,
         },
       };
-      log.log?.('[V11 Shadow] trained ' + trainingRows.length + ' fixtures (' + externalRows.length + ' external + ' + ledgerForUncovered.length + ' ledger) across ' + model.leagueCount + ' leagues; forward ' + evaluation.status + ' on ' + evaluation.fixtures + ' shadow fixtures');
+      log.log?.('[V11 Shadow] trained ' + trainingRows.length + ' fixtures (' + externalRows.length + ' football-data + ' + apiRowsUsed.length + ' API-Football + ' + ledgerForUncovered.length + ' ledger) across ' + model.leagueCount + ' leagues; forward ' + evaluation.status + ' on ' + evaluation.fixtures + ' shadow fixtures');
       log.log?.('[V11 Backtest] ' + historicalBacktest.status + ' on ' + historicalBacktest.comparableFixtures + ' comparable ' + FORECAST_VERSION + ' fixtures; Δlogloss ' + (historicalBacktest.delta.logLoss ?? 'n/a') + ', ΔRPS ' + (historicalBacktest.delta.rps ?? 'n/a'));
       return status;
     } catch (err) {
