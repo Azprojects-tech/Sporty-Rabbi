@@ -5,6 +5,8 @@ import {
   trainDynamicStrength,
 } from '../../../shared/dynamicStrengthModel.js';
 import { evaluateShadowChallenger } from '../../../shared/challengerEvaluation.js';
+import { walkForwardDynamicStrengthAudit } from '../../../shared/dynamicStrengthBacktest.js';
+import { FORECAST_VERSION } from '../../../shared/forecastMath.js';
 
 export function createDynamicStrengthService({ log = console, options = {} } = {}) {
   let model = trainDynamicStrength([], options);
@@ -24,6 +26,7 @@ export function createDynamicStrengthService({ log = console, options = {} } = {
       const rows = strengthRowsFromLedger(docs);
       model = trainDynamicStrength(rows, options);
       const evaluation = evaluateShadowChallenger(docs, 'dynamicStrength');
+      const historicalBacktest = walkForwardDynamicStrengthAudit(docs, { targetVersion: FORECAST_VERSION });
       status = {
         version: DYNAMIC_STRENGTH_VERSION,
         ready: model.leagueCount > 0,
@@ -33,8 +36,10 @@ export function createDynamicStrengthService({ log = console, options = {} } = {
         leagueCount: model.leagueCount,
         error: null,
         evaluation,
+        historicalBacktest,
       };
-      log.log?.('[V11 Shadow] trained ' + rows.length + ' settled fixtures across ' + model.leagueCount + ' leagues; evaluation ' + evaluation.status + ' on ' + evaluation.fixtures + ' shadow fixtures');
+      log.log?.('[V11 Shadow] trained ' + rows.length + ' settled fixtures across ' + model.leagueCount + ' leagues; forward ' + evaluation.status + ' on ' + evaluation.fixtures + ' shadow fixtures');
+      log.log?.('[V11 Backtest] ' + historicalBacktest.status + ' on ' + historicalBacktest.comparableFixtures + ' comparable ' + FORECAST_VERSION + ' fixtures; Δlogloss ' + (historicalBacktest.delta.logLoss ?? 'n/a') + ', ΔRPS ' + (historicalBacktest.delta.rps ?? 'n/a'));
       return status;
     } catch (err) {
       status = { ...status, error: err.message };
