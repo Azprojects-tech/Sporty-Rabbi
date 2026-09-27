@@ -1,11 +1,13 @@
-import { DYNAMIC_STRENGTH_DEFAULTS } from './dynamicStrengthModel.js';
+import {
+  DYNAMIC_STRENGTH_DEFAULTS,
+  fitLeagueStrength,
+  predictFromLeagueStrength,
+} from './dynamicStrengthModel.js';
 import { scoreDistribution } from './forecastMath.js';
 
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const finite=v=>{const n=Number(v);return Number.isFinite(n)?n:null;};
 const key=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const score=v=>{const m=String(v||'').match(/^(\d+)\s*-\s*(\d+)$/);return m?{home:Number(m[1]),away:Number(m[2])}:null;};
-const get=(o,k)=>finite(o?.[k])??0;
 const validP=p=>Number.isFinite(Number(p))&&Number(p)>0&&Number(p)<1;
 const clip=p=>Math.max(1e-9,Math.min(1-1e-9,Number(p)));
 
@@ -16,39 +18,13 @@ function firstPrematchDocs(docs=[]){
     const leagueId=finite(d?.leagueId),home=String(d?.home||'').trim(),away=String(d?.away||'').trim();
     if(!s||!(leagueId>0)||!Number.isFinite(ko)||!Number.isFinite(at)||at>=ko||!home||!away)continue;
     const id=String(d?.matchId??'');if(!id)continue;
-    const row={id,leagueId,league:String(d?.league||''),leagueCountry:String(d?.leagueCountry||''),home,away,homeKey:key(home),awayKey:key(away),
-      kickoff:ko,kickoffUTC:new Date(ko).toISOString(),predictedAt:new Date(at).toISOString(),score:s,analysisVersion:d?.analysisVersion||null,
-      champion:d?.modelState?.marketProbabilities||null};
+    const row={fixtureId:id,leagueId,league:String(d?.league||''),leagueCountry:String(d?.leagueCountry||''),home,away,homeKey:key(home),awayKey:key(away),
+      kickoff:ko,kickoffUTC:new Date(ko).toISOString(),predictedAt:new Date(at).toISOString(),homeGoals:s.home,awayGoals:s.away,score:s,
+      analysisVersion:d?.analysisVersion||null,champion:d?.modelState?.marketProbabilities||null};
     const fixtureKey=String(leagueId)+'|'+id,prior=byFixture.get(fixtureKey);
     if(!prior||at<Date.parse(prior.predictedAt))byFixture.set(fixtureKey,row);
   }
   return [...byFixture.values()].sort((a,b)=>a.kickoff-b.kickoff||a.predictedAt.localeCompare(b.predictedAt));
-}
-
-function initState(seed,cfg){
-  const homeMean=seed.reduce((s,r)=>s+r.score.home,0)/seed.length;
-  const awayMean=seed.reduce((s,r)=>s+r.score.away,0)/seed.length;
-  if(!(homeMean>0&&awayMean>0))return null;
-  return{mu:Math.log(awayMean),homeAdvantage:Math.log(homeMean/awayMean),attack:{},defence:{},teamMatches:{},matches:0,cfg};
-}
-
-function predict(state,row){
-  const cfg=state.cfg,h=row.homeKey,a=row.awayKey;
-  const homeLambda=clamp(Math.exp(state.mu+state.homeAdvantage+get(state.attack,h)-get(state.defence,a)),cfg.minLambda,cfg.maxLambda);
-  const awayLambda=clamp(Math.exp(state.mu+get(state.attack,a)-get(state.defence,h)),cfg.minLambda,cfg.maxLambda);
-  const d=scoreDistribution(homeLambda,awayLambda,{rho:cfg.rho});
-  return d?{homeLambda,awayLambda,marketProbabilities:d.marketProbabilities}:null;
-}
-
-function update(state,row){
-  const q=predict(state,row);if(!q)return;
-  const cfg=state.cfg,h=row.homeKey,a=row.awayKey,eh=row.score.home-q.homeLambda,ea=row.score.away-q.awayLambda;
-  const ah=get(state.attack,h),aa=get(state.attack,a),dh=get(state.defence,h),da=get(state.defence,a);
-  state.attack[h]=ah+cfg.learningRate*eh;state.defence[a]=da-cfg.learningRate*eh;
-  state.attack[a]=aa+cfg.learningRate*ea;state.defence[h]=dh-cfg.learningRate*ea;
-  state.mu+=cfg.learningRate*cfg.globalLearningScale*(eh+ea);
-  state.homeAdvantage+=cfg.learningRate*cfg.globalLearningScale*eh;
-  state.teamMatches[h]=(state.teamMatches[h]||0)+1;state.teamMatches[a]=(state.teamMatches[a]||0)+1;state.matches++;
 }
 
 function accumulator(){return{fixtures:0,logLoss:0,rps:0,binary:{over15:{n:0,brier:0},over25:{n:0,brier:0},under25:{n:0,brier:0},btts:{n:0,brier:0}}};}
@@ -77,36 +53,36 @@ function delta(champion,challenger){
 }
 
 /**
- * Leak-free historical replay. The first seedLeagueMatches in each league are
- * training-only. Every later challenger forecast is made BEFORE that fixture's
- * result updates team strength. Champion probabilities are the frozen values
- * stored at the real prediction time.
+ * Leak-free historical replay of the V11.1 batch strength model.
+ * For every comparable target fixture, the challenger is fitted only on league
+ * results whose kickoff precedes that fixture. The target result is added only
+ * after scoring. This is intentionally slower than production training but makes
+ * the research audit faithful and look-ahead free.
  */
 export function walkForwardDynamicStrengthAudit(docs=[],{
   targetVersion=null,
-  seedLeagueMatches=60,
+  seedLeagueMatches=80,
   minTeamMatches=3,
   modelOptions={},
 }={}){
-  const cfg={...DYNAMIC_STRENGTH_DEFAULTS,...modelOptions};
+  const cfg={...DYNAMIC_STRENGTH_DEFAULTS,...modelOptions,minTeamMatches,minLeagueMatches:modelOptions.minLeagueMatches??seedLeagueMatches};
   const rows=firstPrematchDocs(docs),byLeague=new Map();
   for(const row of rows){const k=String(row.leagueId);if(!byLeague.has(k))byLeague.set(k,[]);byLeague.get(k).push(row);}
   const champion=accumulator(),challenger=accumulator(),leagueResults={};let eligible=0;
   for(const [leagueId,list] of byLeague){
     if(list.length<=seedLeagueMatches)continue;
-    const seed=list.slice(0,seedLeagueMatches),state=initState(seed,cfg);if(!state)continue;
-    for(const r of seed)update(state,r);
     const c=accumulator(),h=accumulator();
-    for(const row of list.slice(seedLeagueMatches)){
-      const beforeHome=state.teamMatches[row.homeKey]||0,beforeAway=state.teamMatches[row.awayKey]||0;
-      const q=predict(state,row);
-      const versionOk=!targetVersion||row.analysisVersion===targetVersion;
-      const comparable=versionOk&&q&&row.champion&&beforeHome>=minTeamMatches&&beforeAway>=minTeamMatches;
-      if(comparable){
-        addMetric(champion,row.champion,row.score);addMetric(challenger,q.marketProbabilities,row.score);
-        addMetric(c,row.champion,row.score);addMetric(h,q.marketProbabilities,row.score);eligible++;
-      }
-      update(state,row);
+    for(let i=seedLeagueMatches;i<list.length;i++){
+      const row=list[i];
+      if(targetVersion&&row.analysisVersion!==targetVersion)continue;
+      const history=list.slice(0,i);
+      const fitted=fitLeagueStrength(history,cfg,row.kickoff-1);
+      const raw=predictFromLeagueStrength(fitted,row,cfg);
+      if(!raw||!row.champion)continue;
+      const q=scoreDistribution(raw.homeLambda,raw.awayLambda,{rho:cfg.rho});
+      if(!q?.marketProbabilities)continue;
+      addMetric(champion,row.champion,row.score);addMetric(challenger,q.marketProbabilities,row.score);
+      addMetric(c,row.champion,row.score);addMetric(h,q.marketProbabilities,row.score);eligible++;
     }
     if(c.fixtures)leagueResults[leagueId]={league:list[0]?.league||'',champion:finish(c),challenger:finish(h),delta:delta(finish(c),finish(h))};
   }
@@ -120,6 +96,6 @@ export function walkForwardDynamicStrengthAudit(docs=[],{
     targetVersion:targetVersion||'ALL',seedLeagueMatches,minTeamMatches,settledFixtures:rows.length,comparableFixtures:eligible,
     champion:C,challenger:H,delta:D,leagues:leagueResults,
     automaticPromotion:false,
-    note:'Historical replay qualifies research only. Forward shadow evidence is still required before any production promotion.',
+    note:'Historical replay is leak-free research evidence only. Forward shadow evidence remains the promotion gate.',
   };
 }
