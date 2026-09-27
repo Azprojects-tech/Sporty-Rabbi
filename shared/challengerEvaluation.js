@@ -46,7 +46,7 @@ function metrics(rows, accessor){
   return {fixtures1x2:n1,logLoss:n1?+(ll/n1).toFixed(5):null,rps:n1?+(rps/n1).toFixed(5):null,binary};
 }
 
-export function evaluateShadowChallenger(docs=[], challengerKey='dynamicStrength'){
+export function evaluateShadowChallenger(docs=[], challengerKey='dynamicStrength', challengerVersion=null){
   const first=new Map();
   for(const d of docs||[]){
     if(d?.snapshotType&&d.snapshotType!=='PRE_MATCH')continue;
@@ -54,6 +54,7 @@ export function evaluateShadowChallenger(docs=[], challengerKey='dynamicStrength
     if(!s||!Number.isFinite(kickoff)||!Number.isFinite(predicted)||predicted>=kickoff)continue;
     const champ=d?.modelState?.marketProbabilities,chall=d?.challengerStates?.[challengerKey];
     if(!champ||chall?.status!=='AVAILABLE'||!chall?.marketProbabilities)continue;
+    if(challengerVersion && chall?.version !== challengerVersion) continue;
     const key=String(d.matchId||''); if(!key)continue;
     const row={id:key,predictedAt:d.predictedAt,score:s,champion:champ,challenger:chall.marketProbabilities};
     const prior=first.get(key); if(!prior||predicted<Date.parse(prior.predictedAt))first.set(key,row);
@@ -76,7 +77,7 @@ export function evaluateShadowChallenger(docs=[], challengerKey='dynamicStrength
     && nonWorse>=3&&regressions===0;
   return {
     status: !enough?'COLLECTING_SHADOW_RESULTS':probabilityPass?'EVIDENCE_PASS':'NO_IMPROVEMENT_PROVEN',
-    challengerKey,fixtures:rows.length,days:dates.length,minimumFixtures:500,minimumDays:14,
+    challengerKey,challengerVersion:challengerVersion||null,fixtures:rows.length,days:dates.length,minimumFixtures:500,minimumDays:14,
     champion,challenger,
     delta:{
       logLoss:champion.logLoss!=null&&challenger.logLoss!=null?+(challenger.logLoss-champion.logLoss).toFixed(5):null,
