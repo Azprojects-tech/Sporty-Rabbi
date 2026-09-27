@@ -21,7 +21,7 @@ export function deskCard(match, calibration, corners = null) {
   const wins=markets.filter(m=>m.marketKey==='home_win'||m.marketKey==='away_win').sort((a,b)=>b.probability-a.probability);
   if(wins.length)markets.push({...wins[0],marketKey:'team_win'});
   if(corners?.status==='AVAILABLE' && Number.isFinite(corners.lines?.corners_over85)) markets.push({marketKey:'corners_over85',selection:'Over 8.5 corners',probability:corners.lines.corners_over85,rawProbability:corners.lines.corners_over85,basis:'CORNERS_HISTORICAL_MODEL',decision:'RESEARCH_ONLY',odds:null,minimumOdds:null});
-  return {id:match.id,home:match.home,away:match.away,homeTeamId:match.homeTeamId??null,awayTeamId:match.awayTeamId??null,
+  return {id:match.id,home:match.home,away:match.away,country:match.country??match.countryName??null,homeTeamId:match.homeTeamId??null,awayTeamId:match.awayTeamId??null,
     league:match.league??'',leagueId:match.leagueId??null,kickoffUTC:match.kickoffUTC,status:match.status,
     evidence:core.reliability,analysisVersion:match.analysis.analysisVersion,markets,
     best:markets.find(m=>m.decision==='BET') || markets.find(m=>m.decision==='NEEDS_PRICE') || null,
@@ -66,11 +66,11 @@ export function targetCombination(cards,target,now=Date.now()) {
 }
 const pct = value => Number.isFinite(value)?`${value.toFixed(1)}%`:'Unavailable';
 export function formatDailyDesk(desk) {
-  const lines=[`SportyRabbi · ${desk.dateUK}`, 'Daily shortlist'];
+  const lines=[`🐰 SPORTYRABBI  |  ${desk.dateUK}`, '━━━━━━━━━━━━━━━━━━━━', '📋 DAILY SHORTLIST'];
   for(const c of desk.cards){
     const time=new Date(c.kickoffUTC).toLocaleTimeString('en-GB',{timeZone:'Europe/London',hour:'2-digit',minute:'2-digit'});
     const find=k=>pct(c.markets.find(m=>m.marketKey===k)?.probability);
-    lines.push(`\n${c.home} v ${c.away} · ${time} UK`, `Home ${find('home_win')} · Draw ${find('draw')} · Away ${find('away_win')}`,
+    lines.push(`\n━━━━━━━━━━━━━━━━━━━━\n⚽ ${c.home} vs ${c.away}\n🏆 ${c.country ? c.country+' · ' : ''}${c.league || 'League unavailable'}\n🕒 ${time} UK`, `Home ${find('home_win')} · Draw ${find('draw')} · Away ${find('away_win')}`,
       `Over 1.5 ${find('over15')} · Over 2.5 ${find('over25')}`,
       `${c.best.selection}: ${pct(c.best.probability)} · Minimum odds ${c.best.minimumOdds.toFixed(2)}`,
       c.best.odds?`${c.bookmaker?.name||'Reference bookmaker'} odds ${c.best.odds.toFixed(2)} · ${c.best.decision==='BET'?'Qualifies':'Watch'}`:'Price unavailable · Watch');
@@ -81,8 +81,8 @@ export function formatDailyDesk(desk) {
   for(const combo of desk.combinations)lines.push(combo.available?`\nTarget ${combo.target}.0: ${combo.legs.map(l=>`${l.match}: ${l.selection}`).join(' + ')}\nTotal odds ${combo.odds} · Combined probability floor ${combo.probabilityFloor}%`:`\nTarget ${combo.target}.0: no qualifying combination.`);
   lines.push('\nReference prices are timestamped in the portal. Live updates follow this shortlist.');
   if(desk.opportunities?.length){
-    lines.push('\nOpportunity discovery · exploratory combinations');
-    for(const o of desk.opportunities.slice(0,5))lines.push(`${o.title}: ${o.legs.map(l=>l.match+' '+l.selection).join(' + ')}\nEstimated joint chance ${o.combinedProbability}% · Fair odds ${o.fairOdds} · ${o.combinedReferenceOdds?'Reference odds '+o.combinedReferenceOdds:'Bookmaker price unavailable'}`);
+    lines.push('\n━━━━━━━━━━━━━━━━━━━━\n🔎 OPPORTUNITY DISCOVERY · exploratory combinations');
+    for(const o of desk.opportunities.slice(0,5))lines.push(`\n🎯 ${o.title}:\n${o.legs.map(l=>'  • '+l.match+' ('+(l.league||'League unavailable')+') — '+l.selection).join('\n')}\nEstimated joint chance ${o.combinedProbability}% · Fair odds ${o.fairOdds} · ${o.combinedReferenceOdds?'Reference odds '+o.combinedReferenceOdds:'Bookmaker price unavailable'}`);
     lines.push('Suggestions only; joint estimates assume independent fixtures. Check current prices and decide for yourself.');
   }
   return lines.join('\n');
