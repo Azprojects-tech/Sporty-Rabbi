@@ -3,6 +3,7 @@ import {
   settleCornersLines,
 } from '../../../shared/cornersModel.js';
 import { buildDynamicCornersModel, predictDynamicCorners, DYNAMIC_CORNERS_VERSION } from '../../../shared/dynamicCornersModel.js';
+import { evaluateCornersShadow } from '../../../shared/cornersShadowEvaluation.js';
 
 /**
  * Corners: downloads football-data.co.uk results once a day (about 44 small
@@ -19,6 +20,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
   let dynamicModels = {};
   let rowsByCode = {};
   let refreshedAt = null;
+  let shadowEvaluation = evaluateCornersShadow([]);
   const previousSeason = new Map(); // code -> rows, downloaded once per process
   const recorded = new Set();
   const memo = new Map();
@@ -108,6 +110,14 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
       && Number.isFinite(ko) && Math.abs(r.date - ko) <= 36 * 3600000) || null;
   }
 
+  async function refreshShadowEvaluation(db) {
+    try {
+      const snap = await db.collection(CORNERS_COLLECTION).where('result', '==', 'settled').limit(1000).get();
+      shadowEvaluation = evaluateCornersShadow(snap.docs.map(d => d.data()));
+    } catch (err) { log.warn?.('[Corners] Shadow evaluation unavailable:', err.message); }
+    return shadowEvaluation;
+  }
+
   async function settlePending() {
     const db = getDb();
     if (!db || !refreshedAt) return { settled: 0, checked: 0 };
@@ -128,7 +138,8 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
         await d.ref.update({ result: 'unsettled', settledAt: stamp }); // result never published
       }
     }
-    return { settled, checked: snap.size };
+    await refreshShadowEvaluation(db);
+    return { settled, checked: snap.size, shadowEvaluation };
   }
 
   function status() {
@@ -136,6 +147,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
       refreshedAt,
       challengerVersion: DYNAMIC_CORNERS_VERSION,
       challengerLeagues: Object.keys(dynamicModels).length,
+      shadowEvaluation,
       leagues: Object.entries(models).map(([code, m]) => ({
         code, league: FD_LEAGUES[code].name, country: FD_LEAGUES[code].country, gamesUsed: m.games,
         latestResult: new Date(m.lastResultAt).toISOString().slice(0, 10),
@@ -144,7 +156,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
     };
   }
 
-  return { refresh, predict, predictChallenger, recordPredictions, settlePending, status, getModels: () => models, getDynamicModels: () => dynamicModels };
+  return { refresh, predict, predictChallenger, recordPredictions, settlePending, refreshShadowEvaluation, status, getModels: () => models, getDynamicModels: () => dynamicModels };
 }
 
 /** Settled corners predictions shaped like ledger documents, for the calibration layer. */
