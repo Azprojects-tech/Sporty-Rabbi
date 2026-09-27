@@ -4,6 +4,7 @@ import {
   strengthRowsFromLedger,
   trainDynamicStrength,
 } from '../../../shared/dynamicStrengthModel.js';
+import { evaluateShadowChallenger } from '../../../shared/challengerEvaluation.js';
 
 export function createDynamicStrengthService({ log = console, options = {} } = {}) {
   let model = trainDynamicStrength([], options);
@@ -15,12 +16,14 @@ export function createDynamicStrengthService({ log = console, options = {} } = {
     trainingRows: 0,
     leagueCount: 0,
     error: null,
+    evaluation: null,
   };
 
   async function rebuildFromLedger(docs = []) {
     try {
       const rows = strengthRowsFromLedger(docs);
       model = trainDynamicStrength(rows, options);
+      const evaluation = evaluateShadowChallenger(docs, 'dynamicStrength');
       status = {
         version: DYNAMIC_STRENGTH_VERSION,
         ready: model.leagueCount > 0,
@@ -29,8 +32,9 @@ export function createDynamicStrengthService({ log = console, options = {} } = {
         trainingRows: rows.length,
         leagueCount: model.leagueCount,
         error: null,
+        evaluation,
       };
-      log.log?.('[V11 Shadow] trained ' + rows.length + ' settled fixtures across ' + model.leagueCount + ' leagues');
+      log.log?.('[V11 Shadow] trained ' + rows.length + ' settled fixtures across ' + model.leagueCount + ' leagues; evaluation ' + evaluation.status + ' on ' + evaluation.fixtures + ' shadow fixtures');
       return status;
     } catch (err) {
       status = { ...status, error: err.message };
