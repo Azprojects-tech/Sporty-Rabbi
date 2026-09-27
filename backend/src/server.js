@@ -3345,6 +3345,7 @@ app.get('/api/health', (req, res) => {
       lastUpdatedAt: quotaState.lastUpdatedAt,
     },
     analyticsCache: getAnalyticsCacheStatus(),
+    modelChallenger: dynamicStrength.getStatus(),
   });
 });
 
