@@ -1,3 +1,4 @@
+import { createWatchService, watchId } from './services/watchService.js';
 import { createDailyDeskService, createDeskStore } from './services/dailyDeskService.js';
 import { createCornersService } from './services/cornersService.js';
 import { dayUK } from '../../shared/dailyDesk.js';
@@ -2086,6 +2087,36 @@ async function runDailyDesk() {
   return deskRunInFlight;
 }
 setInterval(() => runDailyDesk().catch(err => console.warn('[DailyDesk] Timer:', err.message)), 5 * 60000);
+// Opt-in watch alerts are separate from existing automatic Daily Desk notifications.
+const watchService=createWatchService({getDb,send:sendWhatsApp});
+setInterval(()=>watchService.tick().catch(e=>console.warn('[Watch] Timer:',e.message)),60*1000);
+app.get('/api/watchlist',async(req,res)=>{
+ try{const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
+ const snap=await db.collection('watchedFixtures').where('active','==',true).limit(80).get();
+ res.json({watches:snap.docs.map(d=>({id:d.id,...d.data()}))});
+ }catch(e){res.status(503).json({error:'Could not load watchlist'});}
+});
+app.post('/api/watchlist',async(req,res)=>{
+ try{
+ const {fixtureId,market}=req.body||{};
+ const desk=(await dailyDesk.view()).desk;
+ const cards=[...(desk?.cards||[]),...(desk?.opportunities||[]).flatMap(o=>o.legs.map(l=>({id:l.fixtureId,home:l.match.split(' v ')[0],away:l.match.split(' v ')[1],league:l.league,kickoffUTC:l.kickoffUTC})))];
+ const card=cards.find(c=>String(c.id)===String(fixtureId));
+ if(!card)return res.status(404).json({error:'Fixture not found in today’s Daily Picks or discoveries'});
+ if(Date.parse(card.kickoffUTC)<Date.now()-5*60000)return res.status(400).json({error:'Kickoff has already passed'});
+ const allowed=['Over 1.5 goals','Over 2.5 goals','Over 3.5 goals','Over 8.5 corners','Over 9.5 corners','Over 10.5 corners','Home win','Away win','Both teams score'];
+ if(!allowed.includes(market))return res.status(400).json({error:'Choose a supported market'});
+ const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
+ const id=watchId(fixtureId);await db.collection('watchedFixtures').doc(id).set({fixtureId:String(fixtureId),home:card.home,away:card.away,league:card.league||'',country:card.country||'',kickoffUTC:card.kickoffUTC,market,active:true,kickoffAlertAt:null,marketReminderAt:null,createdAt:new Date().toISOString()});
+ res.status(201).json({success:true,id});
+ }catch(e){console.warn('[Watch]',e.message);res.status(503).json({error:'Could not save watch'});}
+});
+app.delete('/api/watchlist/:id',async(req,res)=>{
+ try{const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
+ const id=watchId(req.params.id.replace(/^fixture_/,''));await db.collection('watchedFixtures').doc(id).set({active:false,stoppedAt:new Date().toISOString()},{merge:true});res.json({success:true});
+ }catch(e){res.status(503).json({error:'Could not stop watch'});}
+});
+
 // User-confirmed opportunity slips are distinct from model suggestions.
 app.post('/api/opportunities/played', async (req,res)=>{
   try{
