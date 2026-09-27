@@ -244,6 +244,8 @@ export default function App() {
  const displayedMatches = allMatches.filter(m => {
  if (filter === 'live' && !LIVE_STATUSES.has(m.status)) return false;
  if (filter === 'high') {
+ const kickoff=Date.parse(m.kickoffUTC||'');
+ if ((Number.isFinite(kickoff) && kickoff <= Date.now()) || LIVE_STATUS_CODES.has(m.status) || ['FT','AET','PEN','CANC','ABD','AWD','WO'].includes(m.status)) return false;
  const dailySignal = m.dailySignal || m.analysis?.dailySignal || null;
  const signalScore = Number(dailySignal?.score ?? 0);
  // Daily 80+ is a pre-match evidence selector, not a generic confidence filter.
@@ -260,7 +262,7 @@ export default function App() {
  const metric=m=>{
   if(liveSort==='goals')return Math.max(probability(m,'over25')??-1,probability(m,'over15')??-1);
   if(liveSort==='wins')return Math.max(probability(m,'home_win')??-1,probability(m,'away_win')??-1);
-  if(liveSort==='corners')return liveCorners[String(m.id)]?.lines?.corners_over85??-1;
+  if(liveSort==='corners')return liveCorners[String(m.id)]?.expectedTotal??-1;
   if(liveSort==='odds')return Number.isFinite(Number(m.oddsSnapshot?.odds))?Number(m.oddsSnapshot.odds):-1;
   return -1;
  };
@@ -571,12 +573,14 @@ export default function App() {
  <span style={{ fontSize: 11, color: '#4a5568' }}>
  {displayedMatches.length} match{displayedMatches.length !== 1 ? 'es' : ''}
  </span>
- {filter==='live'&&<label style={{marginLeft:'auto',fontSize:12,color:'#8b9ab3'}}>Sort by <select aria-label="Sort live games" value={liveSort} onChange={e=>setLiveSort(e.target.value)} style={{background:'#1a1f2e',color:'#e2e8f0',padding:7,borderRadius:6,border:'1px solid #334155'}}><option value="default">Default</option><option value="goals">Goals chance ↓</option><option value="wins">Win chance ↓</option><option value="corners">Corners over 8.5 ↓</option><option value="odds">Available odds ↓</option></select></label>}
+ {filter==='live'&&<label style={{marginLeft:'auto',fontSize:12,color:'#8b9ab3'}}>Sort by <select aria-label="Sort live games" value={liveSort} onChange={e=>setLiveSort(e.target.value)} style={{background:'#1a1f2e',color:'#e2e8f0',padding:7,borderRadius:6,border:'1px solid #334155'}}><option value="default">Default</option><option value="goals">Goals chance ↓</option><option value="wins">Win chance ↓</option><option value="corners">Estimated corners ↓</option><option value="odds">Available odds ↓</option></select></label>}
  {loading && <span style={{ fontSize: 11, color: '#4a5568', marginLeft: 4 }}>Loading...</span>}
  </div>
 
  <MatchFeed
  matches={displayedMatches}
+ cornerForecasts={liveCorners}
+ showCornerEstimate={filter==='live'&&liveSort==='corners'}
  selectedMatch={selectedMatch}
  onSelectMatch={handleSelectMatch}
  onRefresh={handleManualLiveRefresh}
