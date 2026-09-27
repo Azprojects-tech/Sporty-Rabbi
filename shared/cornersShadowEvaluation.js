@@ -1,5 +1,5 @@
 const pct01=v=>{const n=Number(v);return Number.isFinite(n)?(n>1?n/100:n):null;};
-const lineFromKey=k=>{const m=String(k||'').match(/^corners_over(\d)(\d)$/);return m?Number(m[1]+'.'+m[2]):null;};
+const lineFromKey=k=>{const m=String(k||'').match(/^corners_over(\d+)$/);if(!m)return null;const digits=m[1];if(digits.length<2)return null;return Number(digits.slice(0,-1)+'.'+digits.slice(-1));};
 
 export function evaluateCornersShadow(docs=[]){
   const rows=(docs||[]).filter(d=>d?.result==='settled'&&Number.isFinite(Number(d.totalCorners))
