@@ -17,6 +17,8 @@ import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDo
 import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
 import { createPickCalibrationService } from './services/pickCalibrationService.js';
 import { createDynamicStrengthService } from './services/dynamicStrengthService.js';
+import { createApiFootballHistoryService } from './services/apiFootballHistoryService.js';
+import { FD_LEAGUES } from '../../shared/cornersModel.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -186,10 +188,18 @@ initFirebase();
 
 // V11 challenger: opponent-adjusted attack/defence strengths fitted from SportyRabbi's settled ledger.
 // It runs in SHADOW mode only: it is recorded for evaluation and cannot change a pick, alert or stake.
+const V11_FD_LEAGUE_IDS = new Set(Object.values(FD_LEAGUES).map(x => Number(x.id)));
+const v11ApiHistory = createApiFootballHistoryService({
+  getDb,
+  request: requestFootballLive,
+  canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
+  onResponse: updateQuotaFromHeaders,
+});
 const dynamicStrength = createDynamicStrengthService({
-  // Independent historical results feed for V11.1 only. This changes data
+  // Independent historical results feeds for V11.1 only. This changes data
   // coverage, not model thresholds, coefficients or probability logic.
   fetchText: async url => { const r = await axios.get(url, { timeout: 8000 }); return r.data; },
+  loadSupplementalRows: () => v11ApiHistory.loadStoredRows(),
 });
 
 function analyzeWithChallenger(matchData = {}) {
@@ -317,6 +327,24 @@ function calibrationContext(source = {}) {
 }
 function withCorrectedChances(analysis, source = {}) {
   return withPriceChecks(analysis, pickCalibration.getMap(), calibrationContext(source));
+}
+
+const v11HistoryRefreshInFlight = new Set();
+function queueV11HistoryForMatch(match = {}) {
+  const leagueId = Number(match?.leagueId);
+  const season = Number(match?.season);
+  if (!(leagueId > 0) || !Number.isInteger(season) || V11_FD_LEAGUE_IDS.has(leagueId) || shouldSkipApiCalls()) return;
+  const key = leagueId + ':' + season;
+  if (v11HistoryRefreshInFlight.has(key)) return;
+  v11HistoryRefreshInFlight.add(key);
+  v11ApiHistory.backfillMatches([match], { maxCalls: 3, skipLeagueIds: V11_FD_LEAGUE_IDS })
+    .then(async result => {
+      if ((result?.loaded || 0) > 0) {
+        await pickCalibration.rebuild('v11-api-history-click');
+      }
+    })
+    .catch(err => console.warn('[V11 API history] click backfill failed:', err.message))
+    .finally(() => v11HistoryRefreshInFlight.delete(key));
 }
 
 // ─── WEBSOCKET SERVER ──────────────────────────────────────────────────────
@@ -4660,6 +4688,10 @@ async function analyzeFixtureRequest(req, res) {
     // Critical path ends here: return football analysis without waiting for an LLM.
     const response = withCorrectedChances(analysis, enriched);
     response.visibleForecast = buildVisibleV11Forecast(analysis, enriched);
+    if (response.visibleForecast?.status === 'UNAVAILABLE'
+      && ['LEAGUE_HISTORY_UNAVAILABLE','TEAM_HISTORY_TOO_THIN'].includes(response.visibleForecast?.reason)) {
+      queueV11HistoryForMatch(enriched);
+    }
     res.json(response);
   } catch (error) {
     console.error('V10 analysis error:', error.message);
