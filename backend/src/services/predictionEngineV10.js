@@ -294,6 +294,8 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
     poissonModel.likelyScore = live.available ? { score: live.likelyScore.score, probability: Math.round(live.likelyScore.probability01 * 100) } : null;
     poissonModel.liveProjectedFinalScore = live.available ? {
       score: live.likelyScore.score, remainingLambda: live.remainingLambda,
+      baselineRemainingLambda: live.baselineRemainingLambda ?? null,
+      liveHazardSource: live.liveHazard?.source ?? 'NONE',
       probAnotherGoal: Math.round(live.nextGoal.any * 100), marketPeriod: 'REGULATION', minutesRemaining: live.minutesRemaining,
     } : null;
     poissonModel.expectedTotalGoals = live.available ? +live.expectedTotalGoals.toFixed(2) : null;
@@ -389,6 +391,7 @@ export function buildPredictionCore(matchData = {}, leagueAverage = 1.35) {
       awaySampleSize: awaySample,
       season,
       homeXgAvg:hXg, homeXgaAvg:hXga, awayXgAvg:aXg, awayXgaAvg:aXga,
+      homeShotsPerGame:finite(matchData.homeShotsPerGame), awayShotsPerGame:finite(matchData.awayShotsPerGame),
       homeForm:matchData.homeForm ?? null, awayForm:matchData.awayForm ?? null,
       leagueId:matchData.leagueId ?? null,
     },
