@@ -19,6 +19,7 @@ import { createPickCalibrationService } from './services/pickCalibrationService.
 import { createDynamicStrengthService } from './services/dynamicStrengthService.js';
 import { createApiFootballHistoryService } from './services/apiFootballHistoryService.js';
 import { FD_LEAGUES } from '../../shared/cornersModel.js';
+import { aggregateStudyDocuments, buildLiveStudySnapshot, summarizePlayedLiveBets } from '../../shared/liveStudy.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -2103,8 +2104,9 @@ const DAILY_DESK_ENABLED = process.env.DAILY_DESK_ENABLED !== 'false' && getActi
 const cornersDesk = createCornersService({ getDb,
   fetchText: async url => { const r = await axios.get(url, { timeout: 6000 }); return r.data; },
 });
+const deskStore = createDeskStore(getDb);
 const dailyDesk = createDailyDeskService({
-  store: createDeskStore(getDb),
+  store: deskStore,
   getMatches: () => ({ ready: calibrationStore.preparedDateUK === dayUK(Date.now()), matches: withFixtureStatuses(calibrationStore.matches || []) }),
   getCalibration: () => pickCalibration.getMap(),
   predictCorners: m => cornersDesk.predict(m),
@@ -2116,6 +2118,7 @@ const dailyDesk = createDailyDeskService({
   send: sendWhatsApp, // existing notifier routes this to Telegram when configured
   canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
   limit: Math.max(1, Math.min(6, Number(process.env.DAILY_DESK_MATCH_LIMIT) || 6)),
+  studyLimit: Math.max(1, Math.min(16, Number(process.env.LIVE_STUDY_MATCH_LIMIT) || 10)),
   requestLimit: Math.max(0, Math.min(800, Number(process.env.DAILY_DESK_REQUEST_LIMIT ?? 400))),
 });
 let cornersRefreshDay = '';
@@ -2160,11 +2163,31 @@ const watchService=createWatchService({
       || {};
     const liveHazard=refreshed?.analysis?.predictionCore?.poisson?.live?.liveHazard
       || refreshed?.analysis?.poisson?.live?.liveHazard || null;
+    const studySnapshot=buildLiveStudySnapshot({...enriched,...refreshed},stats,item,Date.now());
+    if(studySnapshot)await deskStore.saveLiveStudySnapshot(studySnapshot);
     const score=String(live.score||'').match(/^(\d+)\s*-\s*(\d+)$/);
     return {...enriched,minute:Number(live.matchMinutes),homeGoals:score?Number(score[1]):null,awayGoals:score?Number(score[2]):null,probabilities:p,liveHazard};
   },
 });
 setInterval(()=>watchService.tick().catch(e=>console.warn('[Watch] Timer:',e.message)),60*1000);
+app.get('/api/live-study',async(req,res)=>{
+ try{
+   const settled=await deskStore.listSettledLiveStudies(500);
+   const pending=await deskStore.pendingLiveStudies(100);
+   const performance=aggregateStudyDocuments(settled);
+   const livePrice=summarizePlayedLiveBets(bets);
+   const reviewReady=performance.fixtures>=30 && performance.overall.snapshots>=300;
+   res.json({
+     status:reviewReady?'REVIEW_READY':'COLLECTING',
+     minimumReviewTarget:{fixtures:30,snapshots:300},
+     pendingStudies:pending.length,
+     performance,
+     livePrice,
+     interpretation:'Positive improvement means Live Hazard V1 scored better than the score/minute baseline. Do not retune automatically from a small sample.',
+   });
+ }catch(e){console.warn('[LiveStudy]',e.message);res.status(503).json({error:'Live engine study unavailable'});}
+});
+
 app.get('/api/watchlist',async(req,res)=>{
  try{const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
  const snap=await db.collection('watchedFixtures').where('active','==',true).limit(80).get();
