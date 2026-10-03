@@ -109,6 +109,11 @@ export function buildFirstHalfGoalWatch(match={},homeStats={},awayStats={}){
   const awayLambda=(aFor+hAgainst)/2;
   const lambda=Math.max(.05,Math.min(2.8,homeLambda+awayLambda));
   const probability=1-Math.exp(-lambda);
+  const homeScoreProbability=1-Math.exp(-homeLambda);
+  const awayScoreProbability=1-Math.exp(-awayLambda);
+  const likelyTeam=homeScoreProbability>=awayScoreProbability
+    ? {team:match.home,side:'HOME',probability:+(homeScoreProbability*100).toFixed(1)}
+    : {team:match.away,side:'AWAY',probability:+(awayScoreProbability*100).toFixed(1)};
   const over15=n(match.analysis?.predictionCore?.poisson?.marketProbabilities?.over15
     ?? match.analysis?.poisson?.marketProbabilities?.over15);
   if(probability<.68 || (over15!=null&&over15<.68))return null;
@@ -116,6 +121,8 @@ export function buildFirstHalfGoalWatch(match={},homeStats={},awayStats={}){
     fixtureId:match.id,home:match.home,away:match.away,league:match.league,kickoffUTC:match.kickoffUTC,
     probability:+(probability*100).toFixed(1),lambda:+lambda.toFixed(2),sample:Math.min(hPlayed,aPlayed),
     homeFirstHalfFor:hFor,homeFirstHalfAgainst:hAgainst,awayFirstHalfFor:aFor,awayFirstHalfAgainst:aAgainst,
+    homeScoreProbability:+(homeScoreProbability*100).toFixed(1),awayScoreProbability:+(awayScoreProbability*100).toFixed(1),
+    likelyTeam:likelyTeam.probability>=50?likelyTeam:null,
     regulationOver15:over15==null?null:+(over15*100).toFixed(1),
     basis:'RESEARCH_1H_SEASON_MINUTE_BUCKETS',
   };
