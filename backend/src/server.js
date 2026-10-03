@@ -1403,6 +1403,7 @@ async function analyzeMatch(match) {
           totalShots: { home: getStat(homeStats, 'Total Shots'), away: getStat(awayStats, 'Total Shots') },
           shots:       { home: getStat(homeStats, 'Shots on Goal'),   away: getStat(awayStats, 'Shots on Goal') },
           xg:          { home: getStat(homeStats, 'expected_goals'),  away: getStat(awayStats, 'expected_goals') },
+          corners:     { home: getStat(homeStats, 'Corner Kicks'),    away: getStat(awayStats, 'Corner Kicks') },
           cards: {
             home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
             away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
