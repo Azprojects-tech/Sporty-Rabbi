@@ -20,7 +20,9 @@ export function calculateNextGoalProbability(match) {
   const homeRate = observedNumber(core?.homeLambda), awayRate = observedNumber(core?.awayLambda);
   const modelBasis = 'SHARED_TEAM_RATE_CORE';
   if (homeRate == null || awayRate == null) return { error: 'Shared team-rate forecast unavailable' };
-  const forecast = remainingForecast(match, homeRate, awayRate);
+  // Reuse the single engine's live forecast when it already exists. Recomputing
+  // without the exact live evidence used by the engine can silently diverge.
+  const forecast = core?.live?.available ? core.live : remainingForecast(match, homeRate, awayRate);
   if (!forecast.available) return { error: 'Regulation probability unavailable', reason: forecast.reason };
   const result = side => ({ probability: +(forecast.nextGoal[side] * 100).toFixed(1),
     probability01: forecast.nextGoal[side], reasoning: `${forecast.minutesRemaining}' regulation remaining.` });
