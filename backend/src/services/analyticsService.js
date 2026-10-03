@@ -602,15 +602,31 @@ export async function getTeamStatistics(teamId, leagueId, season = null) {
     const played        = s.fixtures?.played?.total    ?? null;
     const goalsFor      = s.goals?.for?.total?.total    ?? null;
 
-    // Late-goal % — only compute when the minute-bucket structure AND goal count are present.
+    // Minute buckets are season aggregates. Keep them as descriptive rates; they
+    // are not fed into the V10.6C regulation engine.
     const goalsByMinute = s.goals?.for?.minute ?? null;
+    const goalsAgainstByMinute = s.goals?.against?.minute ?? null;
+    const bucketTotal=(buckets,key)=>{
+      const v=buckets?.[key]?.total;
+      return v==null?null:Number.isFinite(Number(v))?Number(v):null;
+    };
+    const sumBuckets=(buckets,keys)=>{
+      const vals=keys.map(k=>bucketTotal(buckets,k));
+      return vals.some(v=>v==null)?null:vals.reduce((a,b)=>a+b,0);
+    };
+    const firstHalfKeys=['0-15','16-30','31-45'];
+    const firstHalfGoalsFor=sumBuckets(goalsByMinute,firstHalfKeys);
+    const firstHalfGoalsAgainst=sumBuckets(goalsAgainstByMinute,firstHalfKeys);
+    const firstHalfGoalsForPerGame=played>0&&firstHalfGoalsFor!=null?+(firstHalfGoalsFor/played).toFixed(3):null;
+    const firstHalfGoalsAgainstPerGame=played>0&&firstHalfGoalsAgainst!=null?+(firstHalfGoalsAgainst/played).toFixed(3):null;
     const lateGoalPct = (goalsByMinute != null && goalsFor != null && goalsFor > 0)
       ? (goalsByMinute['76-90']?.total != null ? +(Number(goalsByMinute['76-90'].total) / goalsFor).toFixed(3) : null)
       : null;
 
     const result = {
       teamId, leagueId,
-      stats: { played, lateGoalPct,
+      stats: { played, lateGoalPct, firstHalfGoalsFor, firstHalfGoalsAgainst,
+        firstHalfGoalsForPerGame, firstHalfGoalsAgainstPerGame,
         seasonRecord: { played, wins: s.fixtures?.wins?.total ?? null, draws: s.fixtures?.draws?.total ?? null,
           losses: s.fixtures?.loses?.total ?? null } },
     };
