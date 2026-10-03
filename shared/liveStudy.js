@@ -143,7 +143,7 @@ export function summarizePlayedLiveBets(bets=[]){
   let placed=0,settled=0,turnover=0,profit=0,edgeSum=0,edgeCount=0;
   const byMarket={};
   for(const bet of bets){
-    if(bet?.source!=='USER_PLAYED' || bet?.slipType==='double')continue;
+    if(bet?.source!=='USER_PLAYED' || bet?.slipType==='double' || bet?.paper===true)continue;
     const created=Date.parse(bet.createdAt||''),kickoff=Date.parse(bet.kickoffUTC||'');
     if(!Number.isFinite(created)||!Number.isFinite(kickoff)||created<kickoff)continue;
     placed++;
