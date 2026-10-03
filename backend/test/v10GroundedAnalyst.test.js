@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describeMatchClock } from '../../shared/matchClock.js';
 import { goalFestView } from '../../shared/goalFestView.js';
-import { buildGroundedAnalystNote, summarizeLateGoals } from '../src/services/groundedAnalystService.js';
+import { buildGroundedAnalystNote, summarizeEarlyGoals, summarizeLateGoals } from '../src/services/groundedAnalystService.js';
 import { calculateGoalFestSignal } from '../src/services/liveAnalyticsService.js';
 
 const fixture = (id, h, a) => ({ id, homeTeamId: 1, awayTeamId: 2,
@@ -19,6 +19,23 @@ test('clock distinguishes normal time, stoppage time, half-time and extra time',
   assert.match(describeMatchClock({ status: 'FT', matchMinutes: 90 }), /finished/);
   assert.match(describeMatchClock({ status: 'LIVE', matchMinutes: null }), /unavailable/);
   assert.match(describeMatchClock({ status: 'CANC' }), /cancelled/);
+});
+test('early goals count both scoring and conceding and first-half occurrence', () => {
+  const fixtures = [fixture(1, 2, 1), fixture(2, 1, 1)];
+  fixtures[1] = { ...fixtures[1], homeTeamId: 2, awayTeamId: 1 };
+  const events = new Map([
+    ['1', { events: [goal(1, 12), goal(2, 35), goal(1, 70)] }],
+    ['2', { events: [goal(2, 18), goal(1, 50)] }],
+  ]);
+  const early = summarizeEarlyGoals(1, fixtures, events);
+  assert.equal(early.sampled, 2);
+  assert.equal(early.scoredBy20, 1);
+  assert.equal(early.concededBy20, 1);
+  assert.equal(early.scoredFirstHalf, 1);
+  assert.equal(early.concededFirstHalf, 2);
+  const note = buildGroundedAnalystNote({}, { home: 'A', away: 'B' }, { home: { earlyGoals: early } });
+  assert.match(note.text, /By 20': scored in 1 and conceded in 1 of 2/);
+  assert.match(note.text, /First half: scored in 1, conceded in 2/);
 });
 test('late goals count games, orient both teams and include second-half stoppage time', () => {
   const fixtures = [fixture(1, 2, 1), fixture(2, 0, 0)];
