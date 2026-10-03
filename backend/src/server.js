@@ -1843,16 +1843,19 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
             ? previous.goalFest
             : null;
           if (!previous) return lite;
-          const refreshed = refreshLiveForecast(lite, previous);
-          if (!refreshed) return previous.score === lite.score && recentGoalFest
-            ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
           const sameScore = previous.score === lite.score;
+          const statsAge = previous.liveStatsObservedAt ? Date.now()-Date.parse(previous.liveStatsObservedAt) : Number.POSITIVE_INFINITY;
+          const freshStats = sameScore && statsAge >= 0 && statsAge <= 2*60000;
+          const currentForRefresh = freshStats ? {
+            ...lite, possession:previous.possession, shots:previous.shots, totalShots:previous.totalShots,
+            xg:previous.xg, corners:previous.corners, cards:previous.cards,
+            liveStatsObservedAt:previous.liveStatsObservedAt
+          } : lite;
+          const refreshed = refreshLiveForecast(currentForRefresh, previous);
+          if (!refreshed) return sameScore && recentGoalFest
+            ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
           return {
-            ...lite, ...refreshed,
-            possession: sameScore ? previous.possession || lite.possession : lite.possession,
-            shots: sameScore ? previous.shots || lite.shots : lite.shots,
-            xg: sameScore ? previous.xg || lite.xg : lite.xg,
-            liveStatsObservedAt: previous.liveStatsObservedAt ?? null,
+            ...currentForRefresh, ...refreshed,
             goalFest: sameScore ? recentGoalFest : null,
             homeCards: previous.homeCards ?? previous.cards?.home ?? null,
             awayCards: previous.awayCards ?? previous.cards?.away ?? null,
