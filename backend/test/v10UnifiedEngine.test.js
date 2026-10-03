@@ -46,16 +46,38 @@ test('one weak market cannot discard a separate valid priced market; price beats
  for(const r of decided) close(r.probability01,core.poisson.marketProbabilities[r.marketKey]);
  assert.ok(decideMarkets(recs,core).every(r=>r.decisionState!=='BET'));
 });
-test('live evidence is visible but never falsely claimed as a fitted probability adjustment',()=>{
- const a=analyzeV9({...base,xg:{home:1.8,away:.8},shots:{home:6,away:3}});
- assert.equal(a.forecastContract.liveEvidence.xg.home,1.8);
- assert.equal(a.forecastContract.inputsUsed.liveXg,false);
- assert.equal(a.forecastContract.inputsUsed.liveScoreAndClock,true);
- assert.equal(a.forecastContract.probabilityCalibration,'NOT_FITTED');
- assert.equal(a.decisionMetrics.recommendationConfidence.score,a.predictionCore.reliability);
- const live=calculateNextGoalProbability({...base,analysis:a});
- close(live.nextGoal.home.probability01,a.poisson.marketProbabilities.next_goal_home);
+test('verified live xG changes the remaining-goal hazard and is declared as an input',()=>{
+ const baseline=analyzeV9(base);
+ const hot=analyzeV9({...base,xg:{home:1.8,away:.8},shots:{home:6,away:3}});
+ assert.equal(hot.forecastContract.liveEvidence.xg.home,1.8);
+ assert.equal(hot.forecastContract.inputsUsed.liveXg,true);
+ assert.equal(hot.forecastContract.inputsUsed.liveShots,false);
+ assert.equal(hot.forecastContract.liveEvidence.source,'XG');
+ assert.match(hot.forecastContract.probabilityCalibration,/LIVE_HAZARD_V1/);
+ assert.ok(hot.poisson.live.liveHazard.adjustedRemainingLambda.home > hot.poisson.live.liveHazard.baselineRemainingLambda.home);
+ assert.notEqual(hot.poisson.marketProbabilities.over25,baseline.poisson.marketProbabilities.over25);
+ assert.equal(hot.decisionMetrics.recommendationConfidence.score,hot.predictionCore.reliability);
+ const live=calculateNextGoalProbability({...base,analysis:hot});
+ close(live.nextGoal.home.probability01,hot.poisson.marketProbabilities.next_goal_home);
  assert.ok(calculateNextGoalProbability({...base,xg:{home:1,away:1},shots:{home:4,away:4},homeConversionPct:20,awayConversionPct:20}).error);
+});
+
+test('shots and SOT become the fallback only when xG is unavailable',()=>{
+ const withPriors={...base,homeShotsPerGame:13,awayShotsPerGame:10,totalShots:{home:11,away:6},shots:{home:5,away:1}};
+ const shots=analyzeV9(withPriors);
+ assert.equal(shots.forecastContract.inputsUsed.liveXg,false);
+ assert.equal(shots.forecastContract.inputsUsed.liveShots,true);
+ assert.equal(shots.forecastContract.liveEvidence.source,'SHOTS_SOT');
+ const xg=analyzeV9({...withPriors,xg:{home:1.4,away:.4}});
+ assert.equal(xg.forecastContract.liveEvidence.source,'XG');
+ assert.equal(xg.forecastContract.inputsUsed.liveShots,false);
+});
+
+test('corners remain context-only and cannot move goal probabilities by themselves',()=>{
+ const noCorners=analyzeV9(base);
+ const corners=analyzeV9({...base,corners:{home:9,away:0}});
+ assert.deepEqual(corners.poisson.marketProbabilities,noCorners.poisson.marketProbabilities);
+ assert.equal(corners.forecastContract.contextRole,'CORNERS_REMAIN_CONTEXT_ONLY_FOR_GOAL_PROBABILITY');
 });
 test('momentum accepts provider 1H and 2H codes',()=>{
  for(const status of ['1H','2H']) assert.ok(calculateMomentum({...base,status,xg:{home:1,away:.5},shots:{home:5,away:2},possession:{home:60,away:40}}).home);

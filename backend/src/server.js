@@ -1403,6 +1403,7 @@ async function analyzeMatch(match) {
           totalShots: { home: getStat(homeStats, 'Total Shots'), away: getStat(awayStats, 'Total Shots') },
           shots:       { home: getStat(homeStats, 'Shots on Goal'),   away: getStat(awayStats, 'Shots on Goal') },
           xg:          { home: getStat(homeStats, 'expected_goals'),  away: getStat(awayStats, 'expected_goals') },
+          corners:     { home: getStat(homeStats, 'Corner Kicks'),    away: getStat(awayStats, 'Corner Kicks') },
           cards: {
             home: { yellow: getStatZero(homeStats, 'Yellow Cards'), red: getStat(homeStats, 'Red Cards') },
             away: { yellow: getStatZero(awayStats, 'Yellow Cards'), red: getStat(awayStats, 'Red Cards') },
@@ -1843,16 +1844,19 @@ async function pollLiveMatches({ forceApi = false, enrich = false } = {}) {
             ? previous.goalFest
             : null;
           if (!previous) return lite;
-          const refreshed = refreshLiveForecast(lite, previous);
-          if (!refreshed) return previous.score === lite.score && recentGoalFest
-            ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
           const sameScore = previous.score === lite.score;
+          const statsAge = previous.liveStatsObservedAt ? Date.now()-Date.parse(previous.liveStatsObservedAt) : Number.POSITIVE_INFINITY;
+          const freshStats = sameScore && statsAge >= 0 && statsAge <= 2*60000;
+          const currentForRefresh = freshStats ? {
+            ...lite, possession:previous.possession, shots:previous.shots, totalShots:previous.totalShots,
+            xg:previous.xg, corners:previous.corners, cards:previous.cards,
+            liveStatsObservedAt:previous.liveStatsObservedAt
+          } : lite;
+          const refreshed = refreshLiveForecast(currentForRefresh, previous);
+          if (!refreshed) return sameScore && recentGoalFest
+            ? { ...lite, goalFest:recentGoalFest, _staleGoalFest:true } : lite;
           return {
-            ...lite, ...refreshed,
-            possession: sameScore ? previous.possession || lite.possession : lite.possession,
-            shots: sameScore ? previous.shots || lite.shots : lite.shots,
-            xg: sameScore ? previous.xg || lite.xg : lite.xg,
-            liveStatsObservedAt: previous.liveStatsObservedAt ?? null,
+            ...currentForRefresh, ...refreshed,
             goalFest: sameScore ? recentGoalFest : null,
             homeCards: previous.homeCards ?? previous.cards?.home ?? null,
             awayCards: previous.awayCards ?? previous.cards?.away ?? null,
@@ -2143,14 +2147,21 @@ const watchService=createWatchService({
     .filter(f=>Number.isFinite(f.goals?.home)&&Number.isFinite(f.goals?.away)&&Number.isFinite(f.fixture?.status?.elapsed))
     .map(parseLightFixture).filter(Boolean),
   buildLiveState:async(item,live)=>{
+    const stats=await fetchFixtureStatistics(live.id,live.homeTeamId,live.awayTeamId);
+    const enriched={...live,...(stats?{
+      xg:stats.xg,shots:stats.shots,totalShots:stats.totalShots,corners:stats.corners,
+      possession:stats.possession,cards:stats.cards,liveStatsObservedAt:new Date().toISOString()
+    }:{})};
     const refreshed=item.history
-      ? refreshLiveForecast(live,{id:item.fixtureId,analysis:{predictionCore:{inputSummary:item.history}}})
+      ? refreshLiveForecast(enriched,{id:item.fixtureId,analysis:{predictionCore:{inputSummary:item.history}}})
       : null;
     const p=refreshed?.analysis?.predictionCore?.poisson?.marketProbabilities
       || refreshed?.analysis?.poisson?.marketProbabilities
       || {};
+    const liveHazard=refreshed?.analysis?.predictionCore?.poisson?.live?.liveHazard
+      || refreshed?.analysis?.poisson?.live?.liveHazard || null;
     const score=String(live.score||'').match(/^(\d+)\s*-\s*(\d+)$/);
-    return {...live,minute:Number(live.matchMinutes),homeGoals:score?Number(score[1]):null,awayGoals:score?Number(score[2]):null,probabilities:p};
+    return {...enriched,minute:Number(live.matchMinutes),homeGoals:score?Number(score[1]):null,awayGoals:score?Number(score[2]):null,probabilities:p,liveHazard};
   },
 });
 setInterval(()=>watchService.tick().catch(e=>console.warn('[Watch] Timer:',e.message)),60*1000);

@@ -80,10 +80,13 @@ export function createWatchService({getDb,send,readLive=null,buildLiveState=null
   for(const doc of docs){
    const item=doc.data();
    let live=liveById.get(String(item.fixtureId))||null;
-   if(live && buildLiveState){
+   const rawMinute=Number(live?.minute ?? live?.matchMinutes);
+   const preliminary=dueWatchStages(item,clock,Number.isFinite(rawMinute)?{minute:rawMinute}:null);
+   // Deep stats are fetched only when a 5' or 10' check is actually due.
+   if(live && buildLiveState && preliminary.some(stage=>stage==='minute5'||stage==='minute10')){
      try{live=await buildLiveState(item,live)||live;}catch(e){log.warn?.('[Watch] Live model failed:',e.message);}
    }
-   for(const stage of dueWatchStages(item,clock,live)){
+   for(const stage of dueWatchStages(item,clock,live?{...live,minute:Number(live.minute ?? live.matchMinutes)}:null)){
     const field=stage==='kickoff'?'kickoffAlertAt':stage==='minute5'?'minute5AlertAt':'minute10AlertAt';
     const claimed=await db.runTransaction(async tx=>{
      const fresh=await tx.get(doc.ref);if(!fresh.exists||!fresh.data().active||fresh.data()[field])return false;
