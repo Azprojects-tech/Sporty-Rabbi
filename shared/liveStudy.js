@@ -29,7 +29,8 @@ export function buildLiveStudySnapshot(match={},stats=null,card={},now=Date.now(
   if(minute==null || minute<1 || minute>=90)return null;
   const score=String(match.score||'').match(/^(\d+)\s*-\s*(\d+)$/);
   if(!score)return null;
-  const bucket=Math.max(5,Math.min(85,Math.floor(minute/5)*5));
+  const bucket=Math.round(minute/5)*5;
+  if(bucket<5||bucket>85)return null;
   const baseline=live.baselineRemainingLambda || live.remainingLambda;
   const adjusted=live.remainingLambda;
   const baselineFurther=furtherGoalProbabilities(baseline);
