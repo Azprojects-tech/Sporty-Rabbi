@@ -335,6 +335,8 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
   const [playedBusyKey, setPlayedBusyKey] = useState(null);
   const [playedMessage, setPlayedMessage] = useState('');
   const [playedFormKey, setPlayedFormKey] = useState(null);
+  const [watchBusyKey, setWatchBusyKey] = useState(null);
+  const [watchMessage, setWatchMessage] = useState('');
   const [showUnavailableParams, setShowUnavailableParams] = useState(false);
   const panelScrollRef = useRef(null);
 
@@ -559,6 +561,20 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
     setPlayedFormKey(playedFormKey === key ? null : key);
   }
 
+  async function watchMarket(r) {
+    const marketByKey={over15:'Over 1.5 goals',over25:'Over 2.5 goals',over35:'Over 3.5 goals',home_win:'Home win',away_win:'Away win',btts:'Both teams score'};
+    const market=marketByKey[r?.marketKey];
+    if(!market)return;
+    const key=`${match?.id}|${r.marketKey}`;
+    setWatchBusyKey(key);setWatchMessage('');
+    try{
+      await apiService.client.post('/watchlist',{fixtureId:match?.id,market});
+      setWatchMessage(`Watching ${market}: kickoff, 5-minute and 10-minute Telegram checks enabled.`);
+    }catch(err){
+      setWatchMessage(err.response?.data?.error||'Could not watch this market.');
+    }finally{setWatchBusyKey(null);}
+  }
+
   return (
     <div className="sporty-detail-panel" style={panelStyle}>
       <div ref={panelScrollRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
@@ -735,6 +751,11 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
               {playedMessage}
             </div>
           )}
+          {watchMessage && (
+            <div style={{ fontSize: 10, color: watchMessage.startsWith('Watching') ? '#00b859' : '#fbbf24', marginBottom: 7 }} role="status">
+              {watchMessage}
+            </div>
+          )}
           {!useVisibleV11 && analysis?.marketSummary && (
             <div style={{fontSize:11,color:'#cbd5e1',lineHeight:1.6,marginBottom:8}}>
               <div>Most likely: {analysis.marketSummary.mostLikely?.selection || 'Unavailable'}</div>
@@ -779,27 +800,34 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
                   </div>
                 )}
                 {!useVisibleV11 && r.marketKey && !String(r.marketKey).startsWith('next_goal_') && r.marketKey !== 'no_more_goal' && (
-                  <button
-                    onClick={() => openPlayedForm(r)}
-                    disabled={isAlreadyPlayed(r) || playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`}
-                    style={{
-                      marginTop: 8,
-                      border: '1px solid ' + (isAlreadyPlayed(r) ? '#006833' : '#2d3748'),
-                      background: isAlreadyPlayed(r) ? '#001f0e' : '#131826',
-                      color: isAlreadyPlayed(r) ? '#00b859' : '#cbd5e1',
-                      borderRadius: 6,
-                      padding: '6px 9px',
-                      fontSize: 10,
-                      fontWeight: 800,
-                      cursor: isAlreadyPlayed(r) ? 'default' : 'pointer',
-                    }}
-                  >
-                    {isAlreadyPlayed(r)
-                      ? 'PLAYED'
-                      : playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`
-                        ? 'RECORDING...'
-                        : 'I PLAYED THIS'}
-                  </button>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}}>
+                    <button
+                      onClick={() => openPlayedForm(r)}
+                      disabled={isAlreadyPlayed(r) || playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`}
+                      style={{
+                        border: '1px solid ' + (isAlreadyPlayed(r) ? '#006833' : '#2d3748'),
+                        background: isAlreadyPlayed(r) ? '#001f0e' : '#131826',
+                        color: isAlreadyPlayed(r) ? '#00b859' : '#cbd5e1',
+                        borderRadius: 6,
+                        padding: '6px 9px',
+                        fontSize: 10,
+                        fontWeight: 800,
+                        cursor: isAlreadyPlayed(r) ? 'default' : 'pointer',
+                      }}
+                    >
+                      {isAlreadyPlayed(r)
+                        ? 'PLAYED'
+                        : playedBusyKey === `${match?.id}|${r.marketKey}|${r.selection}`
+                          ? 'RECORDING...'
+                          : 'I PLAYED THIS'}
+                    </button>
+                    {['over15','over25','over35','home_win','away_win','btts'].includes(r.marketKey) && Date.parse(match?.kickoffUTC||'')>Date.now() && (
+                      <button onClick={()=>watchMarket(r)} disabled={watchBusyKey===`${match?.id}|${r.marketKey}`}
+                        style={{border:'1px solid #334155',background:'#101725',color:'#cbd5e1',borderRadius:6,padding:'6px 9px',fontSize:10,fontWeight:800,cursor:'pointer'}}>
+                        {watchBusyKey===`${match?.id}|${r.marketKey}`?'SAVING WATCH...':'👀 WATCH THIS MARKET'}
+                      </button>
+                    )}
+                  </div>
                 )}
                 {playedFormKey === `${match?.id}|${r.marketKey}|${r.selection}` && !isAlreadyPlayed(r) && (
                   <PlayedBetForm

@@ -1,4 +1,4 @@
-import { createWatchService, watchId } from './services/watchService.js';
+import { createWatchService, watchId, watchMarketKey } from './services/watchService.js';
 import { createDailyDeskService, createDeskStore } from './services/dailyDeskService.js';
 import { createCornersService } from './services/cornersService.js';
 import { dayUK } from '../../shared/dailyDesk.js';
@@ -2240,7 +2240,24 @@ async function runDailyDesk() {
 }
 setInterval(() => runDailyDesk().catch(err => console.warn('[DailyDesk] Timer:', err.message)), 5 * 60000);
 // Opt-in watch alerts are separate from existing automatic Daily Desk notifications.
-const watchService=createWatchService({getDb,send:sendWhatsApp});
+// The watched-market live check reuses the same V10.6C forecast core. It does not create a second prediction engine.
+const watchService=createWatchService({
+  getDb,
+  send:sendWhatsApp,
+  readLive:async()=> (await fetchLiveMatches())
+    .filter(f=>Number.isFinite(f.goals?.home)&&Number.isFinite(f.goals?.away)&&Number.isFinite(f.fixture?.status?.elapsed))
+    .map(parseLightFixture).filter(Boolean),
+  buildLiveState:async(item,live)=>{
+    const refreshed=item.history
+      ? refreshLiveForecast(live,{id:item.fixtureId,analysis:{predictionCore:{inputSummary:item.history}}})
+      : null;
+    const p=refreshed?.analysis?.predictionCore?.poisson?.marketProbabilities
+      || refreshed?.analysis?.poisson?.marketProbabilities
+      || {};
+    const score=String(live.score||'').match(/^(\d+)\s*-\s*(\d+)$/);
+    return {...live,minute:Number(live.matchMinutes),homeGoals:score?Number(score[1]):null,awayGoals:score?Number(score[2]):null,probabilities:p};
+  },
+});
 setInterval(()=>watchService.tick().catch(e=>console.warn('[Watch] Timer:',e.message)),60*1000);
 app.get('/api/watchlist',async(req,res)=>{
  try{const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
@@ -2253,14 +2270,26 @@ app.post('/api/watchlist',async(req,res)=>{
  const {fixtureId,market}=req.body||{};
  const desk=(await dailyDesk.view()).desk;
  const cards=[...(desk?.cards||[]),...(desk?.opportunities||[]).flatMap(o=>o.legs.map(l=>({id:l.fixtureId,home:l.match.split(' v ')[0],away:l.match.split(' v ')[1],league:l.league,kickoffUTC:l.kickoffUTC})))];
- const card=cards.find(c=>String(c.id)===String(fixtureId));
- if(!card)return res.status(404).json({error:'Fixture not found in today’s Daily Picks or discoveries'});
+ let card=cards.find(c=>String(c.id)===String(fixtureId));
+ if(!card){
+   const raw=(calibrationStore.matches||[]).find(m=>String(m.id)===String(fixtureId));
+   const core=raw?.analysis?.predictionCore;
+   if(raw)card={id:raw.id,home:raw.home,away:raw.away,league:raw.league||'',country:raw.country||raw.leagueCountry||'',kickoffUTC:raw.kickoffUTC,
+     history:core?.inputSummary||null,markets:Object.entries(core?.poisson?.marketProbabilities||{}).map(([marketKey,p])=>({marketKey,probability:Number.isFinite(p)?p*100:null}))};
+ }
+ if(!card)return res.status(404).json({error:'Fixture is not available in today’s prepared schedule'});
  if(Date.parse(card.kickoffUTC)<Date.now()-5*60000)return res.status(400).json({error:'Kickoff has already passed'});
  const allowed=['Over 1.5 goals','Over 2.5 goals','Over 3.5 goals','Over 8.5 corners','Over 9.5 corners','Over 10.5 corners','Home win','Away win','Both teams score'];
  if(!allowed.includes(market))return res.status(400).json({error:'Choose a supported market'});
  const db=getDb();if(!db)return res.status(503).json({error:'Watch storage unavailable'});
- const id=watchId(fixtureId);await db.collection('watchedFixtures').doc(id).set({fixtureId:String(fixtureId),home:card.home,away:card.away,league:card.league||'',country:card.country||'',kickoffUTC:card.kickoffUTC,market,active:true,kickoffAlertAt:null,marketReminderAt:null,createdAt:new Date().toISOString()});
- res.status(201).json({success:true,id});
+ const marketKey=watchMarketKey(market);
+ const modelProbability=marketKey ? Number(card.markets?.find(m=>m.marketKey===marketKey)?.probability) : null;
+ const id=watchId(fixtureId);await db.collection('watchedFixtures').doc(id).set({
+   fixtureId:String(fixtureId),home:card.home,away:card.away,league:card.league||'',country:card.country||'',kickoffUTC:card.kickoffUTC,
+   market,marketKey,modelProbability:Number.isFinite(modelProbability)?modelProbability:null,history:card.history||null,
+   active:true,kickoffAlertAt:null,minute5AlertAt:null,minute10AlertAt:null,createdAt:new Date().toISOString()
+ });
+ res.status(201).json({success:true,id,marketKey,modelProbability:Number.isFinite(modelProbability)?modelProbability:null});
  }catch(e){console.warn('[Watch]',e.message);res.status(503).json({error:'Could not save watch'});}
 });
 app.delete('/api/watchlist/:id',async(req,res)=>{
