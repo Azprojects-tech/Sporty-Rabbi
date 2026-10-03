@@ -16,9 +16,6 @@ import { finalScoreFromProviderFixture } from '../../shared/forecastMath.js';
 import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDoubleSlip, settleDoubleSlip, isDoubleSlip, betSettlementOdds, SLIP_DOUBLE } from '../../shared/betLogging.js';
 import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
 import { createPickCalibrationService } from './services/pickCalibrationService.js';
-import { createDynamicStrengthService } from './services/dynamicStrengthService.js';
-import { createApiFootballHistoryService } from './services/apiFootballHistoryService.js';
-import { FD_LEAGUES } from '../../shared/cornersModel.js';
 import { aggregateStudyDocuments, buildLiveStudySnapshot, summarizePlayedLiveBets } from '../../shared/liveStudy.js';
 /**
  * 🐰 SportyRabbi Backend Server
@@ -187,60 +184,18 @@ function runCalibrationSafely(trigger = 'manual') {
 // ─── FIREBASE INIT ───────────────────────────────────────────────────────────
 initFirebase();
 
-// V11 challenger: opponent-adjusted attack/defence strengths fitted from SportyRabbi's settled ledger.
-// It runs in SHADOW mode only: it is recorded for evaluation and cannot change a pick, alert or stake.
-const V11_FD_LEAGUE_IDS = new Set(Object.values(FD_LEAGUES).map(x => Number(x.id)));
-const v11ApiHistory = createApiFootballHistoryService({
-  getDb,
-  request: requestFootballLive,
-  canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
-  onResponse: updateQuotaFromHeaders,
-});
-const dynamicStrength = createDynamicStrengthService({
-  // Independent historical results feeds for V11.1 only. This changes data
-  // coverage, not model thresholds, coefficients or probability logic.
-  fetchText: async url => { const r = await axios.get(url, { timeout: 8000 }); return r.data; },
-  loadSupplementalRows: () => v11ApiHistory.loadStoredRows(),
-});
+// V11 research code is intentionally not wired into production runtime.
+// Production prediction, live refresh, alerts and settlement use V10.6C only.
 
-function analyzeWithChallenger(matchData = {}) {
-  const analysis = analyzeV9(matchData);
-  const dynamic = dynamicStrength.predict(matchData);
-  return { ...analysis, challengers: { ...(analysis.challengers || {}), dynamicStrength: dynamic } };
-}
-
-// V11.1 remains a background research challenger only. User-facing forecasts,
- // live updates, alerts and played-bet controls all use the V10.6C production engine.
-
-// V10.8: "corrected chance" map, rebuilt daily from SportyRabbi's own settled picks.
 const pickCalibration = createPickCalibrationService({
   getDb,
   windowDays: Math.max(30, Number(process.env.CALIBRATION_WINDOW_DAYS) || 120),
-  onLedgerRead: docs => dynamicStrength.rebuildFromLedger(docs),
 });
 function calibrationContext(source = {}) {
   return { id: source.id ?? source.matchId, status: source.status, analysisVersion: source.analysisVersion, leagueId: source.leagueId, leagueCountry: source.leagueCountry || source.country, matchType: source.matchType };
 }
 function withCorrectedChances(analysis, source = {}) {
   return withPriceChecks(analysis, pickCalibration.getMap(), calibrationContext(source));
-}
-
-const v11HistoryRefreshInFlight = new Set();
-function queueV11HistoryForMatch(match = {}) {
-  const leagueId = Number(match?.leagueId);
-  const season = Number(match?.season);
-  if (!(leagueId > 0) || !Number.isInteger(season) || V11_FD_LEAGUE_IDS.has(leagueId) || shouldSkipApiCalls()) return;
-  const key = leagueId + ':' + season;
-  if (v11HistoryRefreshInFlight.has(key)) return;
-  v11HistoryRefreshInFlight.add(key);
-  v11ApiHistory.backfillMatches([match], { maxCalls: 3, skipLeagueIds: V11_FD_LEAGUE_IDS })
-    .then(async result => {
-      if ((result?.loaded || 0) > 0) {
-        await pickCalibration.rebuild('v11-api-history-click');
-      }
-    })
-    .catch(err => console.warn('[V11 API history] click backfill failed:', err.message))
-    .finally(() => v11HistoryRefreshInFlight.delete(key));
 }
 
 // ─── WEBSOCKET SERVER ──────────────────────────────────────────────────────
@@ -1681,7 +1636,7 @@ async function analyzeMatch(match) {
         awayRecentOpposition: match.awayRecentOpposition || null,
       };
       try {
-        analysisObj      = analyzeWithChallenger(matchData);
+        analysisObj      = analyzeV9(matchData);
         confidence       = analysisObj.decisionMetrics?.modelProbability?.value ?? 0;
         opportunitiesArr = (analysisObj.recommendations || []).slice(0, 2).map(r => r.selection || r.label || '');
       } catch (v9Err) {
@@ -2799,7 +2754,7 @@ async function enrichOddsShortlist(matches, maxFixtures = 24) {
   for (const m of pool) {
     // Same-day state restored from an older release is re-analysed before pricing.
     if (m.analysis?.analysisVersion !== FORECAST_VERSION) {
-      m.analysis = analyzeWithChallenger({ ...m, ...m.calibratedInputs, odds: null, oddsSnapshot: null });
+      m.analysis = analyzeV9({ ...m, ...m.calibratedInputs, odds: null, oddsSnapshot: null });
       m.dailySignal = m.analysis.dailySignal;
     }
   }
@@ -2820,7 +2775,7 @@ async function enrichOddsShortlist(matches, maxFixtures = 24) {
     m.oddsCheckedAt = new Date().toISOString();
     m.oddsSnapshot = snapshot;
     m.odds = snapshot.status === 'AVAILABLE' ? snapshot.odds : null;
-    m.analysis = analyzeWithChallenger({ ...m, ...m.calibratedInputs, odds: m.odds, oddsSnapshot: snapshot });
+    m.analysis = analyzeV9({ ...m, ...m.calibratedInputs, odds: m.odds, oddsSnapshot: snapshot });
     m.dailySignal = m.analysis.dailySignal;
     m.decisionProbability = m.analysis.decisionMetrics?.modelProbability?.value ?? null;
   }
@@ -3451,7 +3406,6 @@ app.get('/api/health', (req, res) => {
       lastUpdatedAt: quotaState.lastUpdatedAt,
     },
     analyticsCache: getAnalyticsCacheStatus(),
-    modelChallenger: dynamicStrength.getStatus(),
   });
 });
 
@@ -4309,7 +4263,7 @@ async function resolveKickoffLock(body, fixtureId, kickoffUTC, now = Date.now())
     }
     // No pre-match analysis exists. Run the model with NO evidence and NO result
     // purely to return a well-formed "no prediction" payload; no API calls are made.
-    const blank = analyzeWithChallenger({
+    const blank = analyzeV9({
       home: body.home, away: body.away, league: body.league, leagueId: body.leagueId, season: body.season ?? null,
       kickoffUTC, status: 'NS', matchMinutes: 0, score: null, odds: null, oddsSnapshot: null,
     });
@@ -4631,7 +4585,7 @@ async function analyzeFixtureRequest(req, res) {
       enriched.odds = enriched.oddsSnapshot.status === 'AVAILABLE' ? enriched.oddsSnapshot.odds : null;
     } else { enriched.odds = null; enriched.oddsSnapshot = null; }
     // ── Step 3: Run V9 engine ────────────────────────────────────────────────
-    const analysis = analyzeWithChallenger(enriched);
+    const analysis = analyzeV9(enriched);
     // A selected game gets checked immediately, rather than waiting its turn in
     // the rotating whole-portal scanner. Never weaken verified-xG requirements.
     analysis.goalFest = calculateGoalFestSignal(enriched);
@@ -4682,7 +4636,7 @@ app.post('/api/analyze/natural', async (req, res) => {
     console.log(`[Gemini] Natural language query: "${query.trim()}"`);
     const { matchData, geminiConfidence, geminiNotes } = await naturalLanguageToMatchData(query.trim());
 
-    const analysis = analyzeWithChallenger(matchData);
+    const analysis = analyzeV9(matchData);
     analysis.gemini = { confidence: geminiConfidence, notes: geminiNotes, query: query.trim() };
 
     // Add Groq narrative
@@ -4991,7 +4945,7 @@ async function runCalibration() {
         if (ctxAdj.awayKeyAbsencesAdd?.length)  matchData.awayKeyAbsences    = [...(matchData.awayKeyAbsences || []), ...ctxAdj.awayKeyAbsencesAdd];
       }
 
-      const analysis = analyzeWithChallenger(matchData);
+      const analysis = analyzeV9(matchData);
       const resolvedMatchType = analysis?.match?.competitionContext?.family === 'DOMESTIC_CUP'
         || analysis?.match?.competitionContext?.family?.includes('KNOCKOUT')
         ? 'Cup'
@@ -5428,8 +5382,8 @@ server.listen(PORT, async () => {
 
   // Corrected-chance map: load the saved copy now; rebuild in the background if older than a day.
   pickCalibration.loadStored()
-    .then(() => setTimeout(() => pickCalibration.rebuild('boot-v11-shadow')
-      .catch((err) => console.warn('⚠️  Calibration/V11 shadow rebuild failed:', err.message)), 90_000))
+    .then(() => setTimeout(() => pickCalibration.rebuild('boot-calibration')
+      .catch((err) => console.warn('⚠️  Calibration rebuild failed:', err.message)), 90_000))
     .catch(() => {});
 
   // Pre-load bets from Firestore into memory cache on startup
