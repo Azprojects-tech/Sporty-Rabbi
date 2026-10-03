@@ -46,6 +46,8 @@ test('1H goal watch uses season minute-bucket rates as a separate research proba
   assert.equal(x.basis,'RESEARCH_1H_SEASON_MINUTE_BUCKETS');
   assert.ok(x.probability>=68);
   assert.equal(x.regulationOver15,82);
+  assert.equal(x.likelyTeam.team,'A');
+  assert.ok(x.likelyTeam.probability>=50);
 });
 
 test('1H watch refuses thin samples and corners chooses the highest supported useful line',()=>{
