@@ -30,5 +30,4 @@ jobs:
         run: cd frontend && npm run build
 
       - name: Test backend
-        run: cd backend && npm run start --prefix backend &
-        continue-on-error: true
+        run: npm test
