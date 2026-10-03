@@ -1,3 +1,4 @@
+import { applyLiveHazardEvidence } from './liveHazard.js';
 // Probabilities are fractions here. Presentation code alone rounds percentages.
 export const FORECAST_VERSION = 'V10.6C-Unified-Decisions';
 export const LIVE_STATUSES = new Set(['LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT']);
@@ -90,12 +91,19 @@ export function remainingForecast(match, homeRate, awayRate) {
   const homeRed = Number(match.homeCards?.red ?? match.cards?.home?.red ?? 0) > 0;
   const awayRed = Number(match.awayCards?.red ?? match.cards?.away?.red ?? 0) > 0;
   // Preserve existing rate adjustments in one place; no percentage bonuses.
-  const home = homeRate * clock.minutesRemaining / 90 * motive(diff) * (homeRed ? .62 : 1) * (awayRed ? 1.18 : 1);
-  const away = awayRate * clock.minutesRemaining / 90 * motive(-diff) * (awayRed ? .62 : 1) * (homeRed ? 1.18 : 1);
+  const baselineHome = homeRate * clock.minutesRemaining / 90 * motive(diff) * (homeRed ? .62 : 1) * (awayRed ? 1.18 : 1);
+  const baselineAway = awayRate * clock.minutesRemaining / 90 * motive(-diff) * (awayRed ? .62 : 1) * (homeRed ? 1.18 : 1);
+  const hazard = applyLiveHazardEvidence({
+    match, minute:clock.minute, baseHomeRate:homeRate, baseAwayRate:awayRate,
+    homeRemaining:baselineHome, awayRemaining:baselineAway,
+  });
+  const home = hazard.adjustedRemainingLambda.home;
+  const away = hazard.adjustedRemainingLambda.away;
   const distribution = scoreDistribution(home, away, clock);
   if (!distribution) return { ...clock, available: false, reason: 'RATE_OUT_OF_RANGE' };
   const nextGoal = nextGoalFromRates(home, away);
-  return { ...clock, remainingLambda: { home, away }, ...distribution, nextGoal,
+  return { ...clock, baselineRemainingLambda:{home:baselineHome,away:baselineAway},
+    remainingLambda: { home, away }, liveHazard:hazard, ...distribution, nextGoal,
     marketProbabilities: { ...distribution.marketProbabilities, next_goal_home: nextGoal.home, next_goal_away: nextGoal.away, no_more_goal: nextGoal.none } };
 }
 
