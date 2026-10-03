@@ -22,15 +22,19 @@ export function liveChange(current, history=[]) {
     && Date.parse(current.at)-Date.parse(s.at)<=12*60000 && s.status!=='HT');
   if(!baseline)return null;
   const diff=k=>current[k]!=null && baseline[k]!=null && current[k]>=baseline[k]?+(current[k]-baseline[k]).toFixed(2):null;
-  const delta={minutes:current.minute-baseline.minute,shots:diff('shots'),xg:diff('xg'),corners:diff('corners')};
+  const delta={minutes:current.minute-baseline.minute,shots:diff('shots'),shotsOnTarget:diff('shotsOnTarget'),xg:diff('xg'),corners:diff('corners')};
   if(delta.xg>=.45 && delta.shots>=4)return {type:'ATTACKING_ACTIVITY',reason:'Attacking activity has increased',delta};
+  // xG is often unavailable outside major competitions. SOT/shot pressure is a
+  // context-only fallback for alerts; it does not change the fitted probabilities.
+  if(delta.xg==null && delta.shotsOnTarget>=2 && delta.shots>=4)
+    return {type:'SHOT_PRESSURE',reason:'Shots on target and attacking pressure have increased',delta};
   if(delta.corners>=3 && delta.shots>=3)return {type:'CORNER_ACTIVITY',reason:'Corners and shots have increased',delta};
   return null;
 }
 export function formatLiveDesk(card,snapshot,event){
   const pct = p=>Number.isFinite(p)?`${(p*100).toFixed(1)}%`:'Unavailable';
   const lines=[`SportyRabbi · ${card.home} v ${card.away}`,`${snapshot.minute}' · ${snapshot.homeGoals}-${snapshot.awayGoals} · ${Math.max(0,90-snapshot.minute)} regulation minutes remaining`,event.reason];
-  if(event.delta)lines.push(`Last ${event.delta.minutes} minutes: ${event.delta.shots??'unavailable'} shots · ${event.delta.xg??'unavailable'} xG · ${event.delta.corners??'unavailable'} corners`);
+  if(event.delta)lines.push(`Last ${event.delta.minutes} minutes: ${event.delta.shots??'unavailable'} shots · ${event.delta.shotsOnTarget??'unavailable'} SOT · ${event.delta.xg??'unavailable'} xG · ${event.delta.corners??'unavailable'} corners`);
   lines.push(`Over 1.5 ${pct(snapshot.probabilities.over15)} · Over 2.5 ${pct(snapshot.probabilities.over25)}`,
     `Home ${pct(snapshot.probabilities.home_win)} · Draw ${pct(snapshot.probabilities.draw)} · Away ${pct(snapshot.probabilities.away_win)}`,
     `Another goal ${pct(snapshot.nextGoal)}`,
