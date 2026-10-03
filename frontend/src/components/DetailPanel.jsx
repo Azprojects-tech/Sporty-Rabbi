@@ -496,11 +496,12 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
     recommendations: legacyRecommendations = [], bookieEdges = [],
     overallScore = null,
   } = analysis || {};
-  const visibleForecast = analysis?.visibleForecast || null;
-  const useVisibleV11 = Boolean(visibleForecast);
-  const visibleAvailable = visibleForecast?.status === 'AVAILABLE';
-  const poisson = useVisibleV11 ? (visibleAvailable ? visibleForecast : null) : legacyPoisson;
-  const recommendations = useVisibleV11 ? (visibleAvailable ? (visibleForecast.recommendations || []) : []) : legacyRecommendations;
+  // One visible engine: V10.6C. V11.1 remains background research only.
+  const visibleForecast = null;
+  const useVisibleV11 = false;
+  const visibleAvailable = false;
+  const poisson = legacyPoisson;
+  const recommendations = legacyRecommendations;
   const evidenceDesk = analysis?.narrative?.evidencePanels;
   const chaos = analysis?.chaosVariables || analysis?.chaos || null;
   const winCall = useVisibleV11 ? (visibleForecast?.winCall || null) : (analysis?.winCall || null);
@@ -522,7 +523,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
   const dataSampleText = dataCompleteness?.sampleText || null;
   const coreReady = analysis?.predictionCore?.coreReady !== false;
   const missingInputs = analysis?.predictionCore?.dataQuality?.missing || [];
-  // V11.1 is a display forecast only; V10.6C remains the background decision champion.
+  // V11.1 is research-only; V10.6C is the single visible and decision engine.
   const hasPick = useVisibleV11
     ? visibleAvailable && recommendations.length > 0
     : modelSignalScore != null && modelProbabilityValue != null && !analysis?.noPrediction;
