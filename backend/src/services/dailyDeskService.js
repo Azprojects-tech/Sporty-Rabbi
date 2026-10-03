@@ -4,6 +4,7 @@ import { buildDailyDesk, deskCard, dayUK, formatDailyDesk } from '../../../share
 import { liveSnapshot, liveChange, formatLiveDesk } from '../../../shared/liveDesk.js';
 import { settleMarketPrediction } from '../../../shared/predictionLedger.js';
 import { finalScoreFromProviderFixture } from '../../../shared/forecastMath.js';
+import { buildLiveStudySnapshot, settleLiveStudySnapshot, summarizeSettledLiveStudy } from '../../../shared/liveStudy.js';
 
 export function createDeskStore(getDb) {
   const clean=x=>JSON.parse(JSON.stringify(x));
@@ -27,12 +28,56 @@ export function createDeskStore(getDb) {
     async pendingPlayed() {const db=getDb();if(!db)return [];const s=await db.collection('playedOpportunities').where('result','==','pending').limit(40).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
     async updatePlayed(key,patch) {await getDb().collection('playedOpportunities').doc(key).update(clean(patch));},
     async pending() {const s=await getDb().collection('deskEvents').where('result','==','pending').limit(60).get();return s.docs.map(d=>({key:d.id,...d.data()}));},
+    async saveLiveStudySnapshot(row) {
+      const db=getDb();if(!db||!row?.fixtureId||!Number.isFinite(Number(row.bucket)))return false;
+      const root=db.collection('liveHazardStudies').doc(String(row.fixtureId));
+      const snap=root.collection('snapshots').doc(String(row.bucket).padStart(2,'0'));
+      await root.set(clean({
+        fixtureId:String(row.fixtureId),home:row.home||'',away:row.away||'',league:row.league||'',leagueId:row.leagueId??null,
+        kickoffUTC:row.kickoffUTC||null,hazardVersion:row.hazardVersion||null,settlementStatus:'PENDING',
+        lastSnapshotAt:row.observedAt,lastMinute:row.minute,
+      }),{merge:true});
+      await snap.set(clean(row),{merge:true});
+      return true;
+    },
+    async settleLiveStudyFixture(fixtureId,finalScore,settledAt) {
+      const db=getDb();if(!db||!fixtureId)return null;
+      const root=db.collection('liveHazardStudies').doc(String(fixtureId));
+      const existing=await root.get();
+      if(!existing.exists || existing.data()?.settlementStatus==='SETTLED')return existing.exists?existing.data():null;
+      const snaps=await root.collection('snapshots').get();
+      const settled=[];
+      const batch=db.batch();
+      for(const doc of snaps.docs){
+        const row=settleLiveStudySnapshot(doc.data(),finalScore);
+        if(!row)continue;
+        settled.push(row);batch.set(doc.ref,clean(row),{merge:true});
+      }
+      const metrics=summarizeSettledLiveStudy(settled);
+      batch.set(root,clean({settlementStatus:'SETTLED',finalScore,settledAt,metrics,snapshotCount:settled.length}),{merge:true});
+      await batch.commit();
+      return {metrics,snapshotCount:settled.length};
+    },
+    async pendingLiveStudies(limit=40) {
+      const db=getDb();if(!db)return [];
+      const s=await db.collection('liveHazardStudies').where('settlementStatus','==','PENDING').limit(limit).get();
+      return s.docs.map(d=>({id:d.id,...d.data()}));
+    },
+    async voidLiveStudyFixture(fixtureId,status='VOID') {
+      const db=getDb();if(!db||!fixtureId)return;
+      await db.collection('liveHazardStudies').doc(String(fixtureId)).set({settlementStatus:'VOID',finalStatus:status,settledAt:new Date().toISOString()},{merge:true});
+    },
+    async listSettledLiveStudies(limit=500) {
+      const db=getDb();if(!db)return [];
+      const s=await db.collection('liveHazardStudies').where('settlementStatus','==','SETTLED').limit(limit).get();
+      return s.docs.map(d=>({id:d.id,...d.data()}));
+    },
   };
 }
 const hash=s=>createHash('sha256').update(s).digest('hex');
 export function createDailyDeskService({store,getMatches,getCalibration,predictCorners=()=>null,
   loadPrices=async()=>{},readLive,readStats,refreshForecast,readFinal,send,canCall=()=>true,
-  now=Date.now,limit=6,requestLimit=400,messageLimit=12,log=console}={}) {
+  now=Date.now,limit=6,studyLimit=10,requestLimit=400,messageLimit=12,log=console}={}) {
   let state=null,inFlight=null;
   async function record(key,event,text) {
     if(state.messages>=messageLimit)return false;
@@ -132,17 +177,38 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
       await store.updatePlayed(bet.key,{legs:next,result,profit,...(complete?{settledAt:new Date(now()).toISOString()}: {})});
     }
   }
+  async function settleLiveStudies(){
+    if(!store.pendingLiveStudies || !store.settleLiveStudyFixture)return;
+    const pending=await store.pendingLiveStudies();let checked=0;
+    for(const study of pending){
+      const kickoff=Date.parse(study.kickoffUTC||'');
+      if(!Number.isFinite(kickoff))continue;
+      if(now()-kickoff<3*3600000)continue;
+      if(now()-kickoff>7*86400000){await store.voidLiveStudyFixture?.(study.fixtureId,'STALE_UNSETTLED');continue;}
+      const id=String(study.fixtureId||study.id);
+      if(checked>=2)break;
+      const last=state.studySettlementChecks?.[id]||0;if(now()-last<30*60000)continue;
+      checked++;(state.studySettlementChecks||={})[id]=now();
+      const fixture=await call(readFinal,id);if(!fixture)continue;
+      const status=fixture.fixture?.status?.short;
+      if(['CANC','ABD','AWD','WO'].includes(status)){await store.voidLiveStudyFixture?.(id,status);continue;}
+      const final=finalScoreFromProviderFixture(fixture);if(!final)continue;
+      await store.settleLiveStudyFixture(id,{home:final.home,away:final.away},new Date(now()).toISOString());
+    }
+  }
+
   async function tick(){
     if(inFlight)return inFlight;
     inFlight=(async()=>{
       const day=dayUK(now());
       if(!await store.lock(day,now()))return {skipped:true};
       state=await store.load(day)||{};
-      Object.assign(state,{dateUK:day,messages:state.messages||0,requests:state.requests||0,history:state.history||{},lastAlerts:state.lastAlerts||{},settlementChecks:state.settlementChecks||{}});
+      Object.assign(state,{dateUK:day,messages:state.messages||0,requests:state.requests||0,history:state.history||{},lastAlerts:state.lastAlerts||{},settlementChecks:state.settlementChecks||{},studySettlementChecks:state.studySettlementChecks||{}});
       try{
         if(!state.carryLoaded){
           const yesterday=await store.load(dayUK(now()-86400000));
-          state.carry=(yesterday?.desk?.cards||[]).filter(c=>Date.parse(c.kickoffUTC)+3*3600000>now());
+          state.carry=[...new Map([...(yesterday?.desk?.cards||[]),...(yesterday?.studyCards||[])].map(c=>[String(c.id),c])).values()]
+            .filter(c=>Date.parse(c.kickoffUTC)+3*3600000>now());
           for(const card of state.carry){
             const id=String(card.id);
             state.history[id]=yesterday.history?.[id]||[];
@@ -152,6 +218,15 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           state.carryLoaded=true;
         }
         const prepared=getMatches();
+        if(prepared.ready && !Array.isArray(state.studyCards)){
+          state.studyCards=prepared.matches
+            .filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
+            .sort((a,b)=>(b.analysis?.dailySignal?.score||0)-(a.analysis?.dailySignal?.score||0))
+            .slice(0,Math.max(limit,studyLimit))
+            .map(m=>({id:m.id,home:m.home,away:m.away,league:m.league||'',leagueId:m.leagueId||null,country:m.leagueCountry||'',
+              kickoffUTC:m.kickoffUTC,history:m.analysis?.predictionCore?.inputSummary||null}));
+          await store.save(day,{studyCards:state.studyCards});
+        }
         if(!state.desk && prepared.ready){
           const candidates=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now())
             .sort((a,b)=>(b.analysis?.dailySignal?.score||0)-(a.analysis?.dailySignal?.score||0)).slice(0,limit*2);
@@ -187,7 +262,8 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           await record(hash(`${day}|digest`),{type:'DAILY_DIGEST',result:'not_applicable'},formatDailyDesk(state.desk));
           state.dailyAttempted=true;
         }
-        const tracked=[...new Map([...(state.desk?.cards||[]),...(state.carry||[])].map(c=>[String(c.id),c])).values()].filter(c=>now()>=Date.parse(c.kickoffUTC)&&now()<Date.parse(c.kickoffUTC)+3*3600000);
+        const tracked=[...new Map([...(state.desk?.cards||[]),...(state.studyCards||[]),...(state.carry||[])].map(c=>[String(c.id),c])).values()]
+          .filter(c=>now()>=Date.parse(c.kickoffUTC)&&now()<Date.parse(c.kickoffUTC)+3*3600000);
         if(tracked.length && canCall()){
           const live=await call(readLive);
           for(const card of tracked){
@@ -198,6 +274,8 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
               possession:stats.possession,cards:stats.cards
             }:{}),liveStatsObservedAt:stats?new Date(now()).toISOString():null};
             const refreshed=refreshForecast(enriched,{id:card.id,analysis:{predictionCore:{inputSummary:card.history}}});
+            const studySnapshot=buildLiveStudySnapshot({...enriched,...refreshed},stats,card,now());
+            if(studySnapshot)await store.saveLiveStudySnapshot?.(studySnapshot);
             const snapshot=liveSnapshot({...enriched,...refreshed},stats,now());if(!snapshot)continue;
             const history=state.history[String(card.id)]||[];
             const event=liveChange(snapshot,history);
@@ -213,6 +291,7 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
         }
         await settle();
         await settlePlayed();
+        await settleLiveStudies();
         state.lastCompletedAt=new Date(now()).toISOString();
         return {ok:true};
       }catch(e){log.warn?.('[DailyDesk] Tick incomplete:',e.message);return {ok:false};}
