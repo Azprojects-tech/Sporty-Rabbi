@@ -21,7 +21,6 @@ function compactDoc(d = {}) {
     finalScore: d.finalScore || null,
     finalStatus: d.finalStatus || null,
     modelState: d.modelState || null,
-    challengerStates: d.challengerStates || null,
     settledAt: d.settledAt || null, snapshotType:d.snapshotType || null,
     predictedAt: d.predictedAt || null,
     kickoffUTC: d.kickoffUTC || null,
