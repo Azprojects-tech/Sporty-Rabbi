@@ -137,3 +137,30 @@ export function aggregateStudyDocuments(docs=[]){
   }
   return {fixtures,overall:finishAgg(overall),bySource:Object.fromEntries(Object.entries(bySource).map(([k,v])=>[k,finishAgg(v)]))};
 }
+
+
+export function summarizePlayedLiveBets(bets=[]){
+  let placed=0,settled=0,turnover=0,profit=0,edgeSum=0,edgeCount=0;
+  const byMarket={};
+  for(const bet of bets){
+    if(bet?.source!=='USER_PLAYED' || bet?.slipType==='double')continue;
+    const created=Date.parse(bet.createdAt||''),kickoff=Date.parse(bet.kickoffUTC||'');
+    if(!Number.isFinite(created)||!Number.isFinite(kickoff)||created<kickoff)continue;
+    placed++;
+    const market=String(bet.marketKey||'unknown');
+    byMarket[market]??={placed:0,settled:0,turnover:0,profit:0};byMarket[market].placed++;
+    const pRaw=number(bet.modelProbability),odds=number(bet.odds);
+    const p=pRaw!=null?(pRaw>1?pRaw/100:pRaw):null;
+    if(p!=null&&odds!=null&&odds>1){edgeSum+=p-(1/odds);edgeCount++;}
+    if(!['won','lost','void'].includes(bet.result))continue;
+    settled++;
+    const stake=number(bet.stake)||0;
+    const betProfit=bet.result==='won'?stake*((odds||1)-1):bet.result==='lost'?-stake:0;
+    turnover+=stake;profit+=betProfit;
+    byMarket[market].settled++;byMarket[market].turnover+=stake;byMarket[market].profit+=betProfit;
+  }
+  const finish=x=>({...x,roi:x.turnover?x.profit/x.turnover:null});
+  return {placed,settled,turnover,profit,roi:turnover?profit/turnover:null,
+    meanModelEdge:edgeCount?edgeSum/edgeCount:null,
+    byMarket:Object.fromEntries(Object.entries(byMarket).map(([k,v])=>[k,finish(v)]))};
+}
