@@ -70,14 +70,14 @@ test('shadow evaluation never auto-promotes a small sample',()=>{
   assert.equal(e.gate.automaticPromotion,false);
 });
 
-test('production server records V11 shadow without routing picks through it',()=>{
+test('production runtime does not wire the V11 research challenger',()=>{
   const server=fs.readFileSync(new URL('../src/server.js',import.meta.url),'utf8');
   const ledger=fs.readFileSync(new URL('../../shared/predictionLedger.js',import.meta.url),'utf8');
-  assert.match(server,/createDynamicStrengthService/);
-  assert.match(server,/function analyzeWithChallenger/);
-  assert.match(server,/onLedgerRead: docs => dynamicStrength\.rebuildFromLedger/);
-  assert.match(ledger,/challengerStates/);
-  assert.match(ledger,/schemaVersion: 6/);
+  const detail=fs.readFileSync(new URL('../../frontend/src/components/DetailPanel.jsx',import.meta.url),'utf8');
+  assert.doesNotMatch(server,/createDynamicStrengthService|createApiFootballHistoryService|analyzeWithChallenger|dynamicStrength\.|modelChallenger|boot-v11-shadow/);
+  assert.doesNotMatch(ledger,/challengerStates/);
+  assert.doesNotMatch(detail,/V11\.1|useVisibleV11|visibleForecast/);
+  assert.match(server,/const analysis = analyzeV9\(enriched\)/);
 });
 
 
