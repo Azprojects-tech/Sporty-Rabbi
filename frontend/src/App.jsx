@@ -270,10 +270,11 @@ export default function App() {
  });
 
  useEffect(()=>{
- if(filter!=='live')return;
  let active=true;
  const refresh=()=>apiService.client.get('/live-corners').then(r=>{if(active){setLiveCorners(r.data.predictions||{});setLiveProbabilities(r.data.modelProbabilities||{});}}).catch(()=>{});
- refresh();const timer=setInterval(refresh,60000);return()=>{active=false;clearInterval(timer);};
+ refresh();
+ const timer=filter==='live'?setInterval(refresh,60000):null;
+ return()=>{active=false;if(timer)clearInterval(timer);};
  },[filter]);
 
  useEffect(() => {
