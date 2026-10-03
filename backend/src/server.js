@@ -17,6 +17,7 @@ import { splitPaperBets, summarizePaperBets, validateBetStakeAndOdds, validateDo
 import { withPriceChecks, buildPriceCheck } from '../../shared/pickCalibration.js';
 import { createPickCalibrationService } from './services/pickCalibrationService.js';
 import { aggregateStudyDocuments, buildLiveStudySnapshot, summarizePlayedLiveBets } from '../../shared/liveStudy.js';
+import { TOP_LEAGUE_IDS } from '../../shared/morningSelections.js';
 /**
  * 🐰 SportyRabbi Backend Server
  * 
@@ -577,19 +578,27 @@ function selectDailyPrepCandidates(fixtures = [], maxFixtures = DAILY_PREP_MAX_A
   const target = Math.min(valid.length, maxFixtures, Math.floor(Math.max(0, teamBudget) / 2));
   if (target <= 0) return [];
   if (target >= valid.length) return valid;
-  if (target === 1) return [valid[Math.floor(valid.length / 2)]];
-
-  // Spread the bounded deep-analysis budget across the whole football day.
-  const picked = [];
-  const used = new Set();
-  for (let i = 0; i < target; i++) {
-    const idx = Math.round(i * (valid.length - 1) / (target - 1));
-    if (!used.has(idx)) {
-      used.add(idx);
-      picked.push(valid[idx]);
-    }
+  if (target === 1) {
+    const top=valid.find(f=>TOP_LEAGUE_IDS.has(Number(f.leagueId)));
+    return [top||valid[Math.floor(valid.length / 2)]];
   }
-  return picked;
+
+  // Keep broad all-day coverage, but reserve part of a constrained budget for
+  // major competitions so a dense low-league schedule cannot crowd them all out.
+  const picked = [];
+  const keys = new Set();
+  const add=f=>{const key=String(f.fixtureId??`${f.home}|${f.away}|${f.kickoffUTC}`);if(!keys.has(key)){keys.add(key);picked.push(f);}};
+  const spread=(pool,count)=>{
+    if(count<=0||!pool.length)return;
+    if(count>=pool.length){pool.forEach(add);return;}
+    if(count===1){add(pool[Math.floor(pool.length/2)]);return;}
+    for(let i=0;i<count;i++)add(pool[Math.round(i*(pool.length-1)/(count-1))]);
+  };
+  const top=valid.filter(f=>TOP_LEAGUE_IDS.has(Number(f.leagueId)));
+  const topSlots=Math.min(top.length,Math.max(1,Math.ceil(target*.40)));
+  spread(top,topSlots);
+  spread(valid.filter(f=>!keys.has(String(f.fixtureId??`${f.home}|${f.away}|${f.kickoffUTC}`))),target-picked.length);
+  return picked.slice(0,target);
 }
 
 function mergeDailySchedule(schedule = [], analyzed = []) {
@@ -2066,6 +2075,15 @@ const dailyDesk = createDailyDeskService({
   getCalibration: () => pickCalibration.getMap(),
   predictCorners: m => cornersDesk.predict(m),
   loadPrices: matches => enrichOddsShortlist(matches, 12),
+  readFirstHalfProfile: async (m) => {
+    if (shouldSkipApiCalls() || !m?.homeTeamId || !m?.awayTeamId || m?.season == null) return null;
+    const [home,away]=await Promise.all([
+      getTeamStatistics(m.homeTeamId,m.leagueId,m.season),
+      getTeamStatistics(m.awayTeamId,m.leagueId,m.season),
+    ]);
+    if(home?.offline||away?.offline||!home?.stats||!away?.stats)return null;
+    return {home,away};
+  },
   readLive: async () => (await fetchLiveMatches()).filter(f => Number.isFinite(f.goals?.home) && Number.isFinite(f.goals?.away) && Number.isFinite(f.fixture?.status?.elapsed)).map(parseLightFixture).filter(Boolean),
   readStats: m => fetchFixtureStatistics(m.id, m.homeTeamId, m.awayTeamId),
   refreshForecast: refreshLiveForecast,
@@ -2074,6 +2092,7 @@ const dailyDesk = createDailyDeskService({
   canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
   limit: Math.max(1, Math.min(6, Number(process.env.DAILY_DESK_MATCH_LIMIT) || 6)),
   studyLimit: Math.max(1, Math.min(16, Number(process.env.LIVE_STUDY_MATCH_LIMIT) || 10)),
+  firstHalfLimit: Math.max(1, Math.min(8, Number(process.env.DAILY_1H_WATCH_SCAN_LIMIT) || 6)),
   requestLimit: Math.max(0, Math.min(800, Number(process.env.DAILY_DESK_REQUEST_LIMIT ?? 400))),
 });
 let cornersRefreshDay = '';
