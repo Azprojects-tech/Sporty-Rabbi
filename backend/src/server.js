@@ -2222,18 +2222,26 @@ app.get('/api/opportunities/played', async(req,res)=>{
   }catch(e){return res.status(503).json({error:'Could not load played opportunities'});}
 });
 // Read-only corners forecasts from already-loaded league models; no provider API calls.
+// Return prepared + live fixtures so corner forecasts are available from every portal view,
+// not only when the user has opened Live View.
 app.get('/api/live-corners', (req,res)=>{
  try{
  const prepared=new Map((calibrationStore.matches||[]).map(m=>[String(m.id),m]));
- const predictions={}, modelProbabilities={};
+ const combined=new Map(prepared);
  for(const live of liveMatches){
-  const match=prepared.get(String(live.id))||live;
+  const base=prepared.get(String(live.id))||{};
+  combined.set(String(live.id),{...base,...live,analysis:live.analysis||base.analysis});
+ }
+ const predictions={}, modelProbabilities={};
+ for(const [id,match] of combined){
   const p=cornersDesk.predict(match);
-  modelProbabilities[String(live.id)]=match.analysis?.predictionCore?.poisson?.marketProbabilities||null;
-  predictions[String(live.id)]=p.status==='AVAILABLE'?{status:'AVAILABLE',lines:p.lines,expectedTotal:p.expectedTotal,expectedHome:p.expectedHome,expectedAway:p.expectedAway,source:p.source}:{status:'UNAVAILABLE',reason:p.reason||'Insufficient league history'};
+  modelProbabilities[id]=match.analysis?.predictionCore?.poisson?.marketProbabilities||null;
+  predictions[id]=p.status==='AVAILABLE'
+   ? {status:'AVAILABLE',lines:p.lines,expectedTotal:p.expectedTotal,expectedHome:p.expectedHome,expectedAway:p.expectedAway,source:p.source}
+   : {status:'UNAVAILABLE',reason:p.reason||'INSUFFICIENT_LEAGUE_HISTORY',source:p.source||null};
  }
  res.json({predictions,modelProbabilities});
- }catch(e){res.status(503).json({error:'Live corners unavailable'});}
+ }catch(e){res.status(503).json({error:'Corner forecasts unavailable'});}
 });
 app.get('/api/daily-desk', async (req, res) => {
   try { res.json({ enabled: DAILY_DESK_ENABLED, ...(await dailyDesk.view()) }); }
