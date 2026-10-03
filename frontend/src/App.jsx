@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { connectWebSocket, disconnectWebSocket, on, off, apiService } from './services/api';
 import Sidebar from './components/Sidebar';
 import MatchFeed from './components/MatchFeed';
+import SimpleView from './components/SimpleView';
 import DetailPanel from './components/DetailPanel';
 import { BetLogger } from './components/BetComponents';
 import BetSlips from './components/BetSlips';
@@ -33,6 +34,11 @@ function mergeLiveIntoMatches(prev, incoming = []) {
 export default function App() {
  const [showDesk,setShowDesk]=useState(true);
  const [allMatches, setAllMatches] = useState([]);
+ // 'simple' (default): plain game cards + Build my double. 'details': the technical list.
+ const [viewMode, setViewMode] = useState(() => {
+ try { return localStorage.getItem('sportyrabbi.viewMode') || 'simple'; } catch { return 'simple'; }
+ });
+ const chooseView = (mode) => { setViewMode(mode); try { localStorage.setItem('sportyrabbi.viewMode', mode); } catch { /* ignore */ } };
  const [filter, setFilter] = useState('all');
  const [liveSort,setLiveSort]=useState('default');
  const [liveCorners,setLiveCorners]=useState({});
@@ -575,8 +581,19 @@ export default function App() {
  </span>
  {filter==='live'&&<label style={{marginLeft:'auto',fontSize:12,color:'#8b9ab3'}}>Sort by <select aria-label="Sort live games" value={liveSort} onChange={e=>setLiveSort(e.target.value)} style={{background:'#1a1f2e',color:'#e2e8f0',padding:7,borderRadius:6,border:'1px solid #334155'}}><option value="default">Default</option><option value="goals">Goals chance ↓</option><option value="wins">Win chance ↓</option><option value="corners">Estimated corners ↓</option><option value="odds">Available odds ↓</option></select></label>}
  {loading && <span style={{ fontSize: 11, color: '#4a5568', marginLeft: 4 }}>Loading...</span>}
+ <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+ {[['simple', 'Simple'], ['details', 'Details']].map(([mode, text]) => (
+ <button key={mode} onClick={() => chooseView(mode)} style={{
+ border: '1px solid ' + (viewMode === mode ? '#006833' : '#1e2535'), background: viewMode === mode ? '#001f0e' : 'transparent',
+ color: viewMode === mode ? '#00b859' : '#8b9ab3', borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+ }}>{text}</button>
+ ))}
+ </span>
  </div>
 
+ {viewMode === 'simple' ? (
+ <SimpleView matches={displayedMatches} allMatches={allMatches} onDetails={handleSelectMatch} />
+ ) : (
  <MatchFeed
  matches={displayedMatches}
  cornerForecasts={liveCorners}
@@ -585,6 +602,7 @@ export default function App() {
  onSelectMatch={handleSelectMatch}
  onRefresh={handleManualLiveRefresh}
  />
+ )}
  </div>
  )}
 

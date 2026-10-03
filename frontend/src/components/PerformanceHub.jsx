@@ -146,10 +146,10 @@ function MyBets({ bets }) {
           padding: '10px 12px', border: '1px solid #1e2535', borderRadius: 8,
           background: '#0a0d15', marginBottom: 8,
         }}>
-          {b.slipType === 'double' && Array.isArray(b.legs) ? (
+          {(b.slipType === 'double' || b.slipType === 'treble') && Array.isArray(b.legs) ? (
             <div style={{ minWidth: 170, flex: 1 }}>
               <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 700 }}>
-                <span style={{ fontSize: 9, fontWeight: 800, color: '#a78bfa', border: '1px solid #7c3aed55', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>DOUBLE</span>
+                <span style={{ fontSize: 9, fontWeight: 800, color: '#a78bfa', border: '1px solid #7c3aed55', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>{String(b.slipType).toUpperCase()}</span>
                 Combined odds {Number(b.odds).toFixed(2)}
                 {Number(b.effectiveOdds) > 1 && Number(b.effectiveOdds) !== Number(b.odds) && <span style={{ fontSize: 10, color: '#fbbf24' }}> · paid as a single at {Number(b.effectiveOdds).toFixed(2)} (one leg void)</span>}
               </div>
@@ -174,7 +174,7 @@ function MyBets({ bets }) {
             {Number(b.stake) > 0 ? `Stake ₦${Number(b.stake).toLocaleString('en-GB')}` : 'Stake not recorded'}
             {betProfit(b) != null && <small style={{ display: 'block', color: betProfit(b) >= 0 ? '#00b859' : '#ef4444' }}>P/L {naira(betProfit(b))}</small>}
           </span>
-          {b.slipType !== 'double' && <span style={{ fontSize: 10, color: '#8b9ab3' }}>
+          {!Array.isArray(b.legs) && <span style={{ fontSize: 10, color: '#8b9ab3' }}>
             System odds: {b.systemOdds?.price ? `${b.systemOdds.price.toFixed(2)} · ${b.systemOdds.bookmaker?.name}` : 'Unavailable'}
             {b.systemOdds?.providerUpdatedAt && <small style={{ display: 'block' }}>Quote: {new Date(b.systemOdds.providerUpdatedAt).toLocaleString()}{b.systemOdds.status === 'EXPIRED' ? ' · expired when recorded' : ''}</small>}
             {b.odds > 1 && <small style={{ display: 'block' }}>{b.bookmaker || 'SportyBet'} odds taken: {Number(b.odds).toFixed(2)}</small>}
