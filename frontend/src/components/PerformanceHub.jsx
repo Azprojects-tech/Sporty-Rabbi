@@ -187,6 +187,56 @@ function MyBets({ bets }) {
   );
 }
 
+function LiveEngineStudy({ study }) {
+  const perf=study?.performance||{};
+  const overall=perf.overall||{};
+  const source=perf.bySource||{};
+  const livePrice=study?.livePrice||{};
+  const num=(v,d=4)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
+  const pct01=v=>Number.isFinite(Number(v))?`${(Number(v)*100).toFixed(1)}%`:'—';
+  const improvement=Number(overall.brierImprovement);
+  return (
+    <div>
+      <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>
+        {study?.status==='REVIEW_READY'
+          ? 'Forward sample has reached the first review target. Positive improvement means Live Hazard V1 beat the score/minute baseline.'
+          : `Collecting forward evidence · target ${study?.minimumReviewTarget?.fixtures||30} fixtures / ${study?.minimumReviewTarget?.snapshots||300} snapshots before the first serious review.`}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(130px, 1fr))',gap:8,marginBottom:14}}>
+        <Metric label="Settled fixtures" value={perf.fixtures ?? 0} />
+        <Metric label="Live snapshots" value={overall.snapshots ?? 0} />
+        <Metric label="Baseline Brier" value={num(overall.baselineBrier)} />
+        <Metric label="Hazard Brier" value={num(overall.hazardBrier)} />
+        <Metric label="Brier improvement" value={Number.isFinite(improvement)?`${improvement>=0?'+':''}${improvement.toFixed(4)}`:'—'} />
+        <Metric label="Pending studies" value={study?.pendingStudies ?? 0} />
+      </div>
+      <div style={{border:'1px solid #1e2535',borderRadius:8,background:'#0a0d15',padding:'11px 13px',marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:800,color:'#e2e8f0',marginBottom:7}}>Evidence source comparison</div>
+        {['XG','SHOTS_SOT','SHOTS','NONE'].map(k=>{
+          const x=source[k];if(!x)return null;
+          return <div key={k} style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:10,color:'#94a3b8',padding:'4px 0'}}>
+            <strong style={{color:'#cbd5e1',minWidth:70}}>{k}</strong>
+            <span>{x.snapshots} snapshots</span>
+            <span>Baseline {num(x.baselineBrier)}</span>
+            <span>Hazard {num(x.hazardBrier)}</span>
+            <span style={{color:Number(x.brierImprovement)>=0?'#00b859':'#f59e0b'}}>Δ {num(x.brierImprovement)}</span>
+          </div>;
+        })}
+      </div>
+      <div style={{border:'1px solid #1e2535',borderRadius:8,background:'#0a0d15',padding:'11px 13px'}}>
+        <div style={{fontSize:11,fontWeight:800,color:'#e2e8f0',marginBottom:7}}>Actual live SportyBet plays</div>
+        <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:10,color:'#94a3b8'}}>
+          <span>Placed: <strong style={{color:'#cbd5e1'}}>{livePrice.placed ?? 0}</strong></span>
+          <span>Settled: <strong style={{color:'#cbd5e1'}}>{livePrice.settled ?? 0}</strong></span>
+          <span>ROI: <strong style={{color:Number(livePrice.roi)>=0?'#00b859':'#ef4444'}}>{pct01(livePrice.roi)}</strong></span>
+          <span>Mean model edge: <strong style={{color:'#cbd5e1'}}>{pct01(livePrice.meanModelEdge)}</strong></span>
+        </div>
+        <div style={{fontSize:9,color:'#64748b',marginTop:7}}>Only real-money single bets placed after kickoff are counted here.</div>
+      </div>
+    </div>
+  );
+}
+
 export default function PerformanceHub({ bets: liveBets = [] }) {
   const [tab, setTab] = useState('sporty');
   const [predictions, setPredictions] = useState([]);
@@ -194,6 +244,7 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
   const [bets, setBets] = useState(liveBets);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [liveStudy, setLiveStudy] = useState(null);
   const [checkMessage, setCheckMessage] = useState('');
   async function checkResults() {
     setChecking(true); setCheckMessage('Checking fixture results…');
@@ -215,11 +266,13 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
     Promise.all([
       apiService.getPredictions(250).catch(() => ({ data: { predictions: [], summary: null } })),
       apiService.getBets().catch(() => ({ data: { bets: [] } })),
-    ]).then(([predRes, betRes]) => {
+      apiService.getLiveStudy().catch(() => ({ data: null })),
+    ]).then(([predRes, betRes, studyRes]) => {
       if (!active) return;
       setPredictions(predRes?.data?.predictions || []);
       setSummary(predRes?.data?.summary || null);
       setBets(betRes?.data?.bets || liveBets || []);
+      setLiveStudy(studyRes?.data || null);
       setLoading(false);
     });
     return () => { active = false; };
@@ -238,6 +291,7 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
         <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '1px solid #1e2535' }}>
           {[
             ['sporty', 'SportyRabbi Record'],
+            ['live', 'Live Engine Study'],
             ['mine', 'My Bets'],
           ].map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{
@@ -257,7 +311,9 @@ export default function PerformanceHub({ bets: liveBets = [] }) {
           <div style={{ color: '#64748b', fontSize: 12, padding: 20 }}>Loading track record...</div>
         ) : tab === 'sporty'
           ? <SportyRecord predictions={predictions} summary={summary || {}} />
-          : <MyBets bets={bets} />
+          : tab === 'live'
+            ? <LiveEngineStudy study={liveStudy || {}} />
+            : <MyBets bets={bets} />
         }
       </div>
     </div>
