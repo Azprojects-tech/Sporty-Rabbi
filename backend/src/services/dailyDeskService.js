@@ -58,6 +58,15 @@ export function createDeskStore(getDb) {
       await batch.commit();
       return {metrics,snapshotCount:settled.length};
     },
+    async pendingLiveStudies(limit=40) {
+      const db=getDb();if(!db)return [];
+      const s=await db.collection('liveHazardStudies').where('settlementStatus','==','PENDING').limit(limit).get();
+      return s.docs.map(d=>({id:d.id,...d.data()}));
+    },
+    async voidLiveStudyFixture(fixtureId,status='VOID') {
+      const db=getDb();if(!db||!fixtureId)return;
+      await db.collection('liveHazardStudies').doc(String(fixtureId)).set({settlementStatus:'VOID',finalStatus:status,settledAt:new Date().toISOString()},{merge:true});
+    },
     async listSettledLiveStudies(limit=500) {
       const db=getDb();if(!db)return [];
       const s=await db.collection('liveHazardStudies').where('settlementStatus','==','SETTLED').limit(limit).get();
