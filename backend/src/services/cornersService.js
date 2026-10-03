@@ -75,7 +75,7 @@ export function createCornersService({ fetchText, getDb = () => null, now = () =
         league: m.league || '', leagueId: m.leagueId ?? 0, leagueCountry: m.leagueCountry || '', kickoffUTC: m.kickoffUTC,
         predictedAt: new Date(now()).toISOString(), analysisVersion: CORNERS_MODEL_VERSION, source: `football-data.co.uk:${p.source}`,
         fdHome: p.fdHome, fdAway: p.fdAway, expectedTotal: p.expectedTotal, lines: p.lines, mainLine: p.line,
-        result: 'pending', totalCorners: null, results: null, challengerResults: null, settledAt: null,
+        result: 'pending', totalCorners: null, results: null, settledAt: null,
       };
       try {
         await db.collection(CORNERS_COLLECTION).doc(`corners_${m.id}`).create(doc);
