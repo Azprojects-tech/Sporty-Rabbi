@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   TOP_LEAGUE_IDS,buildTopLeaguePicks,buildPortfolioTiers,buildFirstHalfGoalWatch,buildCornersWatch
 } from '../../shared/morningSelections.js';
+import { formatDailyDesk } from '../../shared/dailyDesk.js';
 
 const ko=new Date(Date.now()+6*3600000).toISOString();
 function card(id,{leagueId=999,odds=1.5,p=90,line85=70}={}){
@@ -56,4 +57,19 @@ test('1H watch refuses thin samples and corners chooses the highest supported us
   assert.equal(c.length,1);
   assert.equal(c[0].line,10.5);
   assert.equal(c[0].probability,64);
+});
+
+
+test('Telegram morning brief is grouped into the requested sections',()=>{
+  const c1=card(1,{leagueId:39,odds:1.5,p:90});
+  const desk={dateUK:'2026-10-04',cards:[c1],topLeagues:[{...c1,selected:c1.best}],
+    portfolio:{tier1:{available:true,targetOdds:1.5,odds:1.5,probabilityFloor:.9,legs:[{...c1.best,fixtureId:1,match:'H1 v A1',homeTeamId:2,awayTeamId:3}]},
+      tier2:{available:false,targetOdds:2},tier3:{available:false,targetOdds:3},tier4:{available:false,targetOdds:5}},
+    firstHalfWatch:[{...buildFirstHalfGoalWatch({id:1,home:'H1',away:'A1',league:'Premier League',kickoffUTC:ko,
+      analysis:{predictionCore:{poisson:{marketProbabilities:{over15:.82}}}}},
+      {stats:{played:10,firstHalfGoalsForPerGame:.9,firstHalfGoalsAgainstPerGame:.5}},
+      {stats:{played:10,firstHalfGoalsForPerGame:.7,firstHalfGoalsAgainstPerGame:.8}})}],
+    cornersWatch:buildCornersWatch([c1]),opportunities:[]};
+  const text=formatDailyDesk(desk);
+  for(const heading of ['MAIN SHORTLIST','TOP LEAGUES','FOUR-TIER DAILY PORTFOLIO','1H GOAL WATCH','CORNERS']) assert.match(text,new RegExp(heading));
 });
