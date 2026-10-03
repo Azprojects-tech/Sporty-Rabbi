@@ -2270,8 +2270,14 @@ app.post('/api/watchlist',async(req,res)=>{
  const {fixtureId,market}=req.body||{};
  const desk=(await dailyDesk.view()).desk;
  const cards=[...(desk?.cards||[]),...(desk?.opportunities||[]).flatMap(o=>o.legs.map(l=>({id:l.fixtureId,home:l.match.split(' v ')[0],away:l.match.split(' v ')[1],league:l.league,kickoffUTC:l.kickoffUTC})))];
- const card=cards.find(c=>String(c.id)===String(fixtureId));
- if(!card)return res.status(404).json({error:'Fixture not found in today’s Daily Picks or discoveries'});
+ let card=cards.find(c=>String(c.id)===String(fixtureId));
+ if(!card){
+   const raw=(calibrationStore.matches||[]).find(m=>String(m.id)===String(fixtureId));
+   const core=raw?.analysis?.predictionCore;
+   if(raw)card={id:raw.id,home:raw.home,away:raw.away,league:raw.league||'',country:raw.country||raw.leagueCountry||'',kickoffUTC:raw.kickoffUTC,
+     history:core?.inputSummary||null,markets:Object.entries(core?.poisson?.marketProbabilities||{}).map(([marketKey,p])=>({marketKey,probability:Number.isFinite(p)?p*100:null}))};
+ }
+ if(!card)return res.status(404).json({error:'Fixture is not available in today’s prepared schedule'});
  if(Date.parse(card.kickoffUTC)<Date.now()-5*60000)return res.status(400).json({error:'Kickoff has already passed'});
  const allowed=['Over 1.5 goals','Over 2.5 goals','Over 3.5 goals','Over 8.5 corners','Over 9.5 corners','Over 10.5 corners','Home win','Away win','Both teams score'];
  if(!allowed.includes(market))return res.status(400).json({error:'Choose a supported market'});
