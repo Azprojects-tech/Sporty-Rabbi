@@ -5,6 +5,7 @@ import { liveSnapshot, liveChange, formatLiveDesk } from '../../../shared/liveDe
 import { settleMarketPrediction } from '../../../shared/predictionLedger.js';
 import { finalScoreFromProviderFixture } from '../../../shared/forecastMath.js';
 import { buildLiveStudySnapshot, settleLiveStudySnapshot, summarizeSettledLiveStudy } from '../../../shared/liveStudy.js';
+import { buildTopLeaguePicks, buildPortfolioTiers, buildFirstHalfGoalWatch, buildCornersWatch } from '../../../shared/morningSelections.js';
 
 export function createDeskStore(getDb) {
   const clean=x=>JSON.parse(JSON.stringify(x));
@@ -76,8 +77,8 @@ export function createDeskStore(getDb) {
 }
 const hash=s=>createHash('sha256').update(s).digest('hex');
 export function createDailyDeskService({store,getMatches,getCalibration,predictCorners=()=>null,
-  loadPrices=async()=>{},readLive,readStats,refreshForecast,readFinal,send,canCall=()=>true,
-  now=Date.now,limit=6,studyLimit=10,requestLimit=400,messageLimit=12,log=console}={}) {
+  loadPrices=async()=>{},readFirstHalfProfile=async()=>null,readLive,readStats,refreshForecast,readFinal,send,canCall=()=>true,
+  now=Date.now,limit=6,studyLimit=10,firstHalfLimit=6,requestLimit=400,messageLimit=12,log=console}={}) {
   let state=null,inFlight=null;
   async function record(key,event,text) {
     if(state.messages>=messageLimit)return false;
@@ -101,8 +102,8 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
   async function settle(){
     const pending=await store.pending();let checked=0;const finals=new Map();
     for(const event of pending){
-      if(event.type==='OPPORTUNITY_SUGGESTION'){
-        const legs=event.opportunity?.legs||[];
+      if(event.type==='OPPORTUNITY_SUGGESTION'||event.type==='PORTFOLIO_TIER'){
+        const legs=event.opportunity?.legs||event.ticket?.legs||[];
         const outcomes={...(event.outcomes||{})};
         for(const leg of legs){
           const id=String(leg.fixtureId);
@@ -124,6 +125,24 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
         const complete=results.every(Boolean);
         const result=complete?(results.includes('lost')?'lost':results.includes('unsettled')?'unsettled':results.every(v=>v==='void')?'void':'won'):'pending';
         await store.updateEvent(event.key,{outcomes,result,...(complete?{settledAt:new Date(now()).toISOString()}: {})});
+        continue;
+      }
+      if(event.type==='FIRST_HALF_WATCH'){
+        if(now()-Date.parse(event.kickoffUTC)<3*3600000)continue;
+        if(now()-Date.parse(event.kickoffUTC)>7*86400000){await store.updateEvent(event.key,{result:'unsettled',settledAt:new Date(now()).toISOString()});continue;}
+        if(!event.fixtureId)continue;
+        const id=String(event.fixtureId);
+        if(!finals.has(id)){
+          if(checked>=2)continue;
+          const last=state.settlementChecks?.[id]||0;if(now()-last<30*60000)continue;
+          checked++;(state.settlementChecks||={})[id]=now();finals.set(id,await call(readFinal,event.fixtureId));
+        }
+        const fixture=finals.get(id);if(!fixture)continue;
+        const status=fixture.fixture?.status?.short;
+        if(['CANC','ABD','AWD','WO'].includes(status)){await store.updateEvent(event.key,{result:'void',finalStatus:status,settledAt:new Date(now()).toISOString()});continue;}
+        const hh=Number(fixture.score?.halftime?.home),ha=Number(fixture.score?.halftime?.away);
+        if(!Number.isFinite(hh)||!Number.isFinite(ha))continue;
+        await store.updateEvent(event.key,{result:hh+ha>=1?'won':'lost',halfTimeScore:`${hh}-${ha}`,settledAt:new Date(now()).toISOString()});
         continue;
       }
       if(now()-Date.parse(event.kickoffUTC)<3*3600000)continue;
@@ -232,22 +251,46 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
             .sort((a,b)=>(b.analysis?.dailySignal?.score||0)-(a.analysis?.dailySignal?.score||0)).slice(0,limit*2);
           if(canCall())await loadPrices(candidates);
           const desk=buildDailyDesk(candidates,getCalibration(),{now:now(),limit,predictCorners});
-          // Discovery searches the entire prepared schedule, not merely the daily shortlist.
-          // No extra bookmaker or corners API requests are made for the wider scan.
-          const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
-            .map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
+          // Wider extraction layer: same engine outputs, no changes to V10.6C.
+          const todays=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day);
+          const discoveryCards=todays.map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
           desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
-          if(desk.cards.length || desk.opportunities.length){
+          desk.topLeagues=buildTopLeaguePicks(discoveryCards);
+          desk.portfolio=buildPortfolioTiers(discoveryCards,{now:now()});
+          desk.cornersWatch=buildCornersWatch(discoveryCards);
+          const goalCandidates=todays.filter(m=>m.homeTeamId&&m.awayTeamId&&m.season!=null)
+            .filter(m=>Number(m.analysis?.predictionCore?.poisson?.marketProbabilities?.over15)>=.68)
+            .sort((a,b)=>(b.analysis?.predictionCore?.poisson?.marketProbabilities?.over15||0)-(a.analysis?.predictionCore?.poisson?.marketProbabilities?.over15||0))
+            .slice(0,firstHalfLimit);
+          const firstHalf=[];
+          for(const m of goalCandidates){
+            const profile=await call(readFirstHalfProfile,m);if(!profile)continue;
+            const watch=buildFirstHalfGoalWatch(m,profile.home,profile.away);if(watch)firstHalf.push(watch);
+          }
+          desk.firstHalfWatch=firstHalf.sort((a,b)=>b.probability-a.probability).slice(0,4);
+          if(desk.cards.length || desk.opportunities.length || desk.topLeagues.length){
             // Keep stored historical inputs for live recomputation, independent of the browser.
             state.desk=desk;await store.save(day,state);
           }
         }
         // Existing saved desks from before the feature shipped must gain discoveries without
         // another preparation run or another paid API request.
-        if(state.desk && !Array.isArray(state.desk.opportunities) && prepared.ready){
-          const discoveryCards=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day)
-            .map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
+        if(state.desk && prepared.ready && (!Array.isArray(state.desk.opportunities)||!Array.isArray(state.desk.topLeagues)||!state.desk.portfolio||!Array.isArray(state.desk.cornersWatch)||!Array.isArray(state.desk.firstHalfWatch))){
+          const todays=prepared.matches.filter(m=>m.status==='NS' && Date.parse(m.kickoffUTC)>now() && dayUK(Date.parse(m.kickoffUTC))===day);
+          const discoveryCards=todays.map(m=>deskCard(m,getCalibration(),predictCorners(m))).filter(Boolean);
           state.desk.opportunities=discoverOpportunities(discoveryCards,{now:now()});
+          state.desk.topLeagues=buildTopLeaguePicks(discoveryCards);
+          state.desk.portfolio=buildPortfolioTiers(discoveryCards,{now:now()});
+          state.desk.cornersWatch=buildCornersWatch(discoveryCards);
+          if(!Array.isArray(state.desk.firstHalfWatch)){
+            const goalCandidates=todays.filter(m=>m.homeTeamId&&m.awayTeamId&&m.season!=null)
+              .filter(m=>Number(m.analysis?.predictionCore?.poisson?.marketProbabilities?.over15)>=.68)
+              .sort((a,b)=>(b.analysis?.predictionCore?.poisson?.marketProbabilities?.over15||0)-(a.analysis?.predictionCore?.poisson?.marketProbabilities?.over15||0))
+              .slice(0,firstHalfLimit);
+            const firstHalf=[];
+            for(const m of goalCandidates){const profile=await call(readFirstHalfProfile,m);if(!profile)continue;const watch=buildFirstHalfGoalWatch(m,profile.home,profile.away);if(watch)firstHalf.push(watch);}
+            state.desk.firstHalfWatch=firstHalf.sort((a,b)=>b.probability-a.probability).slice(0,4);
+          }
           await store.save(day,state);
         }
         if(state.desk && !state.dailyAttempted){
@@ -258,6 +301,14 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           }
           for(const opportunity of state.desk.opportunities||[]){
             await store.createEvent(hash(`${day}|opportunity|${opportunity.id}`),{type:'OPPORTUNITY_SUGGESTION',result:'pending',kickoffUTC:opportunity.legs[0]?.kickoffUTC,createdAt:new Date(now()).toISOString(),opportunity});
+          }
+          for(const [tier,ticket] of Object.entries(state.desk.portfolio||{})){
+            if(!ticket?.available)continue;
+            await store.createEvent(hash(`${day}|portfolio|${tier}`),{type:'PORTFOLIO_TIER',tier,result:'pending',kickoffUTC:ticket.legs[0]?.kickoffUTC,createdAt:new Date(now()).toISOString(),ticket});
+          }
+          for(const watch of state.desk.firstHalfWatch||[]){
+            await store.createEvent(hash(`${day}|1h|${watch.fixtureId}`),{type:'FIRST_HALF_WATCH',fixtureId:watch.fixtureId,kickoffUTC:watch.kickoffUTC,
+              probability:watch.probability,basis:watch.basis,result:'pending',createdAt:new Date(now()).toISOString()});
           }
           await record(hash(`${day}|digest`),{type:'DAILY_DIGEST',result:'not_applicable'},formatDailyDesk(state.desk));
           state.dailyAttempted=true;
