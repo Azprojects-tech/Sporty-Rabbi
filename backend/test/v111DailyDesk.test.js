@@ -91,6 +91,9 @@ test('live deltas require a comparable fresh observation; missing stats are neve
  const current={...base,minute:25,at:iso(stamp+300000),shots:8,xg:.9,corners:4};
  assert.equal(liveChange(current,[base]).type,'ATTACKING_ACTIVITY');
  assert.equal(liveChange({...current,xg:null,corners:null},[base]),null);
+ const sotBase={...base,xg:null,corners:null,shotsOnTarget:1};
+ const sotCurrent={...current,xg:null,corners:null,shotsOnTarget:3};
+ assert.equal(liveChange(sotCurrent,[sotBase]).type,'SHOT_PRESSURE');
  assert.equal(liveChange({...current,at:iso(stamp+30*60000)},[base]),null);
  assert.equal(liveChange({...current,shots:1,xg:.1,corners:0},[base]),null);
  assert.equal(liveSnapshot({id:1,status:'1H',score:'0-0',matchMinutes:25},null,stamp).xg,null);
