@@ -89,7 +89,7 @@ export function formatDailyDesk(desk) {
 
   lines.push('\n━━━━━━━━━━━━━━━━━━━━\n⏱️ 1H GOAL WATCH · RESEARCH');
   if(desk.firstHalfWatch?.length){
-    for(const x of desk.firstHalfWatch) lines.push(`• ${time(x)} · ${x.home} v ${x.away} (${x.league})\n  Any 1H goal proxy ${pct(x.probability)} · λ1H ${x.lambda}${x.regulationOver15!=null?` · main O1.5 ${pct(x.regulationOver15)}`:''}`);
+    for(const x of desk.firstHalfWatch) lines.push(`• ${time(x)} · ${x.home} v ${x.away} (${x.league})\n  Any 1H goal proxy ${pct(x.probability)} · λ1H ${x.lambda}${x.likelyTeam?`\n  Early-team watch: ${x.likelyTeam.team} to score 1H ${pct(x.likelyTeam.probability)}`:''}${x.regulationOver15!=null?` · main O1.5 ${pct(x.regulationOver15)}`:''}`);
     lines.push('Research selector from season goal-minute rates; not yet a calibrated 1H betting market.');
   } else lines.push('No 1H research watch meets the current evidence gate.');
 
