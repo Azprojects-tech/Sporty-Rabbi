@@ -108,6 +108,14 @@ export function buildEvidenceDesk(analysis = {}, match = {}, evidence = {}, now 
       row('Recorded tenure began',coach?.start),row('Sample games before / during tenure',coach ? `${coach.beforeCount} / ${coach.afterCount}` : null),
       row('Points/game before tenure',fmt(coach?.beforePPG)),row('Points/game during tenure',fmt(coach?.afterPPG))],
     'Use the coach tenure covering selection time. Split the available recent league sample at its start date and compare points/game.', 'API-Football coach career dates and completed fixtures'));
+    const earlyHistory = info.earlyGoals;
+    panels.push(card(`${side}-early`,`${name}: early goals`,earlyHistory?.sampled ? `${earlyHistory.sampled} verified games` : 'Unavailable',[
+      row('Games with complete goal-event coverage',earlyHistory ? `${earlyHistory.sampled}/${earlyHistory.requested}` : null),
+      row("Scored by 20'",earlyHistory?.sampled ? earlyHistory.scoredBy20 : null),
+      row("Conceded by 20'",earlyHistory?.sampled ? earlyHistory.concededBy20 : null),
+      row('Scored in first half',earlyHistory?.sampled ? earlyHistory.scoredFirstHalf : null),
+      row('Conceded in first half',earlyHistory?.sampled ? earlyHistory.concededFirstHalf : null)],
+    "Count games with at least one verified goal by minute 20 and in the first half. Show both scoring and conceding so the opponent's early vulnerability is visible.", 'API-Football fixture goal events'));
     const late = info.lateGoals;
     panels.push(card(`${side}-late`,`${name}: late goals`,late?.sampled ? `${late.sampled} verified games` : 'Unavailable',[
       row('Games with complete goal-event coverage',late ? `${late.sampled}/${late.requested}` : null),

@@ -12,7 +12,7 @@ import { getDb } from '../config/firebase.js';
  */
 
 import axios from 'axios';
-import { summarizeLateGoals } from './groundedAnalystService.js';
+import { summarizeEarlyGoals, summarizeLateGoals } from './groundedAnalystService.js';
 import { buildTeamEvidence, compactFixtureRows, MIN_COMPETITION_SAMPLE } from '../../../shared/teamEvidence.js';
 import { parseLeagueCoverage } from '../../../shared/leagueCoverage.js';
 
@@ -699,6 +699,7 @@ export async function getAnalystEvidence(match, { shouldSkipApiCalls = () => tru
   for (const side of ['home', 'away']) {
     const id = match[`${side}TeamId`];
     if (!id) continue;
+    out[side].earlyGoals = summarizeEarlyGoals(id, fixtureLists[side] || [], eventResults);
     out[side].lateGoals = summarizeLateGoals(id, fixtureLists[side] || [], eventResults);
     const previous = await request('/teams/statistics', { team: id, league: leagueId, season: season - 1 });
     out[side].previousRecord = previous?.fixtures ? { played: previous.fixtures.played?.total ?? null,

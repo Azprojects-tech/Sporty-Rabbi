@@ -40,6 +40,18 @@ function scoreColor(s) {
   return s >= 70 ? '#00b859' : s >= 55 ? '#fbbf24' : '#ef4444';
 }
 
+function cornerReasonText(reason) {
+  const map = {
+    LEAGUE_NOT_COVERED: 'League not covered by the current corner-history source',
+    LEAGUE_DATA_UNAVAILABLE: 'League corner history is unavailable',
+    TEAM_NOT_FOUND: 'Teams could not be matched to the corner-history source',
+    NOT_ENOUGH_GAMES: 'Not enough recent corner history for both teams',
+    LOADING: 'Corner history is still loading',
+    INSUFFICIENT_LEAGUE_HISTORY: 'Insufficient league corner history',
+  };
+  return map[String(reason || '')] || 'Corner forecast unavailable';
+}
+
 function statusPillStyle(status) {
   if (status === 'PLAY') return { color: '#00b859', bg: '#001f0e', border: '#00683355' };
   if (status === 'WATCH') return { color: '#fbbf24', bg: '#1c1200', border: '#78350f55' };
@@ -869,6 +881,43 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
         </div>
       )}
 
+      {/* Compact market forecasts: the main football decisions stay visible without opening diagnostics. */}
+      <div style={{padding:'11px 14px',borderBottom:'1px solid #1e2535',background:'#0b111b'}}>
+        <div style={{fontSize:9,fontWeight:800,color:'#8b9ab3',letterSpacing:'1px',marginBottom:8}}>MARKET FORECASTS</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr',gap:7}}>
+          <div style={{background:'#0f1117',border:'1px solid #1e2535',borderRadius:7,padding:'9px 10px'}}>
+            <div style={{fontSize:10,fontWeight:800,color:'#00b859',marginBottom:5}}>GOALS</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#cbd5e1'}}>
+              <span>O1.5 <strong>{probs.over15 != null ? `${probs.over15}%` : '—'}</strong></span>
+              <span>O2.5 <strong>{probs.over25 != null ? `${probs.over25}%` : '—'}</strong></span>
+              <span>O3.5 <strong>{probs.over35 != null ? `${probs.over35}%` : '—'}</strong></span>
+              <span>BTTS <strong>{probs.btts != null ? `${probs.btts}%` : '—'}</strong></span>
+            </div>
+          </div>
+          <div style={{background:'#0f1117',border:'1px solid #1e2535',borderRadius:7,padding:'9px 10px'}}>
+            <div style={{fontSize:10,fontWeight:800,color:'#3b82f6',marginBottom:5}}>WIN</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#cbd5e1'}}>
+              <span>Home <strong>{outcomeProbabilities?.homeWin != null ? `${roundPct(outcomeProbabilities.homeWin)}%` : '—'}</strong></span>
+              <span>Draw <strong>{outcomeProbabilities?.draw != null ? `${roundPct(outcomeProbabilities.draw)}%` : '—'}</strong></span>
+              <span>Away <strong>{outcomeProbabilities?.awayWin != null ? `${roundPct(outcomeProbabilities.awayWin)}%` : '—'}</strong></span>
+            </div>
+          </div>
+          <div style={{background:'#0f1117',border:'1px solid #1e2535',borderRadius:7,padding:'9px 10px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+              <div style={{fontSize:10,fontWeight:800,color:'#f59e0b'}}>CORNERS</div>
+              {cornersForecast?.status==='AVAILABLE' && <div style={{fontSize:11,fontWeight:800,color:'#e2e8f0'}}>Est. {cornersForecast.expectedTotal}</div>}
+            </div>
+            {cornersForecast?.status==='AVAILABLE' ? (
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#cbd5e1'}}>
+                {[8.5,9.5,10.5].map(line=>{const value=cornersForecast.lines?.['corners_over'+String(line).replace('.','')];return <span key={line}>O{line} <strong>{Number.isFinite(value)?`${value.toFixed(1)}%`:'—'}</strong></span>;})}
+              </div>
+            ) : (
+              <div style={{fontSize:10,color:'#64748b',lineHeight:1.45}}>{cornerReasonText(cornersForecast?.reason)}</div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Analyst note — generated asynchronously so it never blocks the prediction */}
       {analysis?.narrative?.text && (
         <div style={{
@@ -882,17 +931,26 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
             <span style={{ fontSize: 9, color: '#64748b' }}>· Evidence-based</span>
             {analysis.narrativeStatus === 'pending' && <span style={{fontSize:9,color:'#64748b'}}>Loading history…</span>}
           </div>
-          {analysis.narrative.sections ? analysis.narrative.sections.map((item, index) => (
-            <div key={index} style={{ marginBottom: 9, fontSize: 12, lineHeight: 1.6 }}>
-              <div style={{color:'#cbd5e1',fontWeight:700}}>{item.label}</div>
-              <div style={{color:'#94a3b8'}}>{item.label === 'Match situation'
-                ? `${describeMatchClock(match)} Score: ${match.score || 'unavailable'}.`
-                : item.label === 'Score pressure' ? describeScorePressure(match)
-                : item.label === 'What this means now'
-                  ? (goalFestView(match, [match?.goalFest, analysis?.goalFest])?.summary || 'No current live Goal Fest signal.')
+          {analysis.narrative.sections ? (() => {
+            const primary = analysis.narrative.sections.filter(item =>
+              ['Match situation','Score pressure','Rabbi selection'].includes(item.label)
+              || /: early goals$/.test(item.label)
+              || /: late goals$/.test(item.label));
+            const extra = analysis.narrative.sections.filter(item => !primary.includes(item));
+            const renderItem = (item, index) => (
+              <div key={index} style={{ marginBottom: 8, fontSize: 11, lineHeight: 1.5 }}>
+                <div style={{color:'#cbd5e1',fontWeight:700}}>{item.label}</div>
+                <div style={{color:'#94a3b8'}}>{item.label === 'Match situation'
+                  ? `${describeMatchClock(match)} Score: ${match.score || 'unavailable'}.`
+                  : item.label === 'Score pressure' ? describeScorePressure(match)
                   : item.text}</div>
-            </div>
-          )) : <p style={{fontSize:12,color:'#94a3b8',lineHeight:1.65,margin:0}}>{analysis.narrative.text}</p>}
+              </div>
+            );
+            return <>{primary.map(renderItem)}{extra.length>0 && <details style={{marginTop:6}}>
+              <summary style={{cursor:'pointer',fontSize:10,color:'#64748b'}}>More analyst context</summary>
+              <div style={{marginTop:8}}>{extra.map(renderItem)}</div>
+            </details>}</>;
+          })() : <p style={{fontSize:12,color:'#94a3b8',lineHeight:1.65,margin:0}}>{analysis.narrative.text}</p>}
         </div>
       )}
 
@@ -908,8 +966,13 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
         </div>
       )}
 
-      <DataSnapshot analysis={analysis} match={match} />
+      <details style={{borderBottom:'1px solid #1e2535'}}>
+        <summary style={{cursor:'pointer',padding:'9px 14px',fontSize:10,fontWeight:700,color:'#64748b'}}>Data details</summary>
+        <DataSnapshot analysis={analysis} match={match} />
+      </details>
 
+      <details style={{borderBottom:'1px solid #1e2535'}}>
+        <summary style={{cursor:'pointer',padding:'9px 14px',fontSize:10,fontWeight:700,color:'#64748b'}}>Advanced model details</summary>
       {/* Section tabs */}
       <div style={{ display: 'flex', borderBottom: '1px solid #1e2535' }}>
         {[['params', 'Parameters'], ['poisson', 'Poisson'], ['chaos', 'Chaos'], ['edges', 'Edges']].map(([k, l]) => (
@@ -1063,8 +1126,6 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
             </>)}
           </div>
         )}
-
-        {section === 'poisson' && <div style={{marginTop:14,padding:12,border:'1px solid #334155',borderRadius:8}}><strong>Corner prediction</strong><p style={{fontSize:11,color:'#94a3b8'}}>Historical estimate of the final corner count. Not live-adjusted; unsupported leagues remain unavailable.</p>{cornersForecast?.status==='AVAILABLE'?<><div style={{display:'flex',gap:10,flexWrap:'wrap',margin:'10px 0'}}><div style={{background:'#0f1117',border:'1px solid #1e2535',borderRadius:7,padding:'12px',minWidth:120,textAlign:'center'}}><div style={{fontSize:9,color:'#4a5568'}}>ESTIMATED TOTAL</div><div style={{fontSize:26,fontWeight:800,color:'#00b859'}}>{cornersForecast.expectedTotal}</div></div><div style={{background:'#0f1117',border:'1px solid #1e2535',borderRadius:7,padding:'12px',minWidth:120,textAlign:'center'}}><div style={{fontSize:9,color:'#4a5568'}}>HOME / AWAY</div><div style={{fontSize:18,fontWeight:800,color:'#e2e8f0'}}>{cornersForecast.expectedHome??'—'} / {cornersForecast.expectedAway??'—'}</div></div></div><details><summary style={{cursor:'pointer'}}>Bookmaker corner lines</summary>{[8.5,9.5,10.5].map(line=>{const value=cornersForecast.lines?.['corners_over'+String(line).replace('.','')];return <div key={line} style={{display:'flex',justifyContent:'space-between',padding:'5px 0'}}><span>Over {line}</span><strong>{Number.isFinite(value)?value.toFixed(1)+'%':'Unavailable'}</strong></div>;})}</details></>:<p>Corner prediction unavailable for this fixture.</p>}</div>}
         {/* CHAOS */}
         {section === 'chaos' && <div>
           {(evidenceDesk?.chaos || []).map(item => <EvidenceCard key={item.id} item={item} />)}
@@ -1077,6 +1138,7 @@ export default function DetailPanel({ match, analysis: preloadedAnalysis, corner
         </div>}
 
       </div>
+      </details>
       </div>
     </div>
   );

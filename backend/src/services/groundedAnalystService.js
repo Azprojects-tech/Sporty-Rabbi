@@ -6,6 +6,32 @@ const date = (v) => Number.isFinite(Date.parse(v)) ? Date.parse(v) : null;
 
 // Score reconciliation distinguishes verified no-goal matches from missing event coverage.
 // Shoot-out penalties and disallowed goals are never counted as playing-time goals.
+export function summarizeEarlyGoals(teamId, fixtures = [], eventResults = new Map()) {
+  let sampled = 0, scoredBy20 = 0, concededBy20 = 0, scoredFirstHalf = 0, concededFirstHalf = 0;
+  const examples = [];
+  for (const f of fixtures) {
+    const result = eventResults.get(String(f.id));
+    if (!result || !Array.isArray(result.events)) continue;
+    const goals = result.events.filter((e) => e.type === 'Goal' && !/missed|disallowed|cancelled/i.test(e.detail || '')
+      && number(e.time?.elapsed) != null && number(e.time.elapsed) <= 90);
+    const h = number(f.homeGoals), a = number(f.awayGoals);
+    if (h == null || a == null || goals.filter((e) => String(e.team?.id) === String(f.homeTeamId)).length !== h
+      || goals.filter((e) => String(e.team?.id) === String(f.awayTeamId)).length !== a) continue;
+    sampled++;
+    const by20 = goals.filter((e) => Number(e.time.elapsed) <= 20);
+    const firstHalf = goals.filter((e) => Number(e.time.elapsed) <= 45);
+    if (by20.some((e) => String(e.team?.id) === String(teamId))) scoredBy20++;
+    if (by20.some((e) => String(e.team?.id) !== String(teamId))) concededBy20++;
+    if (firstHalf.some((e) => String(e.team?.id) === String(teamId))) scoredFirstHalf++;
+    if (firstHalf.some((e) => String(e.team?.id) !== String(teamId))) concededFirstHalf++;
+    for (const e of by20) examples.push({ fixtureId: f.id, date: f.date,
+      action: String(e.team?.id) === String(teamId) ? 'scored' : 'conceded',
+      minute: `${e.time.elapsed}${e.time.extra ? `+${e.time.extra}` : ''}` });
+  }
+  return { sampled, requested: fixtures.length, scoredBy20, concededBy20, scoredFirstHalf, concededFirstHalf,
+    examples: examples.slice(0, 6) };
+}
+
 export function summarizeLateGoals(teamId, fixtures = [], eventResults = new Map()) {
   let sampled = 0, scored = 0, conceded = 0;
   const examples = [];
@@ -88,6 +114,10 @@ export function buildGroundedAnalystNote(analysis = {}, match = {}, evidence = {
   for (const side of ['home', 'away']) {
     const name = match[side] || side;
     const info = evidence[side] || {};
+    const early = info.earlyGoals;
+    sections.push({ label: `${name}: early goals`, text: early?.sampled
+      ? `By 20': scored in ${early.scoredBy20} and conceded in ${early.concededBy20} of ${early.sampled} verified recent league games. First half: scored in ${early.scoredFirstHalf}, conceded in ${early.concededFirstHalf}.${early.sampled < early.requested ? ` Event coverage: ${early.sampled}/${early.requested} games.` : ''}`
+      : 'Early-goal history unavailable: completed goal-event coverage is not verified.' });
     const timing = info.lateGoals;
     sections.push({ label: `${name}: late goals`, text: timing?.sampled
       ? `From 80 minutes onward (including stoppage time), scored in ${timing.scored} and conceded in ${timing.conceded} of ${timing.sampled} verified recent league games.${timing.sampled < timing.requested ? ` Event coverage: ${timing.sampled}/${timing.requested} games.` : ''}`
