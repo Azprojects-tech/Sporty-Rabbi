@@ -270,7 +270,8 @@ test('a cancelled fixture voids that leg of a double; singles are unaffected', (
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 test('server wires corrected chance into analysis, feed, bet logging and a daily rebuild', () => {
   const server = read('../src/server.js');
-  assert.match(server, /const response = withCorrectedChances\(analysis, enriched\);[\s\S]{0,420}response\.visibleForecast = buildVisibleV11Forecast\(analysis, enriched\);[\s\S]{0,500}res\.json\(response\)/);
+  assert.match(server, /const response = withCorrectedChances\(analysis, enriched\);[\s\S]{0,500}res\.json\(response\)/);
+  assert.doesNotMatch(server, /response\.visibleForecast\s*=|buildVisibleV11Forecast/);
   assert.match(server, /function withFixtureStatuses[\s\S]{0,300}withCorrectedChances/);
   assert.match(server, /priceCheckAtLogging: priceCheckAtLogging\(/);
   assert.match(server, /cron\.schedule\('30 6 \* \* \*'[\s\S]{0,120}pickCalibration\.rebuild/);
