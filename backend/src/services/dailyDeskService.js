@@ -193,7 +193,10 @@ export function createDailyDeskService({store,getMatches,getCalibration,predictC
           for(const card of tracked){
             const match=(live||[]).find(m=>String(m.id)===String(card.id));if(!match)continue;
             const stats=await call(readStats,match); // null stays unavailable, never zero
-            const enriched={...match,...(stats?{xg:stats.xg,shots:stats.shots,cards:stats.cards}:{}),liveStatsObservedAt:stats?new Date(now()).toISOString():null};
+            const enriched={...match,...(stats?{
+              xg:stats.xg,shots:stats.shots,totalShots:stats.totalShots,corners:stats.corners,
+              possession:stats.possession,cards:stats.cards
+            }:{}),liveStatsObservedAt:stats?new Date(now()).toISOString():null};
             const refreshed=refreshForecast(enriched,{id:card.id,analysis:{predictionCore:{inputSummary:card.history}}});
             const snapshot=liveSnapshot({...enriched,...refreshed},stats,now());if(!snapshot)continue;
             const history=state.history[String(card.id)]||[];
