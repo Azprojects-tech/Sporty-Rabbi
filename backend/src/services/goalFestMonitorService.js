@@ -64,7 +64,12 @@ export function selectGoalFestScanMatches(matches = [], limit = 8, cursor = 0) {
     .map((match, index) => ({ match, index, priority: goalFestPriority(match) }))
     .sort((a, b) => b.priority - a.priority || a.index - b.index);
 
-  const prioritySlots = Math.min(capped, Math.max(1, Math.ceil(capped * 0.75)));
+  // Deep statistics are the expensive part. Reserve only a small slice for
+  // round-robin discovery; the rest is used only when the cheap score/minute
+  // feed shows an explosive trajectory. This keeps the monitor useful all day
+  // instead of burning its quota on quiet 0-0 / 1-0 games.
+  const rotationSlots = capped === 1 ? 0 : Math.max(1, Math.floor(capped * 0.25));
+  const prioritySlots = Math.max(1, capped - rotationSlots);
   const picked = [];
   const pickedIds = new Set();
 
@@ -76,9 +81,10 @@ export function selectGoalFestScanMatches(matches = [], limit = 8, cursor = 0) {
 
   const remaining = pool.filter((m) => !pickedIds.has(String(m.id)));
   let nextCursor = 0;
-  if (remaining.length && picked.length < capped) {
+  const discoverySlots = picked.length ? rotationSlots : Math.max(1, rotationSlots);
+  if (remaining.length && discoverySlots > 0) {
     const start = ((Number(cursor) || 0) % remaining.length + remaining.length) % remaining.length;
-    const slots = capped - picked.length;
+    const slots = Math.min(discoverySlots, capped - picked.length);
     for (let i = 0; i < slots && i < remaining.length; i++) {
       picked.push(remaining[(start + i) % remaining.length]);
     }
