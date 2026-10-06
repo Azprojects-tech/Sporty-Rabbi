@@ -1,4 +1,5 @@
 import { createWatchService, watchId, watchMarketKey } from './services/watchService.js';
+import { createGoalFestMonitor, summarizeGoalFestStudies } from './services/goalFestMonitorService.js';
 import { createDailyDeskService, createDeskStore } from './services/dailyDeskService.js';
 import { createCornersService } from './services/cornersService.js';
 import { dayUK } from '../../shared/dailyDesk.js';
@@ -129,6 +130,7 @@ const liveAnalysisCache = new Map(); // matchId → { result, score, timestamp }
 const LIVE_ANALYSIS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 let alerts = [];
 let bets = [];
+let goalFestMonitor = null;
 let calibrationStore = {
   matches: [],
   highConfidence: [],
@@ -535,6 +537,7 @@ const PORTAL_ACTIVE_LIVE_REFRESH_SECONDS = toNumberWithMin(
 const GOAL_FEST_SCAN_SECONDS = toNumberWithMin(process.env.GOAL_FEST_SCAN_SECONDS,300,120);
 const GOAL_FEST_SCAN_LIMIT = toNumberWithMin(process.env.GOAL_FEST_SCAN_LIMIT,16,1);
 const GOAL_FEST_ALERT_THRESHOLD = toNumberWithMin(process.env.GOAL_FEST_ALERT_THRESHOLD,70,60);
+const GOAL_FEST_DAILY_DEEP_SCAN_LIMIT = toNumberWithMin(process.env.GOAL_FEST_DAILY_DEEP_SCAN_LIMIT,360,0);
 // Normal Prediction Desk clicks are local/cache-only. Set true only if we later
 // deliberately decide that clicking a match may spend API-Football quota.
 const ALLOW_ON_DEMAND_API_ENRICHMENT = String(
@@ -1956,7 +1959,6 @@ async function refreshLiveForConnectedPortals() {
   portalActiveLiveRefreshInFlight = true;
   try {
     await pollLiveMatches({ forceApi: true, enrich: false });
-    await runGoalFestSignalScan('portal-active');
     await refreshScheduleStatuses('portal-active');
   } catch (err) {
     console.warn('[LiveRefresh] Shared portal refresh failed:', err.message);
@@ -1976,99 +1978,69 @@ console.log(
 );
 
 
-// V10.5D: cheap, bounded Goal Fest scan while the portal is in use.
-let goalFestScanInFlight=false;
-let goalFestScanStatus = { lastCompletedAt: null, scanned: 0, active: 0 };
-let goalFestScanCursor=0;
-let lastGoalFestScanAt=0;
-
-function pickGoalFestScanMatches(matches=[]) {
-  const liveStatuses=new Set(['LIVE','1H','2H','ET']);
-  const eligible=(Array.isArray(matches)?matches:[])
-    .filter(m=>m?.id && Number(m.matchMinutes)>=12 && liveStatuses.has(String(m.status||'').toUpperCase()));
-  if(!eligible.length) return [];
-  const limit=Math.min(GOAL_FEST_SCAN_LIMIT, eligible.length);
-  const out=[];
-  for(let i=0;i<limit;i++) out.push(eligible[(goalFestScanCursor+i)%eligible.length]);
-  goalFestScanCursor=(goalFestScanCursor+limit)%eligible.length;
-  return out;
-}
-
-async function runGoalFestSignalScan(trigger='portal-active') {
-  if(clients.size===0 || !API_KEY || shouldSkipApiCalls() || goalFestScanInFlight)
-    return {scanned:0,active:0};
-
-  const now=Date.now();
-  if(lastGoalFestScanAt && now-lastGoalFestScanAt < GOAL_FEST_SCAN_SECONDS*1000)
-    return {scanned:0,active:0,cooldown:true};
-
-  const batch=pickGoalFestScanMatches(liveMatches);
-  if(!batch.length) return {scanned:0,active:0};
-
-  goalFestScanInFlight=true;
-  lastGoalFestScanAt=now;
-  let scanned=0, active=0, missingEvidence=0;
-
-  try {
-    for(const match of batch) {
-      if(shouldSkipApiCalls()) break;
-      const stats=await fetchFixtureStatistics(match.id, match.homeTeamId, match.awayTeamId);
-      if(!stats) {
-        missingEvidence++;
-        const unavailable = calculateGoalFestSignal({ ...match, shots:null, xg:null });
-        liveMatches=liveMatches.map(m=>String(m.id)===String(match.id) ? { ...m, goalFest:unavailable } : m);
-        continue;
-      }
-
-      const observed={...match, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards};
-      const goalFest=calculateGoalFestSignal(observed);
-      if (goalFest.status === 'INSUFFICIENT_DATA') missingEvidence++;
-      scanned++;
-
-      liveMatches=liveMatches.map(m=>String(m.id)===String(match.id)
-        ? {...m, possession:stats.possession, shots:stats.shots, xg:stats.xg, cards:stats.cards,
-           goalFest, _staleGoalFest:false}
-        : m);
-
-      if(!DAILY_DESK_ENABLED && goalFest.active && Number(goalFest.score)>=GOAL_FEST_ALERT_THRESHOLD) {
-        active++;
-        await saveAlert({
-          matchId:match.id, home:match.home, away:match.away,
-          league:match.league, leagueId:match.leagueId||0,
-          matchType:match.matchType||'League', country:match.leagueCountry||'',
-          type:'GOAL_FEST',
-          message:`GOAL FEST ${goalFest.level}: ${goalFest.summary}`,
-          confidence:goalFest.score, goalFest,
-          status:match.status, matchMinutes:match.matchMinutes||0,
-          sentAt:new Date().toISOString(),
-        });
-      }
-
-      await new Promise(r=>setTimeout(r,120));
-    }
-
-    setCache('liveMatches', liveMatches);
-    broadcast({type:'LIVE_MATCHES', payload:liveMatches});
-    console.log(`[GoalFest] ${trigger}: scanned ${scanned}, active ${active}`);
-    goalFestScanStatus = { lastCompletedAt: new Date().toISOString(), scanned, active, missingEvidence };
-    return {scanned,active};
-  } catch(err) {
-    console.warn('[GoalFest] scan failed:',err.message);
-    goalFestScanStatus = { ...goalFestScanStatus, error: 'Latest scan could not complete' };
-    return {scanned,active,error:err.message};
-  } finally {
-    goalFestScanInFlight=false;
-  }
-}
-
-console.log(`   Goal Fest scan: every ${GOAL_FEST_SCAN_SECONDS}s, max ${GOAL_FEST_SCAN_LIMIT} live matches/pass`);
-
 // One small monitored shortlist; no open browser and no LLM call required.
 const DAILY_DESK_ENABLED = process.env.DAILY_DESK_ENABLED !== 'false' && getActiveAlertChannel() === 'telegram';
 const cornersDesk = createCornersService({ getDb,
   fetchText: async url => { const r = await axios.get(url, { timeout: 6000 }); return r.data; },
 });
 const deskStore = createDeskStore(getDb);
+
+let sharedLivePoolAt = 0;
+let sharedLivePoolMatches = [];
+let sharedLivePoolPromise = null;
+async function readSharedLivePool() {
+  const age = sharedLivePoolAt > 0 ? Date.now() - sharedLivePoolAt : Number.POSITIVE_INFINITY;
+  if (age < 45000) return sharedLivePoolMatches;
+  if (sharedLivePoolPromise) return sharedLivePoolPromise;
+  sharedLivePoolPromise = (async () => {
+    const raw = await fetchLiveMatches();
+    sharedLivePoolMatches = (raw || [])
+      .filter(f => Number.isFinite(f.goals?.home) && Number.isFinite(f.goals?.away) && Number.isFinite(f.fixture?.status?.elapsed))
+      .map(parseLightFixture)
+      .filter(Boolean);
+    sharedLivePoolAt = Date.now();
+    return sharedLivePoolMatches;
+  })().finally(() => { sharedLivePoolPromise = null; });
+  return sharedLivePoolPromise;
+}
+
+goalFestMonitor = createGoalFestMonitor({
+  getDb,
+  readLive: readSharedLivePool,
+  readStats: m => fetchFixtureStatistics(m.id, m.homeTeamId, m.awayTeamId),
+  evaluate: calculateGoalFestSignal,
+  saveAlert,
+  publish: async (rows) => {
+    const byId = new Map(rows.map((row) => [String(row.match.id), row]));
+    liveMatches = liveMatches.map((match) => {
+      const row = byId.get(String(match.id));
+      return row ? {
+        ...match,
+        possession: row.stats?.possession ?? match.possession,
+        shots: row.stats?.shots ?? match.shots,
+        totalShots: row.stats?.totalShots ?? match.totalShots,
+        xg: row.stats?.xg ?? match.xg,
+        corners: row.stats?.corners ?? match.corners,
+        cards: row.stats?.cards ?? match.cards,
+        goalFest: row.signal,
+        _staleGoalFest: false,
+      } : match;
+    });
+    setCache('liveMatches', liveMatches);
+    if (clients.size > 0) broadcast({ type:'LIVE_MATCHES', payload:liveMatches });
+  },
+  finalFromFixture: finalScoreFromProviderFixture,
+  canCall: () => Boolean(API_KEY) && process.env.API_FOOTBALL_OFFLINE_MODE !== 'true' && !shouldSkipApiCalls(),
+  scanLimit: Math.max(1, Math.min(24, GOAL_FEST_SCAN_LIMIT)),
+  alertThreshold: GOAL_FEST_ALERT_THRESHOLD,
+  dailyDeepScanLimit: GOAL_FEST_DAILY_DEEP_SCAN_LIMIT,
+});
+setInterval(
+  () => goalFestMonitor.tick('background').catch((err) => console.warn('[GoalFest] Timer:', err.message)),
+  GOAL_FEST_SCAN_SECONDS * 1000,
+);
+console.log(`   Goal Fest background monitor: every ${GOAL_FEST_SCAN_SECONDS}s, max ${GOAL_FEST_SCAN_LIMIT} deep scans/pass, daily cap ${GOAL_FEST_DAILY_DEEP_SCAN_LIMIT}`);
+
 const dailyDesk = createDailyDeskService({
   store: deskStore,
   getMatches: () => ({ ready: calibrationStore.preparedDateUK === dayUK(Date.now()), matches: withFixtureStatuses(calibrationStore.matches || []) }),
@@ -2084,7 +2056,7 @@ const dailyDesk = createDailyDeskService({
     if(home?.offline||away?.offline||!home?.stats||!away?.stats)return null;
     return {home,away};
   },
-  readLive: async () => (await fetchLiveMatches()).filter(f => Number.isFinite(f.goals?.home) && Number.isFinite(f.goals?.away) && Number.isFinite(f.fixture?.status?.elapsed)).map(parseLightFixture).filter(Boolean),
+  readLive: readSharedLivePool,
   readStats: m => fetchFixtureStatistics(m.id, m.homeTeamId, m.awayTeamId),
   refreshForecast: refreshLiveForecast,
   readFinal: id => getSettlementFixture(id, { shouldSkipApiCalls, updateQuotaFromHeaders }),
@@ -2120,9 +2092,7 @@ setInterval(() => runDailyDesk().catch(err => console.warn('[DailyDesk] Timer:',
 const watchService=createWatchService({
   getDb,
   send:sendWhatsApp,
-  readLive:async()=> (await fetchLiveMatches())
-    .filter(f=>Number.isFinite(f.goals?.home)&&Number.isFinite(f.goals?.away)&&Number.isFinite(f.fixture?.status?.elapsed))
-    .map(parseLightFixture).filter(Boolean),
+  readLive:readSharedLivePool,
   buildLiveState:async(item,live)=>{
     const stats=await fetchFixtureStatistics(live.id,live.homeTeamId,live.awayTeamId);
     const enriched={...live,...(stats?{
@@ -2160,6 +2130,27 @@ app.get('/api/live-study',async(req,res)=>{
      interpretation:'Positive improvement means Live Hazard V1 scored better than the score/minute baseline. Do not retune automatically from a small sample.',
    });
  }catch(e){console.warn('[LiveStudy]',e.message);res.status(503).json({error:'Live engine study unavailable'});}
+});
+
+app.get('/api/goal-fest-study', async (req,res) => {
+  try {
+    const db=getDb();
+    if(!db)return res.status(503).json({error:'Goal Fest study storage unavailable'});
+    const snap=await db.collection('goalFestStudies').limit(500).get();
+    const studies=snap.docs.map(d=>({id:d.id,...d.data()}));
+    const recent=studies
+      .slice()
+      .sort((a,b)=>Date.parse(b.lastObservedAt||b.settledAt||0)-Date.parse(a.lastObservedAt||a.settledAt||0))
+      .slice(0,100);
+    res.json({
+      monitor:goalFestMonitor?.status?.()||null,
+      summary:summarizeGoalFestStudies(studies),
+      studies:recent,
+    });
+  } catch(e) {
+    console.warn('[GoalFest] Study endpoint:',e.message);
+    res.status(503).json({error:'Goal Fest study unavailable'});
+  }
 });
 
 app.get('/api/watchlist',async(req,res)=>{
@@ -3053,6 +3044,7 @@ async function settlePredictionLedger(trigger = 'manual') {
   }
 
   const playedSettlement = await settlePendingPlayedBets();
+  const goalFestPendingDates = goalFestMonitor ? await goalFestMonitor.pendingSettlementDates() : [];
 
   // Only recent records need routine settlement. Older unresolved/postponed fixtures remain
   // permanently stored as pending rather than being guessed or deleted.
@@ -3069,8 +3061,8 @@ async function settlePredictionLedger(trigger = 'manual') {
       return Number.isFinite(kickoff) && kickoff <= Date.now() - (2 * 60 * 60 * 1000);
     });
 
-  if (pending.length === 0) {
-    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: playedSettlement.settled, playedSettlement };
+  if (pending.length === 0 && goalFestPendingDates.length === 0) {
+    return { trigger, checked: 0, settledMatches: 0, settledCalls: 0, settledUserBets: playedSettlement.settled, settledGoalFestStudies: 0, playedSettlement };
   }
 
   const byDate = new Map();
@@ -3080,10 +3072,14 @@ async function settlePredictionLedger(trigger = 'manual') {
     if (!byDate.has(dateStamp)) byDate.set(dateStamp, []);
     byDate.get(dateStamp).push(p);
   }
+  for (const dateStamp of goalFestPendingDates) {
+    if (!byDate.has(dateStamp)) byDate.set(dateStamp, []);
+  }
 
   let settledMatches = 0;
   let settledCalls = 0;
   let settledUserBets = playedSettlement.settled;
+  let settledGoalFestStudies = 0;
   const settledAt = new Date().toISOString();
 
   for (const [dateStamp, datePredictions] of byDate) {
@@ -3095,6 +3091,10 @@ async function settlePredictionLedger(trigger = 'manual') {
       continue;
     }
     const rawById = new Map(rawFixtures.map((f) => [String(f?.fixture?.id), f]));
+    if (goalFestMonitor) {
+      const goalFestSettlement = await goalFestMonitor.settleDate(dateStamp, rawFixtures);
+      settledGoalFestStudies += goalFestSettlement.settled || 0;
+    }
 
     const writes = [];
     for (const prediction of datePredictions) {
@@ -3148,8 +3148,8 @@ async function settlePredictionLedger(trigger = 'manual') {
     }
   }
 
-  console.log(`[PredictionLedger] ${trigger}: settled ${settledMatches} matches / ${settledCalls} market calls / ${settledUserBets} My Bets`);
-  return { trigger, checked: pending.length, settledMatches, settledCalls, settledUserBets };
+  console.log(`[PredictionLedger] ${trigger}: settled ${settledMatches} matches / ${settledCalls} market calls / ${settledUserBets} My Bets / ${settledGoalFestStudies} Goal Fest studies`);
+  return { trigger, checked: pending.length, settledMatches, settledCalls, settledUserBets, settledGoalFestStudies };
 }
 
 app.get('/api/predictions', async (req, res) => {
