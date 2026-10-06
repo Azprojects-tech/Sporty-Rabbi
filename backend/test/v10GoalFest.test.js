@@ -7,10 +7,19 @@ const server=fs.readFileSync(new URL('../src/server.js',import.meta.url),'utf8')
 const feed=fs.readFileSync(new URL('../../frontend/src/components/MatchFeed.jsx',import.meta.url),'utf8');
 const panel=fs.readFileSync(new URL('../../frontend/src/components/DetailPanel.jsx',import.meta.url),'utf8');
 const alerts=fs.readFileSync(new URL('../../frontend/src/components/AlertHistory.jsx',import.meta.url),'utf8');
+const monitor=fs.readFileSync(new URL('../src/services/goalFestMonitorService.js',import.meta.url),'utf8');
 
 test('Goal Fest fails closed without verified xG',()=>{
   const r=calculateGoalFestSignal({status:'1H',matchMinutes:30,score:'1-0',shots:{home:4,away:2},xg:{home:null,away:null}});
   assert.equal(r.active,false);assert.equal(r.status,'INSUFFICIENT_DATA');assert.equal(r.score,null);
+});
+test('Goal Fest uses verified shot volume when live xG is unavailable',()=>{
+  const r=calculateGoalFestSignal({
+    status:'1H',matchMinutes:30,score:'2-1',
+    shots:{home:6,away:5},totalShots:{home:10,away:9},xg:{home:null,away:null}
+  });
+  assert.equal(r.evidenceMode,'SHOTS_SOT');assert.equal(r.active,true);assert.ok(r.score>=85);
+  assert.match(r.summary,/xG unavailable/);
 });
 test('Goal Fest waits until minute 12',()=>{
   const r=calculateGoalFestSignal({status:'1H',matchMinutes:8,score:'1-0',shots:{home:3,away:2},xg:{home:.8,away:.5}});
@@ -24,10 +33,12 @@ test('quiet match stays below threshold',()=>{
   const r=calculateGoalFestSignal({status:'2H',matchMinutes:60,score:'1-0',shots:{home:2,away:1},xg:{home:.7,away:.4}});
   assert.equal(r.active,false);assert.ok(r.score<70);
 });
-test('scanner is portal-active bounded and quota-aware',()=>{
+test('scanner is background, quota-aware and independent of Daily Desk alerts',()=>{
   assert.match(server,/GOAL_FEST_SCAN_SECONDS/);assert.match(server,/GOAL_FEST_SCAN_LIMIT/);
-  assert.match(server,/clients\.size===0/);assert.match(server,/shouldSkipApiCalls\(\)/);
-  assert.match(server,/fetchFixtureStatistics\(match\.id, match\.homeTeamId, match\.awayTeamId\)/);assert.match(server,/type:'GOAL_FEST'/);
+  assert.match(server,/createGoalFestMonitor/);assert.match(server,/goalFestMonitor\.tick\('background'\)/);
+  assert.match(server,/shouldSkipApiCalls\(\)/);assert.match(server,/GOAL_FEST_DAILY_DEEP_SCAN_LIMIT/);
+  assert.match(monitor,/selectGoalFestScanMatches/);assert.match(monitor,/type: 'GOAL_FEST'/);
+  assert.doesNotMatch(server,/!DAILY_DESK_ENABLED\s*&&\s*goalFest\.active/);
 });
 test('Goal Fest is visible in feed and detail',()=>{
   assert.match(feed,/GOAL FEST/);assert.match(feed,/goalFestView/);
