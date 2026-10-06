@@ -159,50 +159,89 @@ export function calculateGoalFestSignal(match) {
   const as = finiteObserved(match?.shots?.away);
   const hx = finiteObserved(match?.xg?.home);
   const ax = finiteObserved(match?.xg?.away);
+  const hts = finiteObserved(match?.totalShots?.home);
+  const ats = finiteObserved(match?.totalShots?.away);
 
-  if (minute == null || minute <= 0 || !scoreMatch || hs == null || as == null || hx == null || ax == null) {
-    const missing = [minute == null || minute <= 0 ? 'match minute' : null, !scoreMatch ? 'score' : null,
-      hs == null || as == null ? 'shots on target' : null, hx == null || ax == null ? 'xG' : null].filter(Boolean);
+  const hasXg = hx != null && ax != null;
+  const hasShotFallback = hts != null && ats != null;
+  if (minute == null || minute <= 0 || !scoreMatch || hs == null || as == null || (!hasXg && !hasShotFallback)) {
+    const missing = [
+      minute == null || minute <= 0 ? 'match minute' : null,
+      !scoreMatch ? 'score' : null,
+      hs == null || as == null ? 'shots on target' : null,
+      !hasXg && !hasShotFallback ? 'xG or total-shot fallback' : null,
+    ].filter(Boolean);
     return { active:false, level:'NONE', score:null, status:'INSUFFICIENT_DATA', minute:minute ?? null, evaluatedAt, observedScore,
-      summary:`Goal Fest unavailable: verified ${missing.join(', ')} missing.` };
+      evidenceMode:'NONE', summary:`Goal Fest unavailable: verified ${missing.join(', ')} missing.` };
   }
 
   if (minute < 12) {
     return { active:false, level:'NONE', score:0, status:'TOO_EARLY', minute, evaluatedAt, observedScore,
-      summary:'Goal Fest waits until minute 12 before assessing a match.' };
+      evidenceMode:hasXg?'XG_SOT':'SHOTS_SOT', summary:'Goal Fest waits until minute 12 before assessing a match.' };
   }
 
   const goals = Number(scoreMatch[1]) + Number(scoreMatch[2]);
-  const totalXG = hx + ax;
   const sot = hs + as;
-
   const goalPace = clamp((goals * 90) / minute, 0, 7);
-  const xgPace = clamp((totalXG * 90) / minute, 0, 7);
   const shotPace = clamp((sot * 90) / minute, 0, 22);
 
-  const xgScore = clamp(((xgPace - 2.4) / 2.6) * 45, 0, 45);
-  const shotScore = clamp(((shotPace - 5.5) / 8.5) * 30, 0, 30);
-  const goalScore = clamp(((goalPace - 2.5) / 3.0) * 20, 0, 20);
-  const bothThreat = hx >= 0.45 && ax >= 0.45 ? 5 : 0;
+  let score;
+  let projectedFinalGoals;
+  let evidenceMode;
+  let totalXG = null;
+  let totalShotCount = null;
+  let totalShotPace = null;
+  let bothThreat = 0;
+  const reasons=[];
 
-  const score = Math.round(clamp(xgScore + shotScore + goalScore + bothThreat, 0, 100));
+  if (hasXg) {
+    evidenceMode='XG_SOT';
+    totalXG = hx + ax;
+    const xgPace = clamp((totalXG * 90) / minute, 0, 7);
+    const xgScore = clamp(((xgPace - 2.4) / 2.6) * 45, 0, 45);
+    const shotScore = clamp(((shotPace - 5.5) / 8.5) * 30, 0, 30);
+    const goalScore = clamp(((goalPace - 2.5) / 3.0) * 20, 0, 20);
+    bothThreat = hx >= 0.45 && ax >= 0.45 ? 5 : 0;
+    score = Math.round(clamp(xgScore + shotScore + goalScore + bothThreat, 0, 100));
+    projectedFinalGoals = +clamp((goalPace * 0.4) + (xgPace * 0.6), 0, 6.5).toFixed(1);
+    if(xgPace>=3.2) reasons.push('xG pace is high');
+    if(shotPace>=9) reasons.push('shots-on-target pace is high');
+    if(goalPace>=3.2) reasons.push('current scoring pace is high');
+    if(bothThreat) reasons.push('both teams are creating chances');
+  } else {
+    // Many lower leagues expose verified shots but no live xG. Goal Fest is an
+    // activity detector, not the probability engine, so use a separate,
+    // explicitly-labelled shot-volume fallback rather than inventing xG.
+    evidenceMode='SHOTS_SOT';
+    totalShotCount = hts + ats;
+    totalShotPace = clamp((totalShotCount * 90) / minute, 0, 45);
+    const sotScore = clamp(((shotPace - 5.5) / 8.5) * 35, 0, 35);
+    const volumeScore = clamp(((totalShotPace - 20) / 16) * 35, 0, 35);
+    const goalScore = clamp(((goalPace - 2.5) / 3.0) * 25, 0, 25);
+    bothThreat = hs >= 2 && as >= 2 ? 5 : 0;
+    score = Math.round(clamp(sotScore + volumeScore + goalScore + bothThreat, 0, 100));
+    projectedFinalGoals = +clamp((goalPace * 0.55) + ((totalShotPace / 8) * 0.45), 0, 6.5).toFixed(1);
+    if(totalShotPace>=28) reasons.push('total-shot pace is high');
+    if(shotPace>=9) reasons.push('shots-on-target pace is high');
+    if(goalPace>=3.2) reasons.push('current scoring pace is high');
+    if(bothThreat) reasons.push('both teams are hitting the target');
+  }
+
   const active = score >= 70;
   const level = score >= 85 ? 'HOT' : active ? 'WATCH' : 'NONE';
-  const projectedFinalGoals = +clamp((goalPace * 0.4) + (xgPace * 0.6), 0, 6.5).toFixed(1);
-
-  const reasons=[];
-  if(xgPace>=3.2) reasons.push('xG pace is high');
-  if(shotPace>=9) reasons.push('shots-on-target pace is high');
-  if(goalPace>=3.2) reasons.push('current scoring pace is high');
-  if(bothThreat) reasons.push('both teams are creating chances');
 
   return {
     active, level, score,
     status: active ? 'ACTIVE' : 'BELOW_THRESHOLD',
-    minute, currentGoals:goals, totalXG:+totalXG.toFixed(2),
+    evidenceMode,
+    minute, currentGoals:goals,
+    totalXG:totalXG == null ? null : +totalXG.toFixed(2),
+    totalShots:totalShotCount,
     shotsOnTarget:sot, projectedFinalGoals, reasons,
     summary: active
-      ? `High-goal trajectory: ${totalXG.toFixed(2)} xG and ${sot} shots on target by ${minute}'`
+      ? evidenceMode==='XG_SOT'
+        ? `High-goal trajectory: ${totalXG.toFixed(2)} xG and ${sot} shots on target by ${minute}'`
+        : `High-goal trajectory: ${totalShotCount} shots and ${sot} on target by ${minute}' (xG unavailable)`
       : `Goal-fest threshold not reached at ${minute}'`,
     evaluatedAt, observedScore,
   };
